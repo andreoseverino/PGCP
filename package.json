@@ -1,0 +1,28 @@
+{
+  "name": "pgcp",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "workspaces": [
+    "apps/web",
+    "apps/api"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @pgcp/web",
+    "dev:web": "npm run dev --workspace @pgcp/web",
+    "dev:api": "npm run dev --workspace @pgcp/api",
+    "build": "npm run build:web && npm run build:api",
+    "build:web": "npm run build --workspace @pgcp/web",
+    "build:api": "npm run build --workspace @pgcp/api",
+    "preview": "npm run preview --workspace @pgcp/web",
+    "start:api": "npm run start --workspace @pgcp/api",
+    "db:up": "docker compose --env-file apps/api/.env -f infra/docker-compose.yml up -d",
+    "db:down": "docker compose --env-file apps/api/.env -f infra/docker-compose.yml down",
+    "db:logs": "docker compose --env-file apps/api/.env -f infra/docker-compose.yml logs -f",
+    "db:migrate": "npm run migrate --workspace @pgcp/api",
+    "entra:check": "node scripts/entra-preflight.mjs",
+    "lint": "npm run lint:web && npm run lint:api",
+    "lint:web": "npm run lint --workspace @pgcp/web",
+    "lint:api": "npm run lint --workspace @pgcp/api"
+  }
+}

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Autenticação Microsoft</title>
+    <style>
+      /* Sem CSS da aplicação: esta página não é interface, é uma ponte. */
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f7f9fb;
+        color: #64748b;
+        font: 600 12px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Página de redirect do MSAL. O Entra devolve o authorization code para cá,
+      e o único trabalho daqui é repassá-lo à janela principal.
+
+      NÃO monta o App, não renderiza o LoginView, não roteia, não chama /me e
+      não inicia login. Carregar a aplicação inteira aqui é justamente o defeito
+      que esta página corrige: o popup abria o PGCP em vez de devolver a
+      resposta, e a janela principal expirava esperando a ponte.
+    -->
+    <p>Concluindo a autenticação…</p>
+    <script type="module" src="/src/auth/redirect.ts"></script>
+  </body>
+</html>

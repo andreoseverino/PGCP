@@ -1,0 +1,62 @@
+# PostgreSQL local para desenvolvimento do PGCP.
+#
+# Os nomes `pcgp-governanca*` abaixo são o projeto, o container e o volume JÁ
+# CRIADOS nesta máquina. Renomeá-los aqui não renomeia os recursos: criaria um
+# segundo container e um volume vazio, deixando o banco atual órfão. Ficam como
+# estão até uma recriação deliberada do ambiente.
+#
+# Le as variaveis de apps/api/.env, que e a unica fonte de verdade das
+# credenciais locais. Suba com `npm run db:up` a partir da raiz.
+#
+# ATENCAO: existe nesta maquina outro container chamado `pgcp-postgres`
+# (projeto "Pauta 360", letras transpostas). Nao confundir com este.
+#
+# Este arquivo cobre apenas o ambiente de desenvolvimento local. Em outros
+# ambientes o PostgreSQL e provisionado por fora; a API so depende das
+# variaveis DB_* e funciona com qualquer PostgreSQL padrao.
+#
+# MENOR PRIVILEGIO (Achado A da auditoria):
+#   POSTGRES_USER e o superusuario de BOOTSTRAP do cluster (DB_BOOTSTRAP_USER),
+#   NUNCA o papel da aplicacao. Na primeira inicializacao (diretorio de dados
+#   vazio), o script init/00-provision-roles.sh cria dois papeis sem
+#   superusuario: pcgp_admin (migration/dono) e pcgp_app (runtime). A API
+#   conecta como pcgp_app (DB_USER); as migrations, como pcgp_admin
+#   (DB_MIGRATION_USER).
+#
+#   ATENCAO: os scripts de init SO rodam em volume vazio. O volume desta maquina
+#   ja existe e foi endurecido em separado (infra/postgres/harden-existing-cluster.sql).
+name: pcgp-governanca
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: pcgp-governanca-db
+    restart: unless-stopped
+    environment:
+      # Superusuario de bootstrap — usado so para inicializar o cluster e rodar
+      # o provisionamento de papeis. A aplicacao nunca usa esta credencial.
+      POSTGRES_USER: ${DB_BOOTSTRAP_USER}
+      POSTGRES_PASSWORD: ${DB_BOOTSTRAP_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+      # Senhas dos papeis criados pelo init (nunca versionadas; vem do .env).
+      PCGP_APP_PASSWORD: ${DB_PASSWORD}
+      PCGP_ADMIN_PASSWORD: ${DB_MIGRATION_PASSWORD}
+    ports:
+      # Publicado apenas em loopback: nao fica exposto na rede local.
+      - "127.0.0.1:${DB_PORT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # provision-roles.sql acessivel ao script de init.
+      - ./postgres:/pgcp-provision:ro
+      # Scripts de init da imagem oficial (rodam so em volume vazio).
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  pgdata:
+    name: pcgp-governanca-pgdata
