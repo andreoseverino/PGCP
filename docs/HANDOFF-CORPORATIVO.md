@@ -634,7 +634,7 @@ Somente nomes. Valores vivem em `.env`, que **não** é versionado.
 | `DOCUSIGN_*` | não | parcial | reservado; integração futura |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | não | **sim** | reservado; observabilidade futura |
 
-### `apps/web/.env.local`
+### `apps/web/.env`
 
 | Variável | Finalidade |
 |---|---|
@@ -868,12 +868,12 @@ Lacunas reais — nenhuma é bug:
 | DocuSign | domínio pronto, **sem** provedor, credenciais ou rota |
 | Reunião confidencial/restrita | **não existe** no modelo |
 | Experiência pública | futura; hoje o usuário sem role já tem leitura corporativa |
-| Suíte de testes formal | scripts incrementais, sem runner |
-| `packages/contracts` | pasta reservada, ainda vazia |
+| Cobertura de testes | runner existe (`node --test`, `npm test` na raiz, 16 testes verdes); cobre production-guard, rate limit e validação de entrada. **Sem** teste para `validateClaims` e sem testes no frontend |
+| `packages/contracts` | pasta reservada: só um README, **sem `package.json`** e portanto **fora dos `workspaces`**. O contrato segue **duplicado** — a API declara os tipos por módulo e o frontend os redeclara nos adaptadores de `apps/web/src/lib/*-adapters.ts` |
 | Status `approved`/`closed` da Ata | previstos no CHECK, sem fluxo que os produza |
-| Dependências não usadas em `apps/web` | `@google/genai` e `express` constam no `package.json` sem import no código |
 | Ata e Anotações sem papel próprio | escrita é de `PGCP.Assessoria`; não há papel de Secretaria distinto |
 | `setTaxonomyActive` | existe no cliente sem consumidor na tela |
+| `removeParticipant` (cliente web) | `DELETE /meetings/:id/participants/:participantId` existe e está protegido na API, mas **a tela nunca o chama**: dá para adicionar participante a uma reunião existente e não para remover |
 
 ---
 

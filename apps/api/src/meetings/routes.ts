@@ -34,27 +34,25 @@ import {
 export const meetingsRouter = Router();
 
 /**
- * Reunioes — SOMENTE LEITURA.
- *
- * Leitura e criacao. Nao existem PATCH nem DELETE ainda.
- *
- * O frontend continua criando e editando reuniao no estado local: o POST daqui
- * existe para provar que a criacao inteira — reuniao, participantes, pautas e
- * trilha — cabe numa unica transacao. A troca da fonte de escrita e etapa
- * propria.
+ * Reunioes — leitura e escrita.
  *
  * Autorizacao em camadas, a mesma de /directory e /users:
  *
  *   1. Entra "Atribuicao necessaria = Sim" -> quem obtem token
  *   2. requireEntraAuth                    -> token valido para esta API
  *   3. requireActivePgcpUser               -> existe em `users` e esta ativo
+ *   4. requirePgcpAssessoria               -> App Role, so para MUTACAO
  *
- * Nao ha papel funcional no modelo, entao qualquer usuario ativo le. Quando
- * houver RBAC, o filtro entra aqui.
+ * LER e ESCREVER sao separados de proposito: qualquer usuario ativo le (ver
+ * `meetings/visibility.ts` para a politica de leitura), e toda mutacao —
+ * cabecalho, participantes, pautas, ordem, postergar/retomar, Anotacoes, Ata e
+ * sincronizacao de calendario — exige `PGCP.Assessoria`. Esconder o botao na
+ * tela e cortesia; a barreira e esta.
  *
- * SEM AUDITORIA: abrir uma tela nao e ato de governanca. Registrar cada leitura
- * encheria `audit_logs` de ruido e esconderia as acoes que importam. A trilha
- * comeca nos endpoints que alteram dado.
+ * SEM AUDITORIA NA LEITURA: abrir uma tela nao e ato de governanca. Registrar
+ * cada leitura encheria `audit_logs` de ruido e esconderia as acoes que
+ * importam. A trilha comeca nos endpoints que alteram dado, e cada um grava a
+ * propria entrada dentro da transacao do ato.
  */
 
 function sendError(res: Response, error: unknown, context: string): void {
@@ -97,13 +95,13 @@ meetingsRouter.get("/", requireActivePgcpUser, async (req: Request, res: Respons
 /**
  * GET /meetings/:id
  *
- * Devolve o nucleo da reuniao mais participantes e pautas — as duas secoes que
- * a migration 003 tornou representaveis sem perda.
+ * Devolve o nucleo da reuniao, participantes, pautas e o estado da integracao
+ * de calendario.
  *
- * NAO devolve, porque nao ha dado persistido: anotacoes, ata, assinaturas,
- * progresso da agenda, FUPs vinculados e apresentadores pessoa. Devolver essas
- * secoes vazias sugeriria que estao vazias no banco, quando na verdade elas
- * ainda vivem no navegador. Elas entram quando forem migradas.
+ * NAO devolve Anotacoes nem Ata, embora ambas sejam persistidas (migrations 007
+ * e 008): sao documentos com ciclo proprio e volume proprio, servidos por
+ * `GET /:id/notes` e `GET /:id/minutes`. Embuti-los aqui faria toda listagem de
+ * detalhe carregar texto longo que a maioria das telas nao usa.
  */
 meetingsRouter.get<{ id: string }>("/:id", requireActivePgcpUser, async (req, res) => {
   try {
@@ -315,13 +313,6 @@ meetingsRouter.get("/:id/notes", requireActivePgcpUser, getNotesHandler);
 meetingsRouter.put("/:id/notes", requirePgcpAssessoria, putNotesHandler);
 
 /**
- * Ata da reuniao. Documento formal, distinto das anotacoes.
- *
- * O saneamento e POST porque e um ATO da Secretaria, nao a edicao de um campo:
- * ator, data e status sao definidos pelo servidor.
- *
- * Nao ha rota de assinatura — nao existe assinatura real nesta onda.
- */
 /**
  * Sincroniza a reuniao com o calendario externo.
  *
@@ -332,8 +323,8 @@ meetingsRouter.put("/:id/notes", requirePgcpAssessoria, putNotesHandler);
  *
  * Idempotente: reenviar cria no maximo um evento. Ver `syncMeetingCalendar`.
  *
- * AUTORIZACAO PENDENTE: hoje qualquer usuario ativo pode disparar. Sincronizar e
- * reprocessar sincronizacao estao na lista de operacoes que exigirao RBAC.
+ * EXIGE `PGCP.Assessoria`, como toda mutacao daqui: disparar sincronizacao
+ * alcanca o Exchange e reescreve o convite de terceiros.
  */
 meetingsRouter.post("/:id/calendar-sync", requirePgcpAssessoria, async (req, res) => {
   const usuario = req.pgcpUser;
@@ -364,6 +355,17 @@ meetingsRouter.post("/:id/calendar-sync", requirePgcpAssessoria, async (req, res
   }
 });
 
+/**
+ * Ata da reuniao. Documento formal, distinto das Anotacoes.
+ *
+ * O saneamento e POST porque e um ATO da Secretaria, nao a edicao de um campo:
+ * ator, data e status sao definidos pelo servidor.
+ *
+ * NAO HA ROTA DE ASSINATURA. O modelo de dominio existe em
+ * `meeting-minutes/signature.ts` (migrations 009 e 010), mas nenhuma operacao
+ * dele esta exposta: assinar so podera ser afirmado a partir de evidencia
+ * externa real, e aceitar a confirmacao do navegador seria assinatura falsa.
+ */
 meetingsRouter.get("/:id/minutes", requireActivePgcpUser, getMinutesHandler);
 meetingsRouter.put("/:id/minutes", requirePgcpAssessoria, putMinutesHandler);
 meetingsRouter.post("/:id/minutes/clear-by-secretariat", requirePgcpAssessoria, clearMinutesHandler);

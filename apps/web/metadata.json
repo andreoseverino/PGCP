@@ -1,6 +1,0 @@
-{
-  "name": "PGCP — Plataforma Corporativa de Gestão de Pautas",
-  "description": "Plataforma Corporativa de Gestão de Pautas (PGCP): gestão de reuniões de órgãos colegiados, pautas, atas, follow-ups e trilha de auditoria.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

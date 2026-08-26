@@ -23,6 +23,7 @@
     "entra:check": "node scripts/entra-preflight.mjs",
     "lint": "npm run lint:web && npm run lint:api",
     "lint:web": "npm run lint --workspace @pgcp/web",
-    "lint:api": "npm run lint --workspace @pgcp/api"
+    "lint:api": "npm run lint --workspace @pgcp/api",
+    "test": "npm run test --workspace @pgcp/api"
   }
 }

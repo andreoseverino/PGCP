@@ -1,9 +1,13 @@
 /**
  * `GET /me` — identidade do usuário autenticado, conforme a API validou.
  *
- * Nesta etapa a resposta traz SOMENTE claims do token. O vínculo com a tabela
- * `users` (UUID interno do PGCP) entra na Etapa 2.3, e é por isso que
- * `pgcpUserResolved` existe: torna a ausência explícita em vez de ambígua.
+ * A resposta combina DUAS identidades: a linha de `users` no PostgreSQL (`id`,
+ * que é o identificador da sessão e o que aparece nas FKs) e os claims do token
+ * do Entra (`entraTenantId`, `entraObjectId`, `appRoles`), que autenticam e
+ * autorizam mas nunca referenciam.
+ *
+ * A API provisiona a linha na primeira entrada (JIT); o navegador nunca decodifica
+ * token nem deriva papel por conta própria.
  */
 
 import { ApiError, apiRequest } from "../lib/api";

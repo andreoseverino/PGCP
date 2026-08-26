@@ -95,10 +95,16 @@ app.get("/health", async (_req, res) => {
 app.use("/governance-bodies", governanceBodiesRouter);
 
 /**
- * `/integrations` segue PUBLICO nesta etapa: o frontend ainda nao adquire token
- * (MSAL entra em 2.5) e proteger agora deixaria o painel inacessivel. A resposta
- * nunca inclui valor de variavel secreta — apenas `configured: true/false`.
- * Passa a exigir autenticacao junto com a 2.5.
+ * Painel de Integracoes. PROTEGIDO por `PGCP.Admin` — a guarda esta no proprio
+ * router, nao rota a rota, entao rota nova nasce protegida por consequencia.
+ *
+ * Nenhuma resposta carrega valor de variavel secreta: variavel marcada como
+ * secreta vira apenas `configured: true/false`. O que a guarda protege e a
+ * TOPOLOGIA (host, porta, banco, tenant, client ids) e o disparo de verificacao
+ * real em `POST /:id/test`, que alcanca rede e host externo.
+ *
+ * `/health` NAO passa por aqui e continua publico — e ele que responde a
+ * monitoracao.
  */
 app.use("/integrations", integrationsRouter);
 
@@ -112,8 +118,11 @@ app.use("/directory", directoryRouter);
 app.use("/users", usersRouter);
 
 /**
- * Reunioes vindas do PostgreSQL. SOMENTE LEITURA: o frontend ainda cria e
- * edita reuniao no estado local, e trocar a fonte de escrita e etapa propria.
+ * Reunioes — leitura e escrita, com o PostgreSQL como unica fonte.
+ *
+ * Leitura exige usuario ativo; toda mutacao exige `PGCP.Assessoria`. Aqui
+ * tambem ficam as sub-rotas de Anotacoes e Ata, montadas em `meetings/routes`
+ * para que o `meetingId` venha SEMPRE do caminho e nunca do corpo.
  */
 app.use("/meetings", meetingsRouter);
 

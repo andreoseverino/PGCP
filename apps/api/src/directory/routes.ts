@@ -34,9 +34,12 @@ const MENSAGENS_INVALIDAS: Record<string, string> = {
 /**
  * GET /directory/users?q=termo
  *
- * Exige usuario do PGCP autenticado e ativo. Nao ha papel administrativo no
- * modelo, entao qualquer usuario ativo pode consultar — quem controla o acesso
- * a aplicacao e o Entra, via "Atribuicao necessaria = Sim".
+ * Exige usuario do PGCP autenticado e ativo, e NAO exige App Role: escolher um
+ * organizador, participante ou responsavel e parte do trabalho comum, e exigir
+ * `PGCP.Assessoria` aqui quebraria o Directory Picker para quem so preenche um
+ * FUP. Quem controla o acesso a aplicacao e o Entra, via "Atribuicao necessaria
+ * = Sim"; quem controla o que se FAZ com a pessoa escolhida sao as rotas de
+ * mutacao, que exigem o papel.
  *
  * Contra enumeracao do diretorio: termo obrigatorio, minimo de caracteres,
  * teto de resultados e paginacao limitada. Nao existe consulta que devolva o

@@ -51,8 +51,8 @@ em [`docs/go-live.md`](docs/go-live.md); o detalhe de configuração de borda
 │   └── contracts/           # Reservado para contratos/tipos compartilhados (vazio)
 │
 ├── docs/                    # Documentação do projeto
-├── infra/                   # Infraestrutura, deploy, containers
-├── scripts/                 # Scripts utilitários de desenvolvimento
+├── infra/                   # PostgreSQL local (Docker) e provisionamento de papéis
+├── scripts/                 # Scripts utilitários (pré-voo do Entra)
 │
 ├── .gitignore
 ├── README.md
@@ -62,7 +62,9 @@ em [`docs/go-live.md`](docs/go-live.md); o detalhe de configuração de borda
 
 O repositório usa **npm workspaces**. Os workspaces ativos são `apps/web` (`@pgcp/web`)
 e `apps/api` (`@pgcp/api`). `packages/contracts` segue como pasta reservada e ainda
-não possui `package.json`.
+não possui `package.json` — hoje o contrato entre as camadas é declarado **duas
+vezes**, na API e nos adaptadores do frontend. Ver
+[packages/contracts/README.md](packages/contracts/README.md).
 
 ## Pré-requisitos
 
@@ -125,7 +127,7 @@ npm run start:api    # executa o build compilado
 npm run lint:api     # checagem de tipos (tsc --noEmit)
 ```
 
-Endpoint disponível:
+`/health` é a **única** rota pública da API — é ela que responde à monitoração:
 
 ```bash
 curl http://localhost:3333/health
@@ -133,11 +135,16 @@ curl http://localhost:3333/health
 # banco fora      -> 503 {"status":"degraded","database":"disconnected"}
 ```
 
+Todas as demais exigem token do Entra; o inventário de rotas e suas guardas está
+em [apps/api/README.md](apps/api/README.md).
+
 ### Ambos
 
 ```bash
 npm run build        # build do frontend e do backend
 npm run lint         # checagem de tipos de ambos
+npm test             # testes da API (node:test)
+npm run entra:check  # pré-voo dos App Registrations do Entra (não exige login)
 ```
 
 Frontend e backend rodam em processos separados — abra dois terminais e execute
@@ -151,9 +158,14 @@ Cada app tem seu próprio modelo de variáveis. Para configurar o ambiente local
 copie os arquivos e preencha os valores:
 
 ```bash
-cp apps/web/.env.example apps/web/.env.local
+cp apps/web/.env.example apps/web/.env
 cp apps/api/.env.example apps/api/.env
 ```
+
+> Use `.env`, não `.env.local`: `npm run entra:check` lê exatamente
+> `apps/web/.env` e `apps/api/.env` para comparar os dois App Registrations, e
+> com `.env.local` ele reporta o arquivo como ausente. O `apps/api/.env` também
+> é a fonte das credenciais lidas por `infra/docker-compose.yml`.
 
 Nenhuma credencial real deve ser versionada. Arquivos `.env*` são ignorados pelo
 `.gitignore`, com exceção dos próprios `.env.example`.

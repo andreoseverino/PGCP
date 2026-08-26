@@ -45,9 +45,10 @@ export interface ApiRequestInit extends RequestInit {
   /**
    * Anexa `Authorization: Bearer <token>`.
    *
-   * Padrao `false`: rotas publicas (`/health`, `/integrations` nesta etapa)
-   * continuam funcionando sem sessao, e nenhuma chamada dispara aquisicao de
-   * token — que pode exigir interacao — sem necessidade.
+   * Padrao `false` para que `/health` — a unica rota publica da API — continue
+   * funcionando sem sessao e para que nenhuma chamada dispare aquisicao de
+   * token, que pode exigir interacao, sem necessidade. Toda rota de negocio
+   * passa `auth: true`.
    */
   auth?: boolean;
 }
