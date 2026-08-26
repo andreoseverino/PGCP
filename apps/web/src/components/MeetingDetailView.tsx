@@ -1795,7 +1795,10 @@ export default function MeetingDetailView({
                 {/* Stepper side */}
                 {/* items-start: os círculos alinham pelo topo, então um rótulo
                     que quebra em duas linhas não desloca os demais passos. */}
-                <div className="flex-grow flex items-start justify-between gap-1 w-full">
+                {/* Sem gap-1: com 6 etapas, o gap somado ao mx dos conectores
+                    consumia a largura e deixava os conectores `flex-1` em 0px.
+                    O espaçamento entre círculos vem dos próprios conectores. */}
+                <div className="flex-grow flex items-start justify-between w-full">
                   {stages.map((stage, idx) => {
                     const completed = idx <= activeIndex;
                     const isCurrent = idx === activeIndex;
@@ -1817,15 +1820,18 @@ export default function MeetingDetailView({
                             {idx + 1}
                           </div>
                           {/* min-h reserva espaço de duas linhas: rótulos de
-                              uma linha ficam com a mesma altura dos demais. */}
-                          <span className={`text-[10px] font-bold transition-colors text-center w-20 leading-tight min-h-[1.75rem] flex items-start justify-center ${
+                              uma linha ficam com a mesma altura dos demais.
+                              w-16 (não w-20): com 6 etapas os rótulos w-20
+                              ocupavam a linha inteira e os conectores `flex-1`
+                              ficavam sem espaço (0px) e sumiam. */}
+                          <span className={`text-[10px] font-bold transition-colors text-center w-16 leading-tight min-h-[1.75rem] flex items-start justify-center ${
                             isCurrent || completed ? "text-slate-900" : "text-slate-400"
                           }`}>
                             {stage.label}
                           </span>
                         </button>
                         {idx < stages.length - 1 && (
-                          <div className={`h-0.5 flex-1 mx-1 mt-5 ${
+                          <div className={`h-0.5 flex-1 mt-5 ${
                             idx < activeIndex ? "bg-emerald-600" : "bg-slate-200"
                           }`} />
                         )}
