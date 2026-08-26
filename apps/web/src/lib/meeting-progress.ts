@@ -13,10 +13,22 @@ import type { Meeting } from "../types";
  * ("Agenda", "Finalizing", "Minutes") eram gravadas como status.
  */
 
-export type MeetingStage = "preparation" | "in_meeting" | "recording" | "minutes" | "finished";
+export type MeetingStage =
+  | "preparation"
+  | "validation"
+  | "in_meeting"
+  | "recording"
+  | "minutes"
+  | "finished";
 
+/**
+ * `validation` é uma etapa VISUAL derivada do eixo de validação das pautas
+ * (`agendaValidation.status`) — NÃO um `meetings.status` novo. Fica entre
+ * Preparação e Em Reunião, dentro da fase pré-reunião.
+ */
 export const MEETING_STAGES: MeetingStage[] = [
   "preparation",
+  "validation",
   "in_meeting",
   "recording",
   "minutes",
@@ -133,7 +145,17 @@ export function getMeetingStage(
     return progress.agendaClosed ? "recording" : "in_meeting";
   }
 
-  // Scheduled, Draft, Needs Approval e o legado Approved.
+  // FASE PRÉ-REUNIÃO (Scheduled, Draft, Needs Approval e o legado Approved).
+  //
+  // A etapa ativa aqui reflete o eixo de VALIDAÇÃO DAS PAUTAS — derivado de
+  // `agendaValidation.status`, nunca um status de reunião novo:
+  //
+  //   enviada / aprovada  -> etapa "validation" (aprovada = último marco antes
+  //                          de a reunião começar; o fluxo avança para "Em
+  //                          Reunião" quando o status vira In Progress, acima)
+  //   ainda não enviada   -> etapa "preparation"
+  const validacao = meeting.agendaValidation?.status;
+  if (validacao === "sent" || validacao === "approved") return "validation";
   return "preparation";
 }
 
