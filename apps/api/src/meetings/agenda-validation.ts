@@ -303,7 +303,41 @@ export async function enviarPautasParaValidacao(
     };
   } catch (error) {
     await client.query("ROLLBACK");
-    throw error;
+
+    /*
+     * O E-MAIL JA SAIU, E O ESTADO NAO GRAVOU.
+     *
+     * Unica janela em que o PGCP fica atras da realidade: a Microsoft aceitou a
+     * mensagem e o `UPDATE` falhou depois (banco fora, conexao caida,
+     * constraint). Deixar subir como erro generico foi o que aconteceu no
+     * primeiro teste corporativo: a tela disse "Erro interno", a pessoa clicou
+     * de novo, e o aprovador recebeu DOIS e-mails.
+     *
+     * A mensagem diz explicitamente que o envio ocorreu e pede para NAO
+     * reenviar. A trilha registra o descompasso — sem ela o incidente seria
+     * invisivel, ja que a reuniao continua em `draft`.
+     */
+    console.error(
+      `[agenda-validation] e-mail enviado mas estado nao gravado (reuniao ${meetingId}):`,
+      error instanceof Error ? error.message : error,
+    );
+
+    await recordAudit({
+      actorUserId: ator.userId,
+      actorName: ator.name,
+      action: "E-mail de validação enviado, mas o estado não foi gravado",
+      entityType: "Reunião",
+      entityId: meetingId,
+      entityLabel: `${reuniao.title} — enviado a ${emailAprovador}; a reunião permanece em preparação`,
+      status: "failure",
+    });
+
+    throw new HttpError(
+      500,
+      "O e-mail com as pautas FOI ENVIADO, mas não foi possível registrar o envio no PGCP. " +
+        "Não reenvie: o aprovador já recebeu a mensagem. Avise a Secretaria de Governança " +
+        "para registrar a aprovação quando ela chegar.",
+    );
   } finally {
     client.release();
   }

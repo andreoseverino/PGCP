@@ -275,9 +275,37 @@ export async function graphRequest<T>(
     }
 
     if (response.ok) {
-      // 204 (e o DELETE do Graph) nao trazem corpo.
-      if (response.status === 204) return undefined as T;
-      return (await response.json()) as T;
+      /*
+       * SUCESSO SEM CORPO E SUCESSO.
+       *
+       * Nem toda resposta boa do Graph traz JSON:
+       *
+       *   204 No Content  DELETE de evento
+       *   202 Accepted    `/me/sendMail` — a mensagem foi ACEITA para envio
+       *
+       * Este trecho tratava apenas o 204 e chamava `response.json()` no resto.
+       * Com o 202 do `sendMail`, o corpo vazio virava
+       * `SyntaxError: Unexpected end of JSON input` DEPOIS de a Microsoft ja ter
+       * aceitado a mensagem — o e-mail saia e quem chamou recebia excecao.
+       *
+       * Ler como TEXTO e so entao decidir cobre os tres casos de uma vez, sem
+       * depender de a Microsoft manter a lista de status que devolvem corpo:
+       * corpo vazio -> `undefined`; corpo presente -> JSON.
+       */
+      const texto = await response.text();
+      if (texto.length === 0) return undefined as T;
+
+      try {
+        return JSON.parse(texto) as T;
+      } catch {
+        /*
+         * Resposta bem-sucedida com corpo que nao e JSON. Nao ha o que
+         * entregar, mas a OPERACAO deu certo — transformar isso em erro
+         * repetiria o defeito que este bloco corrige.
+         */
+        console.warn(`[graph] ${rotuloParaLog(url)} respondeu ${response.status} com corpo nao-JSON`);
+        return undefined as T;
+      }
     }
 
     // --- 429: decidir entre aguardar e propagar -----------------------------
