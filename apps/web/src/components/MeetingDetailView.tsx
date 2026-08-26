@@ -1639,6 +1639,255 @@ export default function MeetingDetailView({
                   </div>
                 </div>
               </div>
+            {/*
+              CALENDÁRIO — projeção da reunião no Outlook.
+
+              O estado vem do servidor. A tela não afirma "convite enviado" por
+              conta própria: `pending` é ausência de convite, `failed` é falha, e
+              `stale` significa que o evento existe mas não reflete mais o que a
+              reunião virou.
+            */}
+            {/*
+              VALIDAÇÃO DE PAUTAS — antecede o convite, de propósito.
+
+              Criar a reunião não envia nada à Microsoft. O convite só é
+              liberado depois que as pautas voltam aprovadas, e quem garante
+              isso é o backend: este card apenas mostra em que fase está.
+            */}
+            <div className="bg-white border border-slate-200 p-5 rounded-2xl card-shadow mt-8 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-widest flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-[#00658d]" />
+                    {language === "pt" ? "Validação das pautas" : "Agenda validation"}
+                  </h3>
+                  <p className="text-[11px] font-semibold mt-1">
+                    <span
+                      className={
+                        pautasAprovadas
+                          ? "text-emerald-600"
+                          : statusValidacao === "sent"
+                            ? "text-amber-600"
+                            : "text-slate-500"
+                      }
+                    >
+                      {pautasAprovadas
+                        ? language === "pt" ? "Pautas aprovadas" : "Agenda approved"
+                        : statusValidacao === "sent"
+                          ? language === "pt" ? "Enviada para validação" : "Sent for validation"
+                          : language === "pt" ? "Em preparação" : "In preparation"}
+                    </span>
+                    {statusValidacao === "sent" && validacao?.sentTo && (
+                      <span className="text-slate-400">{` · ${validacao.sentTo}`}</span>
+                    )}
+                    {pautasAprovadas && validacao?.approvedAt && (
+                      <span className="text-slate-400">
+                        {` · ${new Date(validacao.approvedAt).toLocaleString(
+                          language === "en" ? "en-US" : "pt-BR"
+                        )}`}
+                      </span>
+                    )}
+                  </p>
+                  {!pautasAprovadas && (
+                    <p className="text-[10px] text-slate-500 font-medium mt-1 leading-relaxed">
+                      {language === "pt"
+                        ? "O convite do Outlook e do Teams só pode ser enviado depois que as pautas forem aprovadas."
+                        : "The Outlook and Teams invitation can only be sent after the agenda is approved."}
+                    </p>
+                  )}
+                </div>
+
+                {/*
+                  Só para `PGCP.Assessoria`: sem a role o servidor recusa, e
+                  oferecer o botão seria prometer o que não acontece.
+                */}
+                {canSchedule && !pautasAprovadas && (
+                  <div className="flex flex-col sm:flex-row gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setErroValidacao(null);
+                        setEmailAprovador(validacao?.sentTo ?? "");
+                        setModalValidacaoAberto(true);
+                      }}
+                      className="px-4 py-2 border border-[#00658d] text-[#00658d] hover:bg-[#00658d]/5 text-xs font-extrabold rounded-xl transition cursor-pointer"
+                    >
+                      {statusValidacao === "sent"
+                        ? language === "pt" ? "Reenviar pautas" : "Resend agenda"
+                        : language === "pt" ? "Enviar pautas para validação" : "Send agenda for validation"}
+                    </button>
+                    {statusValidacao === "sent" && (
+                      <button
+                        type="button"
+                        onClick={() => void handleAprovarPautas()}
+                        disabled={aprovando}
+                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-xl transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                      >
+                        {aprovando
+                          ? language === "pt" ? "Registrando..." : "Recording..."
+                          : language === "pt" ? "Marcar pautas como aprovadas" : "Mark agenda as approved"}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {erroValidacao && !modalValidacaoAberto && (
+                <p className="text-[11px] font-bold text-red-600">{erroValidacao}</p>
+              )}
+            </div>
+
+            <div className="bg-white border border-slate-200 p-5 rounded-2xl card-shadow mt-8 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-widest flex items-center gap-2">
+                    <CalendarDays className="w-4 h-4 text-[#00658d]" />
+                    {language === "pt" ? "Outlook e Microsoft Teams" : "Outlook and Microsoft Teams"}
+                  </h3>
+                  <p className="text-[11px] font-semibold mt-1">
+                    <span
+                      className={
+                        estadoDoCalendario === "synced"
+                          ? "text-emerald-600"
+                          : estadoDoCalendario === "failed"
+                            ? "text-red-600"
+                            : estadoDoCalendario === "stale"
+                              ? "text-amber-600"
+                              : "text-slate-500"
+                      }
+                    >
+                      {describeCalendarStatus(estadoDoCalendario, language === "en" ? "en" : "pt")}
+                    </span>
+                    {meeting.calendar?.lastSyncedAt && (
+                      <span className="text-slate-400">
+                        {" · "}
+                        {new Date(meeting.calendar.lastSyncedAt).toLocaleString(
+                          language === "en" ? "en-US" : "pt-BR"
+                        )}
+                      </span>
+                    )}
+                  </p>
+                  {/*
+                    Mensagem FUNCIONAL primeiro: o que aconteceu e o que NÃO
+                    aconteceu. Em seguida o motivo que o servidor gravou —
+                    `last_error` é texto já sanitizado (sem token, payload,
+                    cabeçalho ou stack) e costuma ser acionável, como
+                    "participante sem e-mail utilizável".
+                  */}
+                  {estadoDoCalendario === "failed" && (
+                    <p className="text-[10px] text-red-600 font-bold mt-1 leading-relaxed">
+                      {language === "pt"
+                        ? "Não foi possível atualizar o convite no Outlook e Microsoft Teams. A reunião continua salva no PGCP."
+                        : "Could not update the Outlook and Microsoft Teams invitation. The meeting is still saved in PGCP."}
+                    </p>
+                  )}
+                  {estadoDoCalendario === "failed" && meeting.calendar?.lastError && (
+                    <p className="text-[10px] text-red-500 font-medium mt-1">
+                      {meeting.calendar.lastError}
+                    </p>
+                  )}
+                </div>
+
+                {/*
+                  ATO EXPLÍCITO, e não etapa automática da criação.
+
+                  Este botão é o ÚNICO caminho para o evento nascer no Outlook
+                  com a reunião do Teams. Cobre dois momentos, e `pending` é o
+                  que os separa: primeiro envio (nunca convidou ninguém) e
+                  reenvio (falhou, ou a reunião mudou e o convite desatualizou).
+
+                  Some quando está `synced`, para não sugerir passo pendente.
+
+                  DESABILITADO enquanto a pauta não estiver aprovada — mas isso
+                  é cortesia: o backend recusa com 409 de qualquer forma.
+                  Convidar é irreversível para terceiros.
+                */}
+                {canSchedule && permiteTentarNovamente(meeting.calendar) && (
+                  <button
+                    type="button"
+                    onClick={handleSyncCalendar}
+                    disabled={syncing || !pautasAprovadas}
+                    title={
+                      pautasAprovadas
+                        ? undefined
+                        : language === "pt"
+                          ? "Disponível depois que as pautas forem aprovadas."
+                          : "Available once the agenda is approved."
+                    }
+                    className="px-4 py-2 bg-[#00658d] hover:bg-[#00aeef] text-white text-xs font-extrabold rounded-xl transition shrink-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {syncing
+                      ? (language === "pt" ? "Enviando..." : "Sending...")
+                      : estadoDoCalendario === "pending"
+                        ? (language === "pt" ? "Enviar convite da reunião" : "Send meeting invitation")
+                        : (language === "pt" ? "Reenviar convite da reunião" : "Resend meeting invitation")}
+                  </button>
+                )}
+              </div>
+
+              {syncError && (
+                <p className="text-[11px] font-bold text-red-600">{syncError}</p>
+              )}
+
+              {/*
+                REUNIÃO DO TEAMS — mesmo evento, nunca uma segunda integração.
+
+                Estado, nunca ação: não há como ligar nem desligar aqui, porque
+                toda reunião do PGCP já nasce com Teams. O botão de ingressar só
+                aparece com `joinUrl` real; até ele chegar, a tela diz o que
+                falta em vez de inventar um endereço.
+
+                Reunião legada (criada antes desta regra) aparece como legada.
+                Nada é alterado por conta própria: backfill silencioso mudaria o
+                calendário de terceiros sem ninguém pedir.
+              */}
+              <div className="pt-3 border-t border-slate-100">
+                {meeting.onlineMeetingProvider ? (
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <p className="text-[11px] font-extrabold text-slate-800 flex items-center gap-1.5 min-w-0">
+                      <Video className="w-3.5 h-3.5 text-[#00658d]" />
+                      Microsoft Teams
+                    </p>
+
+                    {/* Abre fora; o PGCP não hospeda a chamada. */}
+                    {meeting.calendar?.joinUrl && (
+                      <a
+                        href={meeting.calendar.joinUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="self-start px-3 py-1.5 bg-[#00658d] hover:bg-[#00aeef] text-white text-[10px] font-extrabold rounded-lg transition shrink-0"
+                      >
+                        {language === "en" ? "Join meeting" : "Ingressar na reunião"}
+                      </a>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-slate-500 font-semibold leading-relaxed">
+                    {language === "en"
+                      ? "Legacy meeting: created before Teams became part of every PGCP meeting."
+                      : "Reunião legada: criada antes de o Teams passar a fazer parte de toda reunião do PGCP."}
+                  </p>
+                )}
+              </div>
+
+              {/* Quem impede o convite, nominalmente. */}
+              {semEndereco.length > 0 && (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl">
+                  <p className="text-[11px] font-bold text-amber-800">
+                    {language === "pt"
+                      ? "Sem e-mail cadastrado — o convite não foi enviado a ninguém:"
+                      : "No e-mail on file — the invitation was sent to nobody:"}
+                  </p>
+                  <ul className="mt-1.5 space-y-0.5">
+                    {semEndereco.map((p) => (
+                      <li key={p.participantId} className="text-[11px] text-amber-900 font-semibold">
+                        • {p.displayName}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
               {/* Participantes: visão resumida — avatar e nome apenas.
                   Cargo e ações ficam na aba Participantes. */}
               <div className="bg-white rounded-2xl p-6 md:p-8 border border-slate-200/95 card-shadow">
@@ -2928,255 +3177,6 @@ export default function MeetingDetailView({
           {/* 2) EMBELLISHED PARTICIPANTS VIEW WITH INTERACTIVE STANDALONE ADDITION & NOISELESS BADGES - ITEM 4 */}
           {activeSubTab === "Participants" && (
             <>
-            {/*
-              CALENDÁRIO — projeção da reunião no Outlook.
-
-              O estado vem do servidor. A tela não afirma "convite enviado" por
-              conta própria: `pending` é ausência de convite, `failed` é falha, e
-              `stale` significa que o evento existe mas não reflete mais o que a
-              reunião virou.
-            */}
-            {/*
-              VALIDAÇÃO DE PAUTAS — antecede o convite, de propósito.
-
-              Criar a reunião não envia nada à Microsoft. O convite só é
-              liberado depois que as pautas voltam aprovadas, e quem garante
-              isso é o backend: este card apenas mostra em que fase está.
-            */}
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl card-shadow mt-8 space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-widest flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-[#00658d]" />
-                    {language === "pt" ? "Validação das pautas" : "Agenda validation"}
-                  </h3>
-                  <p className="text-[11px] font-semibold mt-1">
-                    <span
-                      className={
-                        pautasAprovadas
-                          ? "text-emerald-600"
-                          : statusValidacao === "sent"
-                            ? "text-amber-600"
-                            : "text-slate-500"
-                      }
-                    >
-                      {pautasAprovadas
-                        ? language === "pt" ? "Pautas aprovadas" : "Agenda approved"
-                        : statusValidacao === "sent"
-                          ? language === "pt" ? "Enviada para validação" : "Sent for validation"
-                          : language === "pt" ? "Em preparação" : "In preparation"}
-                    </span>
-                    {statusValidacao === "sent" && validacao?.sentTo && (
-                      <span className="text-slate-400">{` · ${validacao.sentTo}`}</span>
-                    )}
-                    {pautasAprovadas && validacao?.approvedAt && (
-                      <span className="text-slate-400">
-                        {` · ${new Date(validacao.approvedAt).toLocaleString(
-                          language === "en" ? "en-US" : "pt-BR"
-                        )}`}
-                      </span>
-                    )}
-                  </p>
-                  {!pautasAprovadas && (
-                    <p className="text-[10px] text-slate-500 font-medium mt-1 leading-relaxed">
-                      {language === "pt"
-                        ? "O convite do Outlook e do Teams só pode ser enviado depois que as pautas forem aprovadas."
-                        : "The Outlook and Teams invitation can only be sent after the agenda is approved."}
-                    </p>
-                  )}
-                </div>
-
-                {/*
-                  Só para `PGCP.Assessoria`: sem a role o servidor recusa, e
-                  oferecer o botão seria prometer o que não acontece.
-                */}
-                {canSchedule && !pautasAprovadas && (
-                  <div className="flex flex-col sm:flex-row gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setErroValidacao(null);
-                        setEmailAprovador(validacao?.sentTo ?? "");
-                        setModalValidacaoAberto(true);
-                      }}
-                      className="px-4 py-2 border border-[#00658d] text-[#00658d] hover:bg-[#00658d]/5 text-xs font-extrabold rounded-xl transition cursor-pointer"
-                    >
-                      {statusValidacao === "sent"
-                        ? language === "pt" ? "Reenviar pautas" : "Resend agenda"
-                        : language === "pt" ? "Enviar pautas para validação" : "Send agenda for validation"}
-                    </button>
-                    {statusValidacao === "sent" && (
-                      <button
-                        type="button"
-                        onClick={() => void handleAprovarPautas()}
-                        disabled={aprovando}
-                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-xl transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                      >
-                        {aprovando
-                          ? language === "pt" ? "Registrando..." : "Recording..."
-                          : language === "pt" ? "Marcar pautas como aprovadas" : "Mark agenda as approved"}
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {erroValidacao && !modalValidacaoAberto && (
-                <p className="text-[11px] font-bold text-red-600">{erroValidacao}</p>
-              )}
-            </div>
-
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl card-shadow mt-8 space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-widest flex items-center gap-2">
-                    <CalendarDays className="w-4 h-4 text-[#00658d]" />
-                    {language === "pt" ? "Outlook e Microsoft Teams" : "Outlook and Microsoft Teams"}
-                  </h3>
-                  <p className="text-[11px] font-semibold mt-1">
-                    <span
-                      className={
-                        estadoDoCalendario === "synced"
-                          ? "text-emerald-600"
-                          : estadoDoCalendario === "failed"
-                            ? "text-red-600"
-                            : estadoDoCalendario === "stale"
-                              ? "text-amber-600"
-                              : "text-slate-500"
-                      }
-                    >
-                      {describeCalendarStatus(estadoDoCalendario, language === "en" ? "en" : "pt")}
-                    </span>
-                    {meeting.calendar?.lastSyncedAt && (
-                      <span className="text-slate-400">
-                        {" · "}
-                        {new Date(meeting.calendar.lastSyncedAt).toLocaleString(
-                          language === "en" ? "en-US" : "pt-BR"
-                        )}
-                      </span>
-                    )}
-                  </p>
-                  {/*
-                    Mensagem FUNCIONAL primeiro: o que aconteceu e o que NÃO
-                    aconteceu. Em seguida o motivo que o servidor gravou —
-                    `last_error` é texto já sanitizado (sem token, payload,
-                    cabeçalho ou stack) e costuma ser acionável, como
-                    "participante sem e-mail utilizável".
-                  */}
-                  {estadoDoCalendario === "failed" && (
-                    <p className="text-[10px] text-red-600 font-bold mt-1 leading-relaxed">
-                      {language === "pt"
-                        ? "Não foi possível atualizar o convite no Outlook e Microsoft Teams. A reunião continua salva no PGCP."
-                        : "Could not update the Outlook and Microsoft Teams invitation. The meeting is still saved in PGCP."}
-                    </p>
-                  )}
-                  {estadoDoCalendario === "failed" && meeting.calendar?.lastError && (
-                    <p className="text-[10px] text-red-500 font-medium mt-1">
-                      {meeting.calendar.lastError}
-                    </p>
-                  )}
-                </div>
-
-                {/*
-                  ATO EXPLÍCITO, e não etapa automática da criação.
-
-                  Este botão é o ÚNICO caminho para o evento nascer no Outlook
-                  com a reunião do Teams. Cobre dois momentos, e `pending` é o
-                  que os separa: primeiro envio (nunca convidou ninguém) e
-                  reenvio (falhou, ou a reunião mudou e o convite desatualizou).
-
-                  Some quando está `synced`, para não sugerir passo pendente.
-
-                  DESABILITADO enquanto a pauta não estiver aprovada — mas isso
-                  é cortesia: o backend recusa com 409 de qualquer forma.
-                  Convidar é irreversível para terceiros.
-                */}
-                {canSchedule && permiteTentarNovamente(meeting.calendar) && (
-                  <button
-                    type="button"
-                    onClick={handleSyncCalendar}
-                    disabled={syncing || !pautasAprovadas}
-                    title={
-                      pautasAprovadas
-                        ? undefined
-                        : language === "pt"
-                          ? "Disponível depois que as pautas forem aprovadas."
-                          : "Available once the agenda is approved."
-                    }
-                    className="px-4 py-2 bg-[#00658d] hover:bg-[#00aeef] text-white text-xs font-extrabold rounded-xl transition shrink-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                  >
-                    {syncing
-                      ? (language === "pt" ? "Enviando..." : "Sending...")
-                      : estadoDoCalendario === "pending"
-                        ? (language === "pt" ? "Enviar convite da reunião" : "Send meeting invitation")
-                        : (language === "pt" ? "Reenviar convite da reunião" : "Resend meeting invitation")}
-                  </button>
-                )}
-              </div>
-
-              {syncError && (
-                <p className="text-[11px] font-bold text-red-600">{syncError}</p>
-              )}
-
-              {/*
-                REUNIÃO DO TEAMS — mesmo evento, nunca uma segunda integração.
-
-                Estado, nunca ação: não há como ligar nem desligar aqui, porque
-                toda reunião do PGCP já nasce com Teams. O botão de ingressar só
-                aparece com `joinUrl` real; até ele chegar, a tela diz o que
-                falta em vez de inventar um endereço.
-
-                Reunião legada (criada antes desta regra) aparece como legada.
-                Nada é alterado por conta própria: backfill silencioso mudaria o
-                calendário de terceiros sem ninguém pedir.
-              */}
-              <div className="pt-3 border-t border-slate-100">
-                {meeting.onlineMeetingProvider ? (
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                    <p className="text-[11px] font-extrabold text-slate-800 flex items-center gap-1.5 min-w-0">
-                      <Video className="w-3.5 h-3.5 text-[#00658d]" />
-                      Microsoft Teams
-                    </p>
-
-                    {/* Abre fora; o PGCP não hospeda a chamada. */}
-                    {meeting.calendar?.joinUrl && (
-                      <a
-                        href={meeting.calendar.joinUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="self-start px-3 py-1.5 bg-[#00658d] hover:bg-[#00aeef] text-white text-[10px] font-extrabold rounded-lg transition shrink-0"
-                      >
-                        {language === "en" ? "Join meeting" : "Ingressar na reunião"}
-                      </a>
-                    )}
-                  </div>
-                ) : (
-                  <p className="text-[10px] text-slate-500 font-semibold leading-relaxed">
-                    {language === "en"
-                      ? "Legacy meeting: created before Teams became part of every PGCP meeting."
-                      : "Reunião legada: criada antes de o Teams passar a fazer parte de toda reunião do PGCP."}
-                  </p>
-                )}
-              </div>
-
-              {/* Quem impede o convite, nominalmente. */}
-              {semEndereco.length > 0 && (
-                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl">
-                  <p className="text-[11px] font-bold text-amber-800">
-                    {language === "pt"
-                      ? "Sem e-mail cadastrado — o convite não foi enviado a ninguém:"
-                      : "No e-mail on file — the invitation was sent to nobody:"}
-                  </p>
-                  <ul className="mt-1.5 space-y-0.5">
-                    {semEndereco.map((p) => (
-                      <li key={p.participantId} className="text-[11px] text-amber-900 font-semibold">
-                        • {p.displayName}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
 
             <div className="bg-white border border-slate-200 p-8 rounded-2xl card-shadow space-y-5 mt-8">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between pb-3 border-b border-slate-100 gap-2">
