@@ -453,8 +453,9 @@ export async function addAgendaItem(
       `INSERT INTO meeting_agenda_items
               (meeting_id, agenda_topic_id, title, position, scheduled_start_time,
                duration_minutes, execution_status, responsible_label,
-               responsible_entra_tenant_id, responsible_entra_object_id)
-            VALUES ($1, $9, $2, $3, $4, $5, 'pending', $6, $7, $8)
+               responsible_entra_tenant_id, responsible_entra_object_id,
+               is_circular_theme)
+            VALUES ($1, $9, $2, $3, $4, $5, 'pending', $6, $7, $8, $10)
          RETURNING id`,
       [
         meetingId,
@@ -466,6 +467,7 @@ export async function addAgendaItem(
         input.responsibleEntraObjectId ? actor.entraTenantId : null,
         input.responsibleEntraObjectId ?? null,
         input.agendaTopicId ?? null,
+        input.isCircularTheme ?? false,
       ],
     );
 
@@ -504,6 +506,8 @@ export interface AgendaItemPatch {
   responsibleLabel?: string | null;
   responsibleEntraObjectId?: string | null;
   executionStatus?: ExecutionStatus;
+  /** Tema circular NESTA reuniao. So boolean; nunca toca a Biblioteca. */
+  isCircularTheme?: boolean;
 }
 
 /**
@@ -522,6 +526,7 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
   const permitidos = new Set([
     "title", "durationMinutes", "scheduledStartTime",
     "responsibleLabel", "responsibleEntraObjectId", "executionStatus",
+    "isCircularTheme",
   ]);
   for (const chave of Object.keys(dados)) {
     if (!permitidos.has(chave)) {
@@ -593,6 +598,14 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
     saida.executionStatus = valor as ExecutionStatus;
   }
 
+  if ("isCircularTheme" in dados) {
+    // SÓ boolean de verdade. String/número/objeto recusados — sem coerção.
+    if (typeof dados.isCircularTheme !== "boolean") {
+      throw new HttpError(400, "'isCircularTheme' deve ser booleano (true ou false).");
+    }
+    saida.isCircularTheme = dados.isCircularTheme;
+  }
+
   // Identidade sem rotulo nao entra — mesma regra da criacao.
   if (saida.responsibleEntraObjectId && saida.responsibleLabel === null) {
     throw new HttpError(400, "Informe 'responsibleLabel' junto de 'responsibleEntraObjectId'.");
@@ -636,6 +649,7 @@ export async function updateAgendaItem(
     if (input.durationMinutes !== undefined) bind("duration_minutes", input.durationMinutes);
     if (input.scheduledStartTime !== undefined) bind("scheduled_start_time", input.scheduledStartTime);
     if (input.executionStatus !== undefined) bind("execution_status", input.executionStatus);
+    if (input.isCircularTheme !== undefined) bind("is_circular_theme", input.isCircularTheme);
 
     // Rotulo e identidade andam juntos: mexer num sem o outro deixaria um `oid`
     // apontando para alguem cujo nome exibido ja e outro.

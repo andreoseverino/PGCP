@@ -128,11 +128,12 @@ async function carregarReuniao(meetingId: string) {
     presenter_label: string | null;
     scheduled_start_time: string | null;
     duration_minutes: number | null;
+    is_circular_theme: boolean;
   }>(
     `SELECT ai.position, ai.title, t.description,
             ai.responsible_label, ai.presenter_label,
             to_char(ai.scheduled_start_time, 'HH24:MI') AS scheduled_start_time,
-            ai.duration_minutes
+            ai.duration_minutes, ai.is_circular_theme
        FROM meeting_agenda_items ai
        LEFT JOIN agenda_topics t ON t.id = ai.agenda_topic_id
       WHERE ai.meeting_id = $1
@@ -160,6 +161,7 @@ async function carregarReuniao(meetingId: string) {
         apresentador: p.presenter_label,
         horaInicio: p.scheduled_start_time,
         duracaoMinutos: p.duration_minutes,
+        temaCircular: p.is_circular_theme,
       }),
     ),
     participantes: participantes.map((p) => p.nome).filter((n): n is string => Boolean(n)),

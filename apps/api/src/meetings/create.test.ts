@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HttpError } from "../http-error.js";
 import {
+  parseAgendaItemInput,
   parseCreateInput,
   parseOrganizerInput,
   parseParticipantInput,
   urlHttpOpcional,
 } from "./create.js";
+import { parseAgendaItemPatch } from "./update.js";
 
 /**
  * Testes de segurança da leitura do corpo de criação de reunião.
@@ -75,4 +77,33 @@ test("parseOrganizerInput recusa userId e entraTenantId vindos do corpo", () => 
     () => parseOrganizerInput({ entraObjectId: "22222222-2222-2222-2222-222222222222", entraTenantId: "x" }),
     HttpError,
   );
+});
+
+// --- Tema circular (isCircularTheme): create + patch --------------------------
+
+test("parseAgendaItemInput aceita isCircularTheme boolean e ausência (default)", () => {
+  assert.equal(parseAgendaItemInput({ title: "P", isCircularTheme: true }).isCircularTheme, true);
+  assert.equal(parseAgendaItemInput({ title: "P", isCircularTheme: false }).isCircularTheme, false);
+  // Ausente => undefined (o INSERT aplica o default false do banco).
+  assert.equal(parseAgendaItemInput({ title: "P" }).isCircularTheme, undefined);
+});
+
+test("parseAgendaItemInput recusa isCircularTheme não-boolean (string/número/objeto)", () => {
+  for (const v of ["true", "sim", 1, 0, {}, [], "false"]) {
+    assert.throws(() => parseAgendaItemInput({ title: "P", isCircularTheme: v }), HttpError, `deveria recusar: ${JSON.stringify(v)}`);
+  }
+});
+
+test("parseAgendaItemPatch aceita isCircularTheme boolean (false→true e true→false)", () => {
+  assert.equal(parseAgendaItemPatch({ isCircularTheme: true }).isCircularTheme, true);
+  assert.equal(parseAgendaItemPatch({ isCircularTheme: false }).isCircularTheme, false);
+});
+
+test("parseAgendaItemPatch recusa isCircularTheme não-boolean e mantém allowlist", () => {
+  for (const v of ["true", 1, 0, {}, "false"]) {
+    assert.throws(() => parseAgendaItemPatch({ isCircularTheme: v }), HttpError);
+  }
+  // Mass assignment continua bloqueado: campo fora da allowlist é recusado.
+  assert.throws(() => parseAgendaItemPatch({ position: 3 }), HttpError);
+  assert.throws(() => parseAgendaItemPatch({ agendaTopicId: "x" }), HttpError);
 });

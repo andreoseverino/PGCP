@@ -40,6 +40,7 @@ function pauta(i: number) {
     apresentador: i % 4 === 0 ? `Apresentador ${i}` : null,
     horaInicio: "14:00",
     duracaoMinutos: 15,
+    temaCircular: false,
   };
 }
 
@@ -257,6 +258,24 @@ test("reuniao sem descricao, local nem organizador nao inventa texto", async () 
   assert.ok(!texto.includes("Local:"), "sem local, sem a linha");
   assert.ok(!texto.includes("Organização:"), "sem organizador, sem a linha");
   assert.ok(!texto.includes("Objetivo"), "sem descricao, sem a secao");
+});
+
+test("tema circular: 'Sim' aparece na pauta circular; 'Não' nunca aparece", async () => {
+  const doc: ReuniaoDoDocumento = {
+    ...BASE,
+    pautas: [
+      { ...pauta(1), temaCircular: true },
+      { ...pauta(2), temaCircular: false },
+    ],
+  };
+  const pdf = await gerarPdfDePautas(doc);
+  assert.deepEqual(validarEstrutura(pdf), []);
+
+  const texto = extrairTexto(pdf);
+  assert.ok(texto.includes("Tema circular:"), "pauta circular gera a linha");
+  assert.ok(texto.includes("Sim"), "valor 'Sim' presente");
+  // A nao-circular nunca deve poluir o PDF com "Tema circular: Não".
+  assert.ok(!texto.includes("Tema circular: Não"), "nao-circular nao escreve 'Não'");
 });
 
 // --- conteudo hostil ---------------------------------------------------------

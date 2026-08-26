@@ -166,6 +166,8 @@ export interface MeetingAgendaItem {
    * lidos nesta etapa — nenhuma tela os preenche ainda.
    */
   presenterLabel: string | null;
+  /** Tema circular NESTA reuniao — propriedade da pauta da reuniao. */
+  isCircularTheme: boolean;
 }
 
 export interface MeetingDetail extends MeetingSummary {
@@ -240,6 +242,7 @@ interface AgendaItemRow {
   responsible_entra_tenant_id: string | null;
   responsible_entra_object_id: string | null;
   presenter_label: string | null;
+  is_circular_theme: boolean;
 }
 
 function toSummary(row: MeetingRow): MeetingSummary {
@@ -310,6 +313,7 @@ function toAgendaItem(row: AgendaItemRow): MeetingAgendaItem {
         }
       : null,
     presenterLabel: row.presenter_label,
+    isCircularTheme: row.is_circular_theme,
   };
 }
 
@@ -462,7 +466,8 @@ async function listAgendaItems(meetingId: string): Promise<MeetingAgendaItem[]> 
             responsible_label,
             responsible_entra_tenant_id,
             responsible_entra_object_id,
-            presenter_label
+            presenter_label,
+            is_circular_theme
        FROM meeting_agenda_items
       WHERE meeting_id = $1
       ORDER BY position`,

@@ -119,6 +119,12 @@ export interface AgendaItem {
    * Ausente em pautas que ainda não vieram do banco.
    */
   executionStatus?: "pending" | "completed" | "postponed";
+  /**
+   * Tema circular NESTA reunião (`meeting_agenda_items.is_circular_theme`).
+   * Propriedade da pauta da reunião, não do tema mestre da Biblioteca. Só
+   * informa; não dispara comportamento. Ausente em item local ainda não gravado.
+   */
+  isCircularTheme?: boolean;
 }
 
 /**

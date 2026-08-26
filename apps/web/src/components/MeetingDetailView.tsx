@@ -92,7 +92,9 @@ import {
   removeAgendaItem as apiRemoveAgendaItem,
   reorderAgendaItems as apiReorderAgendaItems,
   setAgendaItemStatus as apiSetAgendaItemStatus,
-  updateMeeting as apiUpdateMeeting
+  updateAgendaItem as apiUpdateAgendaItem,
+  updateMeeting as apiUpdateMeeting,
+  type AgendaItemPatchPayload
 } from "../lib/meetings";
 import { getInitials } from "../lib/user";
 import { hrefSeguro } from "../lib/safe-url";
@@ -178,8 +180,24 @@ export default function MeetingDetailView({
   podeGerenciarFup = () => true
 }: MeetingDetailViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<string>("Overview");
-  const [selectedAgendaDetailIndex, setSelectedAgendaDetailIndex] = useState<number | null>(null);
-  
+
+  // Edição de pauta (PATCH /meetings/:id/agenda-items/:itemId). Campos suportados
+  // pelo contrato: título, duração, responsável. UUID e agendaTopicId preservados
+  // pelo backend (UPDATE parcial, nunca delete+insert).
+  const [editandoPautaId, setEditandoPautaId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDuration, setEditDuration] = useState("15 mins");
+  const [editRespLabel, setEditRespLabel] = useState("");
+  const [editRespOid, setEditRespOid] = useState<string | undefined>(undefined);
+  const [editRespUser, setEditRespUser] = useState<DirectoryUser | null>(null);
+  // Tema circular NESTA reunião. Editável Não↔Sim; nunca toca a Biblioteca.
+  const [editCircular, setEditCircular] = useState(false);
+  const [salvandoEdicao, setSalvandoEdicao] = useState(false);
+  const [erroEdicao, setErroEdicao] = useState<string | null>(null);
+
+  // Confirmação de exclusão de pauta (evita perda acidental).
+  const [pautaParaExcluir, setPautaParaExcluir] = useState<AgendaItem | null>(null);
+
   // Edit Meeting
   const [isEditingMeeting, setIsEditingMeeting] = useState(false);
   const [editedTitle, setEditedTitle] = useState(meeting.title);
@@ -1014,6 +1032,8 @@ export default function MeetingDetailView({
   const [extraSpeaker, setExtraSpeaker] = useState("Todos");
   const [extraSpeakerUser, setExtraSpeakerUser] = useState<DirectoryUser | null>(null);
   const [extraDuration, setExtraDuration] = useState("15 mins");
+  // Tema circular da nova pauta. Default visual "Não"; "Sim" só AFIRMA o fato.
+  const [extraCircular, setExtraCircular] = useState(false);
 
   /** Recalcula os horários em cascata a partir do início da reunião. */
   const recalculateAgendaTimes = (agendaArray: AgendaItem[]): AgendaItem[] => {
@@ -1107,8 +1127,13 @@ export default function MeetingDetailView({
     toggleTopicDone(item);
   };
 
-  const handleDeleteAgendaItem = async (idx: number) => {
-    const removido = (meeting.agenda || [])[idx];
+  /**
+   * Exclusão CONFIRMADA (o botão de lixeira abre a confirmação em
+   * `pautaParaExcluir`; aqui é o efeito depois do "Excluir"). Evita perda
+   * acidental — a remoção some com a pauta e a procedência de FUPs.
+   */
+  const confirmarExclusaoPauta = async () => {
+    const removido = pautaParaExcluir;
     if (!removido) return;
 
     // DELETE direcionado pelo UUID da linha. O servidor recompacta `position`
@@ -1117,6 +1142,7 @@ export default function MeetingDetailView({
       () => apiRemoveAgendaItem(meeting.id, removido.id),
       language === "en" ? "Agenda item deleted!" : "Item removido da pauta!"
     );
+    setPautaParaExcluir(null);
     if (!ok) return;
 
     // Estado de execução ainda vive no navegador (onda posterior): limpa o
@@ -1124,6 +1150,57 @@ export default function MeetingDetailView({
     if (activeAgendaId === removido.id) setActiveAgendaId(null);
     setTopicState(removido.id, null);
     setDoneTopicIds(prev => prev.filter(id => id !== removido.id));
+  };
+
+  /**
+   * Abre o modal de EDIÇÃO carregando os valores atuais. Só campos suportados
+   * pelo PATCH: título, duração e responsável. UUID e `agendaTopicId` NÃO são
+   * tocados — o backend faz UPDATE parcial em `meeting_agenda_items`, nunca
+   * delete+insert, e não altera o registro mestre da Biblioteca.
+   */
+  const abrirEdicaoPauta = (item: AgendaItem) => {
+    setEditandoPautaId(item.id);
+    setEditTitle(item.title);
+    setEditDuration(item.duration?.trim() || "15 mins");
+    setEditRespLabel(item.author || "");
+    setEditRespOid(item.authorEntraObjectId);
+    setEditRespUser(null);
+    setEditCircular(item.isCircularTheme === true);
+    setErroEdicao(null);
+  };
+
+  const salvarEdicaoPauta = async () => {
+    if (!editandoPautaId) return;
+    const titulo = editTitle.trim();
+    if (!titulo) {
+      setErroEdicao(language === "en" ? "Title is required." : "O título é obrigatório.");
+      return;
+    }
+    setSalvandoEdicao(true);
+    setErroEdicao(null);
+    try {
+      const label = editRespLabel.trim();
+      // Rótulo e identidade andam juntos: oid só acompanha rótulo (o backend
+      // recusa oid solto). Sem rótulo, o responsável não é alterado nesta rodada.
+      const patch: AgendaItemPatchPayload = {
+        title: titulo,
+        durationMinutes: parseDurationMinutes(editDuration),
+        // Booleano estrito. Grava o estado do seletor sempre — permite Sim→Não.
+        isCircularTheme: editCircular,
+      };
+      if (label) {
+        patch.responsibleLabel = label;
+        patch.responsibleEntraObjectId = editRespOid ?? undefined;
+      }
+      const atualizada = await apiUpdateAgendaItem(meeting.id, editandoPautaId, patch);
+      absorverReuniao(atualizada);
+      setEditandoPautaId(null);
+      triggerToast(language === "en" ? "Agenda item updated." : "Pauta atualizada.");
+    } catch (erro) {
+      setErroEdicao(describeMeetingError(erro, language === "en" ? "en" : "pt"));
+    } finally {
+      setSalvandoEdicao(false);
+    }
   };
 
   /**
@@ -1205,7 +1282,9 @@ export default function MeetingDetailView({
     durationText: string,
     speakerText: string,
     /** Só existe quando o responsável foi escolhido no diretório corporativo. */
-    speakerEntraObjectId?: string
+    speakerEntraObjectId?: string,
+    /** Tema circular desta pauta. Só um fato; não altera o fluxo [EXTRA]. */
+    circular = false
   ) => {
     if (!titleText.trim()) return;
 
@@ -1215,7 +1294,8 @@ export default function MeetingDetailView({
       title: `[EXTRA] ${titleText.trim()}`,
       duration: durationText.trim() || "15 mins",
       author: speakerText.trim() || "Todos",
-      authorEntraObjectId: speakerEntraObjectId
+      authorEntraObjectId: speakerEntraObjectId,
+      isCircularTheme: circular
     };
 
     void persistirNovaPauta(extraItem);
@@ -1349,6 +1429,30 @@ export default function MeetingDetailView({
       ca.sourceMeetingId !== meeting.id &&
       ca.title.toLowerCase().includes(annualSearch.toLowerCase())
   );
+
+  // --- Faixa-resumo de planejamento da aba Pautas ---------------------------
+  // Só dado que já chega ao front; nenhuma regra de negócio nova. Reusa os
+  // helpers de tempo (`parseDurationMinutes`/`parseTimeToMinutes`). "Informar,
+  // não impedir": estouro é avisado, nunca bloqueia salvar.
+  const pautasArray = meeting.agenda || [];
+  const totalPautas = pautasArray.length;
+  const tempoPlanejadoMin = pautasArray.reduce((soma, ag) => soma + parseDurationMinutes(ag.duration), 0);
+  const duracaoReuniaoMin = Math.max(
+    0,
+    parseTimeToMinutes(meeting.endTime) - parseTimeToMinutes(meeting.startTime),
+  );
+  /** Positivo = folga; negativo = estouro. `null` quando a reunião não tem janela. */
+  const saldoTempoMin = duracaoReuniaoMin > 0 ? duracaoReuniaoMin - tempoPlanejadoMin : null;
+  const pautasSemResponsavel = pautasArray.filter((ag) => !ag.author || ag.author.trim().length === 0).length;
+  const pautasDaBiblioteca = pautasArray.filter((ag) => !!ag.agendaTopicId).length;
+
+  /** "1h20" / "45min" / "0min" — rótulo curto de duração para a faixa. */
+  const formatarDuracao = (min: number): string => {
+    const m = Math.max(0, Math.round(min));
+    const h = Math.floor(m / 60);
+    const r = m % 60;
+    return h > 0 ? (r > 0 ? `${h}h${String(r).padStart(2, "0")}` : `${h}h`) : `${r}min`;
+  };
 
   // --- Derivados da aba Visão Geral -----------------------------------------
   /** Quantos avatares cabem antes de agrupar o excedente. */
@@ -2198,7 +2302,49 @@ export default function MeetingDetailView({
         // ---------------------------------------------------------------------
         // SUBTAB AGENDAS - ITEM 3 (BIDIRECTIONAL ALIGNMENT / ANNUAL OR FUP VINCULATION)
         // ---------------------------------------------------------------------
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mt-8">
+        <div className="mt-8 space-y-6">
+          {/*
+            FAIXA-RESUMO DE PLANEJAMENTO — só dado derivado. Informa, não impede:
+            o estouro de tempo é avisado, nunca bloqueia salvar.
+          */}
+          <div className="rounded-2xl border border-slate-200/80 bg-white card-shadow px-4 py-3 flex flex-wrap items-center gap-x-5 gap-y-2">
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
+              <CheckSquare className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+              {totalPautas} {language === "pt" ? "pautas" : "topics"}
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
+              <Clock className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+              <span className="text-slate-400 uppercase tracking-wide text-[9.5px]">
+                {language === "pt" ? "Planejado" : "Planned"}
+              </span>
+              {formatarDuracao(tempoPlanejadoMin)}
+              {duracaoReuniaoMin > 0 && <span className="text-slate-400">{` / ${formatarDuracao(duracaoReuniaoMin)}`}</span>}
+            </span>
+            {saldoTempoMin !== null && (
+              saldoTempoMin >= 0 ? (
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-600">
+                  {formatarDuracao(saldoTempoMin)} {language === "pt" ? "disponíveis" : "available"}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-red-600">
+                  <AlertCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                  {language === "pt"
+                    ? `Excede a duração da reunião em ${formatarDuracao(-saldoTempoMin)}`
+                    : `Exceeds the meeting length by ${formatarDuracao(-saldoTempoMin)}`}
+                </span>
+              )
+            )}
+            <span className={`inline-flex items-center gap-1.5 text-[11px] font-bold ${pautasSemResponsavel > 0 ? "text-amber-600" : "text-slate-700"}`}>
+              <User className={`w-3.5 h-3.5 ${pautasSemResponsavel > 0 ? "text-amber-500" : "text-slate-400"}`} aria-hidden="true" />
+              {pautasSemResponsavel} {language === "pt" ? "sem responsável" : "without owner"}
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
+              <Calendar className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
+              {pautasDaBiblioteca} {language === "pt" ? "da Biblioteca" : "from Library"}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2 space-y-6">
             <div className="bg-white border border-slate-200 p-6 md:p-8 rounded-2xl card-shadow">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-4 border-b border-slate-100">
@@ -2232,7 +2378,7 @@ export default function MeetingDetailView({
                   return (
                     <div 
                       key={ag.id} 
-                      draggable
+                      draggable={canSchedule}
                       onDragStart={(e) => handleDragStart(e, index)}
                       onDragOver={(e) => handleDragOver(e, index)}
                       onDragLeave={() => setHoveredOverIndex(null)}
@@ -2295,7 +2441,15 @@ export default function MeetingDetailView({
                             </span>
                           </div>
  
-                          <h4 className="text-xs font-extrabold text-slate-900 mt-1">{ag.title}</h4>
+                          <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                            <h4 className="text-xs font-extrabold text-slate-900">{ag.title}</h4>
+                            {/* Selo só quando circular. "Não circular" nunca aparece. */}
+                            {ag.isCircularTheme && (
+                              <span className="text-[9px] font-extrabold uppercase tracking-wider text-[#00658d] bg-[#c6e7ff]/50 px-1.5 py-0.5 rounded">
+                                {language === "pt" ? "Circular" : "Recurring"}
+                              </span>
+                            )}
+                          </div>
                           <p className="text-[10px] text-slate-400 font-semibold flex items-center gap-1">
                             <User className="w-3 h-3 text-slate-400" />
                             Responsável: {ag.author || "Definido no ato"}
@@ -2304,7 +2458,8 @@ export default function MeetingDetailView({
  
                         {/* Control buttons & reordering controls during execution */}
                         <div className="flex items-center gap-3 shrink-0 select-none">
-                          {/* Mini vertical reorder arrows */}
+                          {/* Reordenar — só com canSchedule (o servidor exige PGCP.Assessoria). */}
+                          {canSchedule && (
                           <div className="flex flex-col gap-0.5">
                             <button
                               type="button"
@@ -2335,18 +2490,23 @@ export default function MeetingDetailView({
                               <ChevronDown className="w-3.5 h-3.5" />
                             </button>
                           </div>
- 
+                          )}
+
                           {/* Quick action buttons */}
                           <div className="flex gap-1 items-center">
-                            {/* Ver button - Item 1.4 */}
+                            {/* Editar pauta — modal com título, duração e
+                                responsável (PATCH). Preserva UUID e agendaTopicId.
+                                Só com canSchedule; o servidor revalida. */}
+                            {canSchedule && (
                               <button
                                 type="button"
-                                onClick={() => setSelectedAgendaDetailIndex(index)}
+                                onClick={() => abrirEdicaoPauta(ag)}
                                 className="p-1.5 text-slate-400 hover:text-[#00658d] hover:bg-slate-100 rounded transition-all cursor-pointer"
-                                title={language === "en" ? "View Details & Time" : "Ver Detalhes da Pauta"}
+                                title={language === "en" ? "Edit topic" : "Editar pauta"}
                               >
-                                <Eye className="w-4 h-4" />
+                                <Pencil className="w-4 h-4" />
                               </button>
+                            )}
 
                               {/* Teams notification button - Item 1.1 */}
                               <button
@@ -2415,13 +2575,15 @@ export default function MeetingDetailView({
                             )}
                               </>)}
 
-                            <button
-                              onClick={() => handleDeleteAgendaItem(index)}
-                              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-all cursor-pointer"
-                              title={language === "en" ? "Delete Item" : "Excluir Item"}
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            {canSchedule && (
+                              <button
+                                onClick={() => setPautaParaExcluir(ag)}
+                                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-all cursor-pointer"
+                                title={language === "en" ? "Delete Item" : "Excluir Item"}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -2441,7 +2603,7 @@ export default function MeetingDetailView({
                       </span>
                       <button
                         type="button"
-                        onClick={() => setIsExtraFormOpen(false)}
+                        onClick={() => { setExtraCircular(false); setIsExtraFormOpen(false); }}
                         className="text-slate-400 hover:text-slate-600 transition"
                       >
                         Cancelar
@@ -2508,6 +2670,20 @@ export default function MeetingDetailView({
                           <option value="60 mins">60 min</option>
                         </select>
                       </div>
+
+                      {/* Tema circular: só REGISTRA um fato da pauta. Sem automação,
+                          nem no "Sim". Default visual "Não". */}
+                      <div className="md:col-span-3 flex flex-col gap-1">
+                        <label className="text-[10px] font-extrabold text-slate-500 uppercase font-sans">Tema circular?</label>
+                        <select
+                          value={extraCircular ? "sim" : "nao"}
+                          onChange={(e) => setExtraCircular(e.target.value === "sim")}
+                          className="w-full bg-white border border-slate-205 rounded-xl p-2.5 text-xs text-slate-705 cursor-pointer focus:outline-none"
+                        >
+                          <option value="nao">Não</option>
+                          <option value="sim">Sim</option>
+                        </select>
+                      </div>
                     </div>
 
                     <div className="flex justify-end pt-2">
@@ -2518,10 +2694,11 @@ export default function MeetingDetailView({
                             triggerToast(language === "en" ? "Please fill the topic title." : "Por favor preencha o assunto.");
                             return;
                           }
-                          handleAddLiveExtraTopic(extraTitle, extraDuration, extraSpeaker, extraSpeakerUser?.id);
+                          handleAddLiveExtraTopic(extraTitle, extraDuration, extraSpeaker, extraSpeakerUser?.id, extraCircular);
                           setExtraTitle("");
                           setExtraSpeaker("Todos");
                           setExtraSpeakerUser(null);
+                          setExtraCircular(false);
                           setIsExtraFormOpen(false);
                         }}
                         className="px-4 py-2 bg-[#00658d] hover:bg-[#00aeef] text-white font-bold text-xs rounded-xl shadow-xs transition"
@@ -2530,7 +2707,7 @@ export default function MeetingDetailView({
                       </button>
                     </div>
                   </div>
-                ) : (
+                ) : canSchedule ? (
                   <button
                     type="button"
                     onClick={() => setIsExtraFormOpen(true)}
@@ -2539,7 +2716,7 @@ export default function MeetingDetailView({
                     <Plus className="w-4 h-4 text-[#00658d]" />
                     {language === "en" ? "Add Extra Topic (Live)" : "Adicionar Pauta Extraordinária ao Vivo"}
                   </button>
-                )}
+                ) : null}
               </div>
 
               {(!meeting.agenda || meeting.agenda.length === 0) && (
@@ -2590,6 +2767,7 @@ export default function MeetingDetailView({
                             {ca.duration} • {ca.author}
                           </p>
                         </div>
+                        {canSchedule && (
                         <button
                           onClick={() => handleImportAgendaItem(ca, "standalone")}
                           className="px-2.5 py-1 bg-white hover:bg-[#00658d] hover:text-white text-[#00658d] border border-slate-205 rounded-lg text-[10px] font-bold transition flex items-center gap-1 cursor-pointer shadow-xs"
@@ -2597,11 +2775,13 @@ export default function MeetingDetailView({
                           <Plus className="w-3 h-3" />
                           {language === "en" ? "Pull" : "Vincular"}
                         </button>
+                        )}
                       </div>
                     ))
                 )}
               </div>
             </div>
+          </div>
           </div>
         </div>
       )}
@@ -3695,10 +3875,185 @@ export default function MeetingDetailView({
       )}
 
       {/* Target Item Detail Modal - Item 1.4 */}
-      {selectedAgendaDetailIndex !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
-          <div className="bg-white rounded-xl p-4">
-            <button onClick={() => setSelectedAgendaDetailIndex(null)}>Close</button>
+      {/*
+        MODAL: editar pauta (PATCH). Só título, duração e responsável — os
+        campos que o contrato aceita. UUID e agendaTopicId são preservados pelo
+        backend; item da Biblioteca continua uma CÓPIA (o mestre não é tocado).
+      */}
+      {editandoPautaId !== null && (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"
+          onClick={() => { if (!salvandoEdicao) setEditandoPautaId(null); }}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-md w-full overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6 space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-[#c6e7ff]/40 flex items-center justify-center shrink-0">
+                  <Pencil className="w-5 h-5 text-[#00658d]" />
+                </div>
+                <h3 className="text-sm font-extrabold text-slate-900">
+                  {language === "pt" ? "Editar pauta" : "Edit topic"}
+                </h3>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                  {language === "pt" ? "Título" : "Title"}
+                </label>
+                <input
+                  type="text"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  autoFocus
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                  {language === "pt" ? "Responsável" : "Owner"}
+                </label>
+                <DirectoryUserPicker
+                  language={language}
+                  selected={editRespUser}
+                  selectedLabel={editRespLabel || null}
+                  placeholder={language === "pt" ? "Buscar no diretório..." : "Search directory..."}
+                  onSelect={(user) => {
+                    setEditRespUser(user);
+                    setEditRespLabel(user.displayName ?? directoryEmail(user) ?? "");
+                    setEditRespOid(user.id);
+                  }}
+                  onClear={() => {
+                    setEditRespUser(null);
+                    setEditRespLabel("");
+                    setEditRespOid(undefined);
+                  }}
+                />
+                {!editRespLabel && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditRespLabel("Todos");
+                      setEditRespUser(null);
+                      setEditRespOid(undefined);
+                    }}
+                    className="self-start text-[10px] font-extrabold uppercase tracking-wider text-[#00658d] hover:underline cursor-pointer"
+                  >
+                    {language === "pt" ? "Todos (Conselho)" : "Everyone (Board)"}
+                  </button>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                  {language === "pt" ? "Duração" : "Duration"}
+                </label>
+                <select
+                  value={editDuration}
+                  onChange={(e) => setEditDuration(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                >
+                  <option value="10 mins">10 min</option>
+                  <option value="15 mins">15 min</option>
+                  <option value="20 mins">20 min</option>
+                  <option value="30 mins">30 min</option>
+                  <option value="45 mins">45 min</option>
+                  <option value="60 mins">60 min</option>
+                </select>
+              </div>
+
+              {/* Tema circular NESTA reunião. Permite Não↔Sim; grava via PATCH.
+                  Não toca a Biblioteca — é fato da pauta desta reunião. */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                  {language === "pt" ? "Tema circular?" : "Recurring theme?"}
+                </label>
+                <select
+                  value={editCircular ? "sim" : "nao"}
+                  onChange={(e) => setEditCircular(e.target.value === "sim")}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                >
+                  <option value="nao">{language === "pt" ? "Não" : "No"}</option>
+                  <option value="sim">{language === "pt" ? "Sim" : "Yes"}</option>
+                </select>
+              </div>
+
+              {erroEdicao && (
+                <p className="text-[11px] font-bold text-red-600">{erroEdicao}</p>
+              )}
+            </div>
+
+            <div className="bg-slate-50 px-6 py-4 flex items-center justify-end gap-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setEditandoPautaId(null)}
+                disabled={salvandoEdicao}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 transition rounded-xl cursor-pointer disabled:opacity-50"
+              >
+                {language === "pt" ? "Cancelar" : "Cancel"}
+              </button>
+              <button
+                type="button"
+                onClick={salvarEdicaoPauta}
+                disabled={salvandoEdicao || !editTitle.trim()}
+                className="px-4 py-2 text-xs font-bold bg-[#00658d] hover:bg-[#00aeef] active:scale-95 text-white transition rounded-xl shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {salvandoEdicao
+                  ? language === "pt" ? "Salvando..." : "Saving..."
+                  : language === "pt" ? "Salvar" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: confirmação de exclusão de pauta — identifica a pauta pelo título. */}
+      {pautaParaExcluir && (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"
+          onClick={() => setPautaParaExcluir(null)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-sm w-full overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-5 h-5 text-red-600" />
+                </div>
+                <h3 className="text-sm font-extrabold text-slate-900">
+                  {language === "pt" ? "Excluir pauta" : "Delete topic"}
+                </h3>
+              </div>
+              <p className="text-xs text-slate-600 font-medium leading-relaxed">
+                {language === "pt" ? "Excluir a pauta " : "Delete the topic "}
+                <span className="font-extrabold text-slate-900">&ldquo;{pautaParaExcluir.title}&rdquo;</span>
+                {language === "pt"
+                  ? "? Esta ação não pode ser desfeita."
+                  : "? This action cannot be undone."}
+              </p>
+            </div>
+            <div className="bg-slate-50 px-6 py-4 flex items-center justify-end gap-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setPautaParaExcluir(null)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 transition rounded-xl cursor-pointer"
+              >
+                {language === "pt" ? "Cancelar" : "Cancel"}
+              </button>
+              <button
+                type="button"
+                onClick={confirmarExclusaoPauta}
+                className="px-4 py-2 text-xs font-bold bg-red-600 hover:bg-red-700 active:scale-95 text-white transition rounded-xl shadow-sm cursor-pointer inline-flex items-center gap-2"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {language === "pt" ? "Excluir" : "Delete"}
+              </button>
+            </div>
           </div>
         </div>
       )}

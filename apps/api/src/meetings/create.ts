@@ -78,6 +78,12 @@ export interface AgendaItemInput {
   responsibleLabel?: string;
   /** Preenchido apenas quando o responsavel e pessoa do diretorio. */
   responsibleEntraObjectId?: string;
+  /**
+   * Tema circular NESTA reuniao. Propriedade da pauta da reuniao, nao do tema
+   * mestre da Biblioteca. Ausente = false (default da coluna). So AFIRMA um
+   * fato registrado — nao dispara nenhum comportamento.
+   */
+  isCircularTheme?: boolean;
 }
 
 /**
@@ -332,6 +338,16 @@ export function parseAgendaItemInput(bruto: unknown, onde = "agendaItem"): Agend
     );
   }
 
+  // Tema circular: SÓ boolean de verdade. String ("true"/"sim"), número (0/1) e
+  // objeto sao recusados — nada de coerção silenciosa.
+  let isCircularTheme: boolean | undefined;
+  if (dados.isCircularTheme !== undefined && dados.isCircularTheme !== null) {
+    if (typeof dados.isCircularTheme !== "boolean") {
+      throw new HttpError(400, `${onde}.isCircularTheme deve ser booleano (true ou false).`);
+    }
+    isCircularTheme = dados.isCircularTheme;
+  }
+
   return {
     title: textoObrigatorio(dados.title, `${onde}.title`, 300),
     agendaTopicId: uuidOpcional(dados.agendaTopicId, `${onde}.agendaTopicId`),
@@ -339,6 +355,7 @@ export function parseAgendaItemInput(bruto: unknown, onde = "agendaItem"): Agend
     scheduledStartTime,
     responsibleLabel,
     responsibleEntraObjectId,
+    isCircularTheme,
   };
 }
 
@@ -781,8 +798,9 @@ export async function createMeeting(
         `INSERT INTO meeting_agenda_items
                 (meeting_id, agenda_topic_id, title, position, scheduled_start_time,
                  duration_minutes, execution_status, responsible_label,
-                 responsible_entra_tenant_id, responsible_entra_object_id)
-              VALUES ($1, $10, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                 responsible_entra_tenant_id, responsible_entra_object_id,
+                 is_circular_theme)
+              VALUES ($1, $10, $2, $3, $4, $5, $6, $7, $8, $9, $11)`,
         [
           meetingId,
           item.title,
@@ -794,6 +812,7 @@ export async function createMeeting(
           item.responsibleEntraObjectId ? actor.entraTenantId : null,
           item.responsibleEntraObjectId ?? null,
           item.agendaTopicId ?? null,
+          item.isCircularTheme ?? false,
         ],
       );
     }

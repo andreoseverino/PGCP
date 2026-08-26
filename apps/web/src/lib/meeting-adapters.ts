@@ -99,6 +99,8 @@ export interface ApiMeetingAgendaItem {
   postponedFromItemId: string | null;
   responsible: { label: string; entraTenantId: string | null; entraObjectId: string | null } | null;
   presenterLabel: string | null;
+  /** Tema circular nesta reunião (`meeting_agenda_items.is_circular_theme`). */
+  isCircularTheme: boolean;
 }
 
 export interface ApiMeetingDetail extends ApiMeetingSummary {
@@ -280,7 +282,8 @@ export function agendaItemFromApi(item: ApiMeetingAgendaItem): AgendaItem {
     executionStatus:
       item.executionStatus === "completed" || item.executionStatus === "postponed"
         ? item.executionStatus
-        : "pending"
+        : "pending",
+    isCircularTheme: item.isCircularTheme
   };
 }
 
@@ -352,6 +355,11 @@ export interface CreateAgendaItemPayload {
   scheduledStartTime?: string;
   responsibleLabel?: string;
   responsibleEntraObjectId?: string;
+  /**
+   * Tema circular nesta reunião. Ausente = false no banco (default). Só afirma
+   * um fato; a API recusa qualquer valor que não seja booleano estrito.
+   */
+  isCircularTheme?: boolean;
 }
 
 /**
@@ -433,7 +441,7 @@ export interface BuildPayloadInput {
       participantType?: "internal" | "external";
     }
   >;
-  agendaItems: Array<Pick<AgendaItem, "time" | "title" | "duration" | "author" | "authorEntraObjectId">>;
+  agendaItems: Array<Pick<AgendaItem, "time" | "title" | "duration" | "author" | "authorEntraObjectId" | "isCircularTheme">>;
 }
 
 /**
@@ -481,7 +489,10 @@ export function buildCreatePayload(input: BuildPayloadInput): CreateMeetingPaylo
         responsibleLabel,
         // Identidade só acompanha um rótulo. Sem nome, a API recusa — e com
         // razão: a tela precisaria do Graph só para escrever quem responde.
-        responsibleEntraObjectId: responsibleLabel ? item.authorEntraObjectId : undefined
+        responsibleEntraObjectId: responsibleLabel ? item.authorEntraObjectId : undefined,
+        // Só envia quando true; ausência cai no default false do banco. Nunca
+        // manda `false` para não travar em booleano por acaso.
+        isCircularTheme: item.isCircularTheme ? true : undefined
       };
     });
 

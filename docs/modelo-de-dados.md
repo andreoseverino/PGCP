@@ -523,6 +523,7 @@ Nunca se cria usuário fictício para permitir vínculo na biblioteca.
 | `presenter_label` | text | não | apresentador **coletivo/textual** (`"Todos"`, `"Comitê Financeiro"`) |
 | `execution_status` | text | sim | `pending`\|`presenting`\|`completed`\|`postponed` |
 | `postponed_from_item_id` | uuid FK → `meeting_agenda_items` | não | rastreia adiamento |
+| `is_circular_theme` | boolean | sim | `NOT NULL DEFAULT false` (017). Tema circular **desta** pauta na reunião — **não** vive na `agenda_topics`; item importado nasce `false` |
 | `created_at` / `updated_at` | timestamptz | sim | |
 
 **`UNIQUE (meeting_id, position)` DEFERRABLE** — ordem determinística sem travar a
@@ -887,6 +888,7 @@ erDiagram
         integer duration_minutes
         text presenter_label "coletivo, nao pessoa"
         text execution_status
+        boolean is_circular_theme "tema circular desta pauta"
     }
     MEETING_AGENDA_ITEM_PRESENTERS {
         uuid meeting_agenda_item_id PK
