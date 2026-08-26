@@ -636,9 +636,14 @@ salva no PGCP."* — e depois o motivo que o servidor gravou. `last_error` é te
 sanitizado (sem token, cabeçalho, payload ou stack) e costuma ser acionável, como
 "participante sem e-mail utilizável"; fora do estado de falha ele não aparece.
 
-**Tentar sincronizar novamente** aparece em tudo que não seja `synced`, e apenas
-para quem tem `PGCP.Assessoria` — em `synced` não há o que recuperar, e o botão
-ali sugeriria um passo que a sincronização automática já eliminou.
+**Enviar convite da reunião** aparece em tudo que não seja `synced`, e apenas
+para quem tem `PGCP.Assessoria` — em `synced` não há o que recuperar. Cobre dois
+momentos, e `pending` os separa: o **primeiro envio** (a reunião foi preparada e
+ainda não convidou ninguém) e o **reenvio** (falhou, ou a reunião mudou e o
+convite desatualizou).
+
+O botão fica **desabilitado enquanto a pauta não estiver aprovada** — cortesia; a
+barreira real é o **409** `agenda_not_approved` do backend.
 
 ### Outlook — idempotência
 
@@ -969,7 +974,7 @@ Princípio de menor privilégio: pedir na etapa em que a funcionalidade entra.
 | `User.Read` | API | Delegated | não | 3 | perfil do próprio usuário via OBO |
 | `Application Calendars.ReadWrite` | — **Exchange Online RBAC**, não o App Registration | Application | n/a — atribuição no Exchange | 5 | criar/editar o evento na caixa do organizador, sem depender da sessão dele, com Resource Scope limitando as caixas |
 | `OnlineMeetings.ReadWrite` | API | Delegated (OBO) | não | 5 | criar reunião Teams e obter join URL |
-| `Mail.Send` | API | Delegated (OBO) | não | 7 | e-mail operacional em nome do usuário |
+| `Mail.Send` | API | **Delegated (OBO)** | admin consent | **5.5 — pendente** | enviar as pautas para validação (PDF) pela caixa do próprio usuário. A versão **Application** NÃO é usada |
 | `Chat.Create` + `ChatMessage.Send` | API | Delegated (OBO) | não | 7 | ações "Chamar" e "Mensagem" |
 
 **Não** solicitar `ProfilePhoto.Read.All` enquanto `User.Read.All` estiver em uso:

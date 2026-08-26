@@ -105,14 +105,20 @@ export function calendarVisualState(
 }
 
 /**
- * O botão de tentar de novo faz sentido?
+ * O botão de enviar/reenviar o convite faz sentido?
  *
- * Só fora de `synced`. Em `synced` não há o que recuperar, e um botão ali
- * sugeriria que ainda falta um passo depois de cada edição — exatamente o que a
- * sincronização automática eliminou.
+ * Só fora de `synced`. Em `synced` não há o que fazer: o evento existe e
+ * reflete a reunião.
  *
- * A decisão de EXIBIR ainda depende de `PGCP.Assessoria`, que é de quem
- * chama: aqui não se decide autorização.
+ * Cobre DOIS momentos distintos, e `pending` é o que os separa:
+ *
+ *   pending  o convite NUNCA saiu — a reunião foi preparada e ainda não
+ *            convidou ninguém. É o primeiro envio.
+ *   failed   ou `stale`: já houve evento, e falta recuperar ou atualizar.
+ *
+ * A decisão de EXIBIR depende também de `PGCP.Assessoria` E de a pauta estar
+ * aprovada — as duas coisas são de quem chama. Aqui não se decide autorização,
+ * e a barreira real está no backend.
  */
 export function permiteTentarNovamente(
   calendar: Pick<CalendarIntegration, "syncStatus" | "lastError"> | null | undefined

@@ -175,3 +175,43 @@ export function describeIntegrationsError(error: unknown, language: "en" | "pt")
     ? "Não foi possível carregar as integrações."
     : "Could not load the integrations.";
 }
+
+// -----------------------------------------------------------------------------
+// Modelo de e-mail — Validação de pautas
+// -----------------------------------------------------------------------------
+
+/**
+ * Texto que o PGCP envia ao aprovador quando a Secretaria pede validação.
+ *
+ * TEXTO PURO, nunca HTML: o corpo é escrito por uma pessoa e lido por outra, e
+ * o servidor envia com `contentType: "text"`. Marcação aqui é texto literal lá.
+ *
+ * Só `PGCP.Admin` altera — a guarda está no router do backend.
+ */
+export interface EmailTemplate {
+  key: string;
+  subject: string;
+  body: string;
+  updatedAt: string;
+  updatedByUserId: string | null;
+  /** Variáveis que o servidor substitui. Qualquer outra fica literal. */
+  variables: readonly string[];
+}
+
+export function fetchAgendaValidationTemplate(): Promise<EmailTemplate> {
+  return apiRequest<EmailTemplate>("/integrations/email-templates/agenda-validation", {
+    auth: true
+  });
+}
+
+export function saveAgendaValidationTemplate(
+  subject: string,
+  body: string
+): Promise<EmailTemplate> {
+  return apiRequest<EmailTemplate>("/integrations/email-templates/agenda-validation", {
+    auth: true,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ subject, body })
+  });
+}

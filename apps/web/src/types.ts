@@ -78,6 +78,7 @@ export interface Participant {
 }
 
 import type { CalendarIntegration } from "./lib/calendar-sync";
+import type { AgendaValidation } from "./lib/agenda-validation";
 
 export interface AgendaItem {
   /**
@@ -214,6 +215,14 @@ export interface Meeting {
    * convite foi enviado. A tela nunca deduz sucesso: o estado vem do servidor.
    */
   calendar?: CalendarIntegration;
+  /**
+   * Ciclo da PAUTA — em preparação, enviada para validação, aprovada.
+   *
+   * Eixo separado de `status` (ciclo da reunião) e de `calendar` (convite).
+   * A tela usa para decidir o que HABILITAR; a barreira real está no backend,
+   * que recusa o convite enquanto a pauta não estiver aprovada.
+   */
+  agendaValidation?: AgendaValidation;
 }
 
 export interface AuditLog {

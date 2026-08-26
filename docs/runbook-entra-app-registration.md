@@ -382,17 +382,42 @@ um recurso independente do calendário, que não é o que queremos.
 
 Portanto: não conceder `OnlineMeetings.ReadWrite`.
 
-### 13. `Mail.Send` — ainda não
+### 13. `Mail.Send` — **Delegada**, necessária e ainda não concedida
 
-Não está configurada, e não deve ser adicionada agora.
+**Conceder `Mail.Send` do tipo `Delegated` no App Registration da PGCP API, com
+consentimento do administrador.**
 
-Motivo: **convite e atualização de reunião já saem pelo Outlook/Exchange**.
-Mandar e-mail do PGCP para repetir isso faria a mesma reunião chegar duas vezes,
+O código que a consome já existe (`apps/api/src/mail/send.ts`) e serve ao envio
+das **pautas para validação**: um PDF anexado a um e-mail que sai da caixa de
+quem está na sessão.
+
+```
+usuário autenticado → PGCP API → OBO → Graph → POST /me/sendMail
+```
+
+⚠️ **Enquanto não for concedida**, a troca OBO falha com `AADSTS65001`, a API
+responde `consent_required` (403) e a validação **não** é marcada como enviada.
+
+#### NÃO conceder a versão `Application`
+
+| Tipo | Decisão |
+| --- | --- |
+| `Mail.Send` **Delegated** | **SIM** — a pessoa envia como ela mesma |
+| `Mail.Send` **Application** | **NÃO** — enviaria como qualquer caixa do tenant |
+
+`Mail.Send` Application só é contida por uma *Application Access Policy* do
+Exchange. É o mesmo padrão recusado para `Calendars.ReadWrite` (seção 12), pelo
+mesmo motivo. Com a Delegada não há privilégio novo a conter: o alcance é a
+própria caixa da pessoa, e só enquanto ela tem sessão.
+
+#### O que `Mail.Send` NÃO deve fazer
+
+**Não** duplicar convite de reunião. Convite e atualização já saem pelo
+Outlook/Exchange; repetir por e-mail faria a mesma reunião chegar duas vezes,
 com dois textos que podem divergir.
 
-`Mail.Send` só entra se houver necessidade real de notificação **própria** do
-PGCP — obrigações de governança, como cobrança de FUP. Enquanto isso, essas
-obrigações aparecem dentro do aplicativo, em *Minhas Pendências*.
+Notificação própria do PGCP — cobrança de FUP, por exemplo — continua fora do
+escopo e aparece dentro do aplicativo, em *Minhas Pendências*.
 
 ### 14. DocuSign não é Microsoft
 
@@ -468,7 +493,8 @@ App Roles
 O que NÃO deve existir
 [ ] confirmar que Calendars.ReadWrite Application NÃO está no App Registration
 [ ] confirmar que OnlineMeetings.ReadWrite NÃO foi concedida
-[ ] confirmar que Mail.Send NÃO foi concedida
+[ ] conceder Mail.Send **Delegada** + consentimento do administrador
+[ ] confirmar que Mail.Send **Aplicação** NÃO foi concedida
 
 Exchange
 [ ] executar o runbook-exchange-calendar.md
@@ -494,7 +520,8 @@ Validação ponta a ponta
 | `Calendars.ReadWrite` **Application no Entra** | **NÃO** | Aplicação | — | daria escrita em todas as mailboxes; usar Exchange RBAC |
 | `Application Calendars.ReadWrite` **no Exchange** | **SIM agora** | Exchange RBAC + Resource Scope | criar/alterar evento nas mailboxes autorizadas | ver runbook do Exchange |
 | `OnlineMeetings.ReadWrite` | **NÃO** | Aplicação/Delegada | — | Teams nasce dentro do próprio evento |
-| `Mail.Send` | **FUTURO** | Aplicação | notificações próprias do PGCP | só se houver requisito real |
+| `Mail.Send` **Delegada** | **SIM — pendente** | Delegada (PGCP API) | enviar pautas para validação pela caixa do usuário (OBO) | exige admin consent; sem ela o envio falha com `consent_required` |
+| `Mail.Send` **Aplicação** | **NÃO** | Aplicação | — | enviaria como qualquer caixa do tenant |
 | Client secret **no SPA** | **NÃO** | — | — | público não guarda segredo, jamais |
 | Client secret **na API** | **SIM agora** | Credencial confidencial | OBO e app-only | só no servidor; rotacionar conforme a política |
 

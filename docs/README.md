@@ -11,7 +11,7 @@ entende todo o contexto lendo só ela.
 | Documento | Conteúdo |
 | --- | --- |
 | [security.md](security.md) | **Fonte de verdade** — auditoria, correções, hardening PostgreSQL, `audit_logs` append-only, hardening de produção, rate limiting, Entra/RBAC/Graph, CORS, headers/CSP, logs, secrets, proxy/WAF, estado de readiness e **contexto para agentes futuros** |
-| [go-live.md](go-live.md) | Checklist operacional de go-live (12 passos, em ordem de execução) — itens externos pendentes |
+| [go-live.md](go-live.md) | Checklist operacional de go-live (13 passos, em ordem de execução) — itens externos pendentes |
 | [producao-hardening.md](producao-hardening.md) | Detalhe técnico de configuração de produção: CSP/headers, proxy/WAF, Log Analytics, rate limiting |
 | [runbook-entra-app-registration.md](runbook-entra-app-registration.md) | Passo a passo dos App Registrations do Entra |
 | [runbook-exchange-calendar.md](runbook-exchange-calendar.md) · [handoff-exchange-rbac.md](handoff-exchange-rbac.md) | Exchange Online RBAC / calendário |

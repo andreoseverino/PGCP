@@ -169,6 +169,11 @@ test("meetings: as rotas de maior risco estao individualmente protegidas", () =>
     ["POST", "/:id/agenda-items/:agendaItemId/resume"],
     // Alcanca o Exchange e reescreve o convite de terceiros.
     ["POST", "/:id/calendar-sync"],
+    // Envia e-mail em nome de quem esta na sessao, com anexo.
+    ["POST", "/:id/agenda-validation"],
+    // Libera o envio do convite: quem pode marcar aprovado decide quando o
+    // convite pode sair.
+    ["POST", "/:id/agenda-approval"],
     ["PUT", "/:id/notes"],
     ["PUT", "/:id/minutes"],
     ["POST", "/:id/minutes/clear-by-secretariat"],
@@ -205,6 +210,15 @@ test("integrations: PGCP.Admin no ROUTER, entao rota nova nasce protegida", () =
     "integrationsRouter deveria aplicar requirePgcpAdmin a todo o router",
   );
   assert.ok(rotasDe(integrationsRouter).length >= 3, "o painel tem rotas");
+
+  // O modelo de e-mail vive sob o mesmo router e herda a guarda: quem opera
+  // reunioes USA o texto que sai em nome do PGCP, mas nao o edita.
+  const modelo = rotasDe(integrationsRouter).filter((r) => r.caminho.includes("email-templates"));
+  assert.ok(modelo.length >= 2, "leitura e escrita do modelo de e-mail existem");
+  assert.ok(
+    modelo.some((r) => r.metodo === "PATCH"),
+    "edicao do modelo existe e esta sob PGCP.Admin",
+  );
   // E nao pode exigir apenas Assessoria: administrar a plataforma e outra coisa.
   for (const rota of rotasDe(integrationsRouter)) {
     assert.ok(

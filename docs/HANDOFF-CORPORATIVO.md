@@ -399,20 +399,62 @@ sempre       Prefer: IdType="ImmutableId"
 chave nova — é justamente o caso em que o evento pode ter sido criado sem a
 resposta voltar.
 
-### Sincronização automática
+### Quando o PGCP fala com a Microsoft
 
 Depois do **COMMIT**, nunca dentro dele:
 
 | Ação | Comportamento |
 |---|---|
-| Criar reunião | tenta criar o evento; o 201 sai com o estado real da projeção |
-| Editar campo projetado | integração vira `stale` → uma tentativa |
-| Incluir/remover participante | idem |
+| **Criar reunião** | **nenhuma** chamada externa — a reunião nasce em preparação |
+| **Enviar convite da reunião** (ato explícito) | cria o evento; exige pauta **aprovada** |
+| Editar campo projetado, **depois** do convite | integração vira `stale` → uma tentativa |
+| Incluir/remover participante, **depois** do convite | idem |
 | Mutação interna (FUP, Ata, status, pauta) | **nenhuma** chamada externa |
 
+> **Mudou na 5.5.** Até então, `POST /meetings` chamava `syncMeetingCalendar`
+> logo após o commit: o convite chegava na caixa dos participantes antes de
+> existir uma única pauta, e corrigir a pauta significava reenviar convite a
+> executivos. Hoje o convite é um ato próprio — ver *Validação de pautas* abaixo.
+
+A linha de `meeting_calendar_integrations` continua nascendo na mesma transação
+da reunião, em `pending`, com a `idempotency_key` que o envio vai reusar. Antes
+do primeiro envio, editar a reunião não dispara nada: `stale` só é marcado a
+partir de `synced`.
+
 **Falha da Microsoft não desfaz nada no PGCP.** O dado permanece, a integração
-registra `failed`/`stale` com motivo sanitizado, e a tela oferece **Tentar
-sincronizar novamente** — que reusa a mesma chave e nunca cria segundo evento.
+registra `failed`/`stale` com motivo sanitizado, e a tela oferece **Reenviar
+convite da reunião** — que reusa a mesma chave e nunca cria segundo evento.
+
+### Validação de pautas (5.5)
+
+```
+Preparação → validação das pautas (PDF por e-mail) → aprovação → convite Outlook/Teams
+```
+
+| Etapa | Estado | Rota |
+|---|---|---|
+| Preparação | `meetings.agenda_validation_status = 'draft'` | — |
+| Enviar pautas para validação | `'sent'` + `agenda_validation_sent_to` | `POST /meetings/:id/agenda-validation` |
+| Marcar pautas como aprovadas | `'approved'` + `agenda_approved_by_user_id` | `POST /meetings/:id/agenda-approval` |
+| Enviar convite | `meeting_calendar_integrations.sync_status` | `POST /meetings/:id/calendar-sync` |
+
+Todas exigem `PGCP.Assessoria`.
+
+**Três eixos independentes, sem coluna compartilhada:** `meetings.status` é o
+ciclo da **reunião**; `agenda_validation_status` é o ciclo da **pauta**;
+`sync_status` é o estado do **convite**. Aprovar pauta **não** altera
+`meetings.status`. "Convite enviado" não ganhou coluna — já é `synced`, com
+`provider_event_id` como prova.
+
+O envio do convite confere a aprovação **no backend**, antes de qualquer chamada
+ao Graph: sem ela, **409** `agenda_not_approved`. Desabilitar o botão é cortesia.
+
+A **aprovação acontece fora do sistema**: o aprovador responde por e-mail e a
+Secretaria registra o fato. Não há leitura de resposta nem portal externo.
+
+O e-mail leva um **PDF** gerado no servidor (`apps/api/src/agenda-pdf/`) e sai da
+caixa **do próprio usuário autenticado**, via `Mail.Send` **Delegated** + OBO.
+⚠️ A permissão ainda não foi concedida no tenant — ver `docs/security.md` §9.
 
 `failed` **não** é reenviado automaticamente a cada edição; fica no botão.
 
@@ -542,7 +584,7 @@ evidência.**
 
 ## 21. E-mail
 
-> **`Mail.Send` não está implementado nem configurado.**
+> **`Mail.Send` (Delegated) tem código pronto, mas a permissão NÃO foi concedida.**
 
 O Outlook/Exchange já envia convite, atualização e notificação de inclusão ou
 remoção de participante. E-mail próprio do PGCP duplicaria essas mensagens.
@@ -605,7 +647,7 @@ a quem está autenticado.
 | Microsoft Teams | **homologado** | `isOnlineMeeting` no próprio evento; `joinUrl` real; ingresso validado |
 | PostgreSQL | **funcional** | migrations 001–014 aplicadas; `/health` conectado |
 | Auditoria | **homologada** | `GET /audit-logs` restrito a `PGCP.Admin`, lendo a trilha real |
-| `Mail.Send` | **não implementado** | permissão não concedida; sem cliente no código |
+| `Mail.Send` **Delegated** | **código pronto; permissão pendente** | envia as pautas para validação (PDF) pela caixa do usuário, via OBO. A versão **Aplicação** não é usada |
 | DocuSign | **futuro** | domínio modelado; sem credenciais e sem rota |
 | Observabilidade (Azure) | **pendente** | variável no catálogo; nenhum exportador implementado |
 
@@ -630,7 +672,7 @@ Somente nomes. Valores vivem em `.env`, que **não** é versionado.
 | `ENTRA_API_APP_ID_URI`, `ENTRA_API_SCOPE_NAME` | sim | não | escopo `access_as_user` |
 | `ENTRA_API_CLIENT_SECRET` | para Graph | **sim** | OBO e app-only |
 | `GRAPH_BASE_URL` | não | não | endpoint do Graph (default v1.0) |
-| `MAIL_SENDER_ADDRESS` | não | não | reservado; `Mail.Send` não implementado |
+| `MAIL_SENDER_ADDRESS` | não | não | reservado; **não** participa da validação de pautas, que envia pela caixa do usuário (OBO) |
 | `DOCUSIGN_*` | não | parcial | reservado; integração futura |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | não | **sim** | reservado; observabilidade futura |
 
@@ -864,7 +906,7 @@ Lacunas reais — nenhuma é bug:
 | Lacuna | Situação |
 |---|---|
 | Observabilidade (Azure) | pendente; variável existe, código não |
-| `Mail.Send` | não implementado; decisão de produto pendente |
+| `Mail.Send` (Delegated) | código pronto; **permissão pendente no Entra**, envio real nunca validado |
 | DocuSign | domínio pronto, **sem** provedor, credenciais ou rota |
 | Reunião confidencial/restrita | **não existe** no modelo |
 | Experiência pública | futura; hoje o usuário sem role já tem leitura corporativa |
@@ -883,7 +925,7 @@ Sugestão, não compromisso — a ordem é do produto:
 
 1. **Ajustes funcionais solicitados pelo produto** (prioridade).
 2. Observabilidade técnica (Azure Monitor / Application Insights).
-3. `Mail.Send` para obrigações de governança, se houver requisito.
+3. Conceder `Mail.Send` **Delegated** no Entra e validar o envio real das pautas.
 4. DocuSign, quando houver credenciais.
 5. Formalizar a suíte de testes num runner.
 6. Confidencialidade de reunião, se virar requisito.

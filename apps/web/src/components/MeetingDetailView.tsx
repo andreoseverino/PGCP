@@ -55,6 +55,11 @@ import {
   syncMeetingCalendar,
   type ParticipanteSemEndereco
 } from "../lib/calendar-sync";
+import {
+  approveAgenda,
+  describeValidationError,
+  sendAgendaForValidation
+} from "../lib/agenda-validation";
 import type { FupFormInput } from "../lib/action-items";
 import {
   NotesConflictError,
@@ -483,6 +488,72 @@ export default function MeetingDetailView({
    * `stale` sem erro, que para quem lê são coisas diferentes.
    */
   const estadoDoCalendario = calendarVisualState(meeting.calendar);
+
+  /*
+   * VALIDAÇÃO DE PAUTAS — o passo entre preparar a reunião e convidar.
+   *
+   * Criar reunião não envia mais nada à Microsoft. A sequência é:
+   *
+   *   em preparação -> enviada para validação -> pautas aprovadas -> convite
+   *
+   * A tela usa o estado para habilitar cada ação; a barreira está no backend,
+   * que recusa o convite enquanto a pauta não estiver aprovada.
+   */
+  const validacao = meeting.agendaValidation;
+  const statusValidacao = validacao?.status ?? "draft";
+  const pautasAprovadas = statusValidacao === "approved";
+
+  const [modalValidacaoAberto, setModalValidacaoAberto] = useState(false);
+  const [emailAprovador, setEmailAprovador] = useState("");
+  const [enviandoValidacao, setEnviandoValidacao] = useState(false);
+  const [erroValidacao, setErroValidacao] = useState<string | null>(null);
+  const [aprovando, setAprovando] = useState(false);
+
+  /** Substitui o estado pela reunião relida que a própria resposta devolve. */
+  const absorverReuniao = (api: import("../lib/meetings").ApiMeetingDetail) => {
+    const convertida = meetingFromApi(api);
+    setSelectedMeeting(convertida);
+    setMeetings((prev) => prev.map((m) => (m.id === convertida.id ? convertida : m)));
+  };
+
+  const handleEnviarParaValidacao = async () => {
+    if (enviandoValidacao) return;
+    setErroValidacao(null);
+    setEnviandoValidacao(true);
+    try {
+      const resposta = await sendAgendaForValidation(meeting.id, emailAprovador);
+      absorverReuniao(resposta.meeting);
+      setModalValidacaoAberto(false);
+      setEmailAprovador("");
+      triggerToast(
+        language === "en"
+          ? `Agenda sent to ${resposta.sentTo} for validation.`
+          : `Pautas enviadas para ${resposta.sentTo}.`
+      );
+    } catch (erro) {
+      // Fica NO MODAL: a pessoa corrige o endereço sem perder o que digitou.
+      setErroValidacao(describeValidationError(erro, language === "en" ? "en" : "pt"));
+    } finally {
+      setEnviandoValidacao(false);
+    }
+  };
+
+  const handleAprovarPautas = async () => {
+    if (aprovando) return;
+    setErroValidacao(null);
+    setAprovando(true);
+    try {
+      const resposta = await approveAgenda(meeting.id);
+      absorverReuniao(resposta.meeting);
+      triggerToast(
+        language === "en" ? "Agenda marked as approved." : "Pautas marcadas como aprovadas."
+      );
+    } catch (erro) {
+      setErroValidacao(describeValidationError(erro, language === "en" ? "en" : "pt"));
+    } finally {
+      setAprovando(false);
+    }
+  };
 
   const handleSyncCalendar = () => {
     if (syncing) return;
@@ -2865,6 +2936,96 @@ export default function MeetingDetailView({
               `stale` significa que o evento existe mas não reflete mais o que a
               reunião virou.
             */}
+            {/*
+              VALIDAÇÃO DE PAUTAS — antecede o convite, de propósito.
+
+              Criar a reunião não envia nada à Microsoft. O convite só é
+              liberado depois que as pautas voltam aprovadas, e quem garante
+              isso é o backend: este card apenas mostra em que fase está.
+            */}
+            <div className="bg-white border border-slate-200 p-5 rounded-2xl card-shadow mt-8 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-widest flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-[#00658d]" />
+                    {language === "pt" ? "Validação das pautas" : "Agenda validation"}
+                  </h3>
+                  <p className="text-[11px] font-semibold mt-1">
+                    <span
+                      className={
+                        pautasAprovadas
+                          ? "text-emerald-600"
+                          : statusValidacao === "sent"
+                            ? "text-amber-600"
+                            : "text-slate-500"
+                      }
+                    >
+                      {pautasAprovadas
+                        ? language === "pt" ? "Pautas aprovadas" : "Agenda approved"
+                        : statusValidacao === "sent"
+                          ? language === "pt" ? "Enviada para validação" : "Sent for validation"
+                          : language === "pt" ? "Em preparação" : "In preparation"}
+                    </span>
+                    {statusValidacao === "sent" && validacao?.sentTo && (
+                      <span className="text-slate-400">{` · ${validacao.sentTo}`}</span>
+                    )}
+                    {pautasAprovadas && validacao?.approvedAt && (
+                      <span className="text-slate-400">
+                        {` · ${new Date(validacao.approvedAt).toLocaleString(
+                          language === "en" ? "en-US" : "pt-BR"
+                        )}`}
+                      </span>
+                    )}
+                  </p>
+                  {!pautasAprovadas && (
+                    <p className="text-[10px] text-slate-500 font-medium mt-1 leading-relaxed">
+                      {language === "pt"
+                        ? "O convite do Outlook e do Teams só pode ser enviado depois que as pautas forem aprovadas."
+                        : "The Outlook and Teams invitation can only be sent after the agenda is approved."}
+                    </p>
+                  )}
+                </div>
+
+                {/*
+                  Só para `PGCP.Assessoria`: sem a role o servidor recusa, e
+                  oferecer o botão seria prometer o que não acontece.
+                */}
+                {canSchedule && !pautasAprovadas && (
+                  <div className="flex flex-col sm:flex-row gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setErroValidacao(null);
+                        setEmailAprovador(validacao?.sentTo ?? "");
+                        setModalValidacaoAberto(true);
+                      }}
+                      className="px-4 py-2 border border-[#00658d] text-[#00658d] hover:bg-[#00658d]/5 text-xs font-extrabold rounded-xl transition cursor-pointer"
+                    >
+                      {statusValidacao === "sent"
+                        ? language === "pt" ? "Reenviar pautas" : "Resend agenda"
+                        : language === "pt" ? "Enviar pautas para validação" : "Send agenda for validation"}
+                    </button>
+                    {statusValidacao === "sent" && (
+                      <button
+                        type="button"
+                        onClick={() => void handleAprovarPautas()}
+                        disabled={aprovando}
+                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold rounded-xl transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                      >
+                        {aprovando
+                          ? language === "pt" ? "Registrando..." : "Recording..."
+                          : language === "pt" ? "Marcar pautas como aprovadas" : "Mark agenda as approved"}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {erroValidacao && !modalValidacaoAberto && (
+                <p className="text-[11px] font-bold text-red-600">{erroValidacao}</p>
+              )}
+            </div>
+
             <div className="bg-white border border-slate-200 p-5 rounded-2xl card-shadow mt-8 space-y-3">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div className="min-w-0">
@@ -2917,27 +3078,38 @@ export default function MeetingDetailView({
                 </div>
 
                 {/*
-                  RETRY, não etapa da criação.
+                  ATO EXPLÍCITO, e não etapa automática da criação.
 
-                  A reunião nova já nasce sincronizada: o servidor cria o evento
-                  logo depois de gravar. Este botão existe para o que sobra —
-                  falha da Microsoft e alteração que desatualizou o convite.
-                  Some quando está tudo sincronizado, para não sugerir que falta
-                  um passo.
+                  Este botão é o ÚNICO caminho para o evento nascer no Outlook
+                  com a reunião do Teams. Cobre dois momentos, e `pending` é o
+                  que os separa: primeiro envio (nunca convidou ninguém) e
+                  reenvio (falhou, ou a reunião mudou e o convite desatualizou).
 
-                  Só para quem tem `PGCP.Assessoria`: sem a role o servidor
-                  recusa, e oferecer o botão seria prometer o que não acontece.
+                  Some quando está `synced`, para não sugerir passo pendente.
+
+                  DESABILITADO enquanto a pauta não estiver aprovada — mas isso
+                  é cortesia: o backend recusa com 409 de qualquer forma.
+                  Convidar é irreversível para terceiros.
                 */}
                 {canSchedule && permiteTentarNovamente(meeting.calendar) && (
                   <button
                     type="button"
                     onClick={handleSyncCalendar}
-                    disabled={syncing}
+                    disabled={syncing || !pautasAprovadas}
+                    title={
+                      pautasAprovadas
+                        ? undefined
+                        : language === "pt"
+                          ? "Disponível depois que as pautas forem aprovadas."
+                          : "Available once the agenda is approved."
+                    }
                     className="px-4 py-2 bg-[#00658d] hover:bg-[#00aeef] text-white text-xs font-extrabold rounded-xl transition shrink-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                   >
                     {syncing
-                      ? (language === "pt" ? "Sincronizando..." : "Synchronising...")
-                      : (language === "pt" ? "Tentar sincronizar novamente" : "Try synchronising again")}
+                      ? (language === "pt" ? "Enviando..." : "Sending...")
+                      : estadoDoCalendario === "pending"
+                        ? (language === "pt" ? "Enviar convite da reunião" : "Send meeting invitation")
+                        : (language === "pt" ? "Reenviar convite da reunião" : "Resend meeting invitation")}
                   </button>
                 )}
               </div>
@@ -3403,6 +3575,94 @@ export default function MeetingDetailView({
                 {language === "en" ? "Register" : "Registrar"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/*
+        ENVIAR PAUTAS PARA VALIDAÇÃO.
+
+        Um único campo: o e-mail de quem valida. O PDF é montado no servidor a
+        partir do que já está cadastrado — não há nada para o usuário anexar,
+        escolher ou preencher aqui.
+
+        O aprovador NÃO precisa de conta no PGCP: ele recebe, lê e responde por
+        e-mail. Quem registra a aprovação depois é a Secretaria.
+      */}
+      {modalValidacaoAberto && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-lg card-shadow overflow-hidden">
+            <div className="px-6 py-5 border-b border-slate-200">
+              <h3 className="text-sm font-extrabold text-slate-900">
+                {language === "en" ? "Send agenda for validation" : "Enviar pautas para validação"}
+              </h3>
+              <p className="text-[11px] text-slate-500 font-medium mt-1 leading-relaxed">
+                {language === "en"
+                  ? "A PDF file with the meeting and its agenda is generated and attached automatically. The e-mail is sent from your own mailbox."
+                  : "Um arquivo PDF com a reunião e as pautas é gerado e anexado automaticamente. O e-mail sai da sua própria caixa."}
+              </p>
+            </div>
+
+            <form
+              onSubmit={(evento) => {
+                evento.preventDefault();
+                void handleEnviarParaValidacao();
+              }}
+            >
+              <div className="px-6 py-5 space-y-2">
+                <label
+                  htmlFor="email-aprovador"
+                  className="block text-[11px] font-extrabold text-slate-700 uppercase tracking-wider"
+                >
+                  {language === "en" ? "Approver e-mail" : "E-mail de quem valida"}
+                </label>
+                <input
+                  id="email-aprovador"
+                  type="email"
+                  required
+                  autoFocus
+                  value={emailAprovador}
+                  onChange={(evento) => {
+                    setEmailAprovador(evento.target.value);
+                    setErroValidacao(null);
+                  }}
+                  placeholder="nome.sobrenome@empresa.com.br"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#00658d]/30 focus:border-[#00658d]"
+                />
+                <p className="text-[10px] text-slate-500 font-medium">
+                  {language === "en"
+                    ? `${meeting.agenda?.length ?? 0} agenda item(s) will be included.`
+                    : `${meeting.agenda?.length ?? 0} pauta(s) serão incluídas.`}
+                </p>
+                {/* O servidor revalida o endereço; isto é só o aviso imediato. */}
+                {erroValidacao && (
+                  <p className="text-[11px] font-bold text-red-600 leading-relaxed">{erroValidacao}</p>
+                )}
+              </div>
+
+              <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModalValidacaoAberto(false);
+                    setErroValidacao(null);
+                  }}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 transition rounded-xl cursor-pointer"
+                >
+                  {language === "en" ? "Cancel" : "Cancelar"}
+                </button>
+                <button
+                  type="submit"
+                  disabled={enviandoValidacao || !ehEmailValido(emailAprovador.trim())}
+                  className="px-4 py-2 text-xs font-bold bg-[#00658d] hover:bg-[#00aeef] active:scale-95 text-white transition rounded-xl shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  {enviandoValidacao
+                    ? language === "en" ? "Sending..." : "Enviando..."
+                    : language === "en" ? "Send" : "Enviar"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

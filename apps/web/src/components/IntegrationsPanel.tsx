@@ -6,7 +6,10 @@ import {
   stateClasses,
   stateDotClasses,
   stateLabel,
+  fetchAgendaValidationTemplate,
+  saveAgendaValidationTemplate,
   testIntegration,
+  type EmailTemplate,
   type IntegrationId,
   type IntegrationStatus
 } from "../lib/integrations";
@@ -426,8 +429,179 @@ export default function IntegrationsPanel({ language }: IntegrationsPanelProps) 
               />
             ))
           )}
+
+          {/*
+            O modelo de e-mail vive na sub-aba de E-mail porque é o texto que
+            sai por ela. Restrito a `PGCP.Admin` pelo backend — a guarda está no
+            router de /integrations, então esta tela já é inacessível a quem não
+            pode.
+          */}
+          {activeSubTab === "mail" && <AgendaValidationTemplateCard language={language} />}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Modelo de e-mail da validação de pautas.
+ *
+ * Dois campos de texto, sem editor rico: um editor HTML traria sanitização,
+ * colagem de estilo e um vetor novo, para um texto que o servidor envia como
+ * TEXTO PURO de qualquer forma.
+ */
+function AgendaValidationTemplateCard({ language }: { language: "en" | "pt" }) {
+  const pt = language === "pt";
+
+  const [template, setTemplate] = useState<EmailTemplate | null>(null);
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [carregando, setCarregando] = useState(true);
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const [salvo, setSalvo] = useState(false);
+
+  useEffect(() => {
+    let ativo = true;
+    fetchAgendaValidationTemplate()
+      .then((carregado) => {
+        if (!ativo) return;
+        setTemplate(carregado);
+        setSubject(carregado.subject);
+        setBody(carregado.body);
+      })
+      .catch((falha) => {
+        if (ativo) setErro(describeIntegrationsError(falha, language));
+      })
+      .finally(() => {
+        if (ativo) setCarregando(false);
+      });
+    return () => {
+      ativo = false;
+    };
+  }, [language]);
+
+  const alterado = template !== null && (subject !== template.subject || body !== template.body);
+
+  const salvar = async () => {
+    if (salvando || !alterado) return;
+    setErro(null);
+    setSalvo(false);
+    setSalvando(true);
+    try {
+      const atualizado = await saveAgendaValidationTemplate(subject, body);
+      setTemplate(atualizado);
+      setSubject(atualizado.subject);
+      setBody(atualizado.body);
+      setSalvo(true);
+    } catch (falha) {
+      // O servidor recusa assunto com quebra de linha, campo vazio e texto
+      // acima do teto — a mensagem dele já é acionável.
+      setErro(
+        falha instanceof Error && falha.message
+          ? falha.message
+          : describeIntegrationsError(falha, language)
+      );
+    } finally {
+      setSalvando(false);
+    }
+  };
+
+  if (carregando) {
+    return (
+      <div className="py-8 flex items-center justify-center">
+        <span className="w-5 h-5 border-2 border-slate-200 border-t-[#00658d] rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl card-shadow p-5 space-y-4">
+      <div>
+        <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-widest">
+          {pt ? "Modelo de e-mail — Validação de pautas" : "E-mail template — Agenda validation"}
+        </h3>
+        <p className="text-[11px] text-slate-500 font-medium mt-1 leading-relaxed">
+          {pt
+            ? "Texto enviado a quem valida as pautas. Enviado como texto puro, com o PDF em anexo."
+            : "Text sent to whoever validates the agenda. Sent as plain text, with the PDF attached."}
+        </p>
+      </div>
+
+      {template && template.variables.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {template.variables.map((variavel) => (
+            <code
+              key={variavel}
+              className="px-2 py-1 bg-slate-100 text-slate-600 rounded-lg text-[10px] font-bold"
+            >
+              {`{{${variavel}}}`}
+            </code>
+          ))}
+        </div>
+      )}
+
+      <div className="space-y-1.5">
+        <label
+          htmlFor="modelo-assunto"
+          className="block text-[11px] font-extrabold text-slate-700 uppercase tracking-wider"
+        >
+          {pt ? "Assunto" : "Subject"}
+        </label>
+        <input
+          id="modelo-assunto"
+          type="text"
+          value={subject}
+          maxLength={200}
+          onChange={(evento) => {
+            setSubject(evento.target.value);
+            setSalvo(false);
+          }}
+          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#00658d]/30 focus:border-[#00658d]"
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <label
+          htmlFor="modelo-corpo"
+          className="block text-[11px] font-extrabold text-slate-700 uppercase tracking-wider"
+        >
+          {pt ? "Corpo" : "Body"}
+        </label>
+        <textarea
+          id="modelo-corpo"
+          rows={10}
+          value={body}
+          maxLength={20000}
+          onChange={(evento) => {
+            setBody(evento.target.value);
+            setSalvo(false);
+          }}
+          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-[#00658d]/30 focus:border-[#00658d]"
+        />
+      </div>
+
+      {erro && <p className="text-[11px] font-bold text-red-600">{erro}</p>}
+      {salvo && !alterado && (
+        <p className="text-[11px] font-bold text-emerald-600">
+          {pt ? "Modelo salvo." : "Template saved."}
+        </p>
+      )}
+
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[10px] text-slate-400 font-semibold">
+          {template?.updatedAt &&
+            `${pt ? "Atualizado em" : "Updated on"} ${formatMoment(template.updatedAt, language)}`}
+        </p>
+        <button
+          type="button"
+          onClick={() => void salvar()}
+          disabled={salvando || !alterado}
+          className="px-4 py-2 bg-[#00658d] hover:bg-[#00aeef] text-white text-xs font-extrabold rounded-xl transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shrink-0"
+        >
+          {salvando ? (pt ? "Salvando..." : "Saving...") : pt ? "Salvar modelo" : "Save template"}
+        </button>
+      </div>
     </div>
   );
 }

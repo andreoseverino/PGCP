@@ -10,7 +10,7 @@ foi validado localmente e **não** é alterado por esta checklist.
 
 **Responsáveis:** `Aplicação` · `Cloud/Infra` · `Entra/Identidade` · `Exchange`.
 
-**Regra de liberação:** o go-live só é declarado fechado quando os 12 passos
+**Regra de liberação:** o go-live só é declarado fechado quando os 13 passos
 estiverem concluídos, com evidência guardada.
 
 ---
@@ -196,4 +196,21 @@ estiverem concluídos, com evidência guardada.
 ## Ordem sugerida
 
 Fase 1 (provisionar) → Fase 2 (borda) → Fase 3 (verificar com o ambiente de pé).
-O go-live só fecha com os 12 passos concluídos e evidência guardada.
+O go-live só fecha com os 13 passos concluídos e evidência guardada.
+
+---
+
+### 13. `Mail.Send` (Delegated) — validação de pautas
+
+- **O que fazer:** conceder a permissão **`Mail.Send` do tipo Delegated** no App
+  Registration da **PGCP API** e dar o consentimento do administrador.
+  **Não** conceder a versão `Application` — ela enviaria como qualquer caixa do
+  tenant, o mesmo padrão já recusado para `Calendars.ReadWrite`.
+- **Como validar:** em uma reunião preparada, usar **Enviar pautas para
+  validação**, informar um endereço de teste e confirmar que o e-mail chega com
+  o **PDF anexado** e que o remetente é a **caixa de quem está na sessão**.
+- **Resultado esperado:** e-mail entregue; a reunião passa a `sent`.
+- **Se falhar com `consent_required`:** a permissão não foi concedida — a
+  validação **não** é marcada como enviada, e nada precisa ser desfeito.
+- **Status:** ⚠️ pendente externo. *(Fluxo implementado e testado localmente;
+  o envio real nunca foi executado — ver `docs/security.md` §9.)*

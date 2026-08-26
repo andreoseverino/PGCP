@@ -1,4 +1,5 @@
 import { parseDurationMinutes } from "./agenda-time";
+import type { AgendaValidation } from "./agenda-validation";
 import { getInitials } from "./user";
 import type { AgendaItem, Meeting, Participant } from "../types";
 
@@ -51,6 +52,8 @@ export interface ApiMeetingSummary {
   meetingLink: string | null;
   onlineMeetingProvider: "teamsForBusiness" | null;
   status: ApiMeetingStatus;
+  /** Ciclo da PAUTA. Eixo separado de `status` e do estado do convite. */
+  agendaValidation: AgendaValidation;
   recurrence: string | null;
   pendingRequirements: string | null;
   participantsCount: number;
@@ -317,7 +320,9 @@ export function meetingFromApi(api: ApiMeetingSummary | ApiMeetingDetail): Meeti
     participants: detalhe ? detalhe.participants.map(participantFromApi) : undefined,
     // Passa adiante como veio: o estado da sincronização é do servidor, e
     // convertê-lo aqui abriria espaço para a tela "melhorar" um `failed`.
-    calendar: detalhe?.calendar ?? undefined
+    calendar: detalhe?.calendar ?? undefined,
+    // Passa adiante como veio: quem decide se o convite pode sair e o servidor.
+    agendaValidation: api.agendaValidation
   };
 }
 

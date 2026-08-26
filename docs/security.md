@@ -5,7 +5,7 @@ Escrito para que um agente técnico novo entenda todo o contexto **lendo apenas 
 sem depender de links externos, artifacts ou conversas anteriores.
 
 Documentos relacionados (todos no repositório):
-- [`docs/go-live.md`](go-live.md) — checklist operacional de go-live (12 passos), fonte para o dia da liberação.
+- [`docs/go-live.md`](go-live.md) — checklist operacional de go-live (13 passos), fonte para o dia da liberação.
 - [`docs/producao-hardening.md`](producao-hardening.md) — detalhe técnico de configuração de produção (CSP, headers, proxy/WAF, Log Analytics).
 - [`infra/postgres/README.md`](../infra/postgres/README.md) — procedimento de provisionamento dos papéis do PostgreSQL.
 - [`docs/integracoes.md`](integracoes.md) — integrações, variáveis de ambiente e permissões do Microsoft Graph.
@@ -25,16 +25,17 @@ Auditoria de código              ✅ concluída
 Hardening PostgreSQL             ✅ concluído
 Hardening de produção no código  ✅ concluído
 npm audit                        ✅ 0 vulnerabilidades
-Build / typecheck / testes       ✅ verdes (16 testes de segurança)
+Build / typecheck / testes       ✅ verdes (107 testes)
 Pré-go-live local                ✅ concluído
+Validação de pautas por e-mail   ⚠️ Mail.Send Delegated não concedida; envio nunca validado
 Pré-go-live corporativo          ⚠️ pendente (ver docs/go-live.md)
 ```
 
 **Leitura:** o código está pronto do ponto de vista das validações realizadas
 localmente. O **go-live final NÃO deve ser declarado concluído** até os itens
-externos (tenant Entra, Exchange RBAC, borda de rede, cofre, Log Analytics)
-serem validados no ambiente corporativo real — ver [§16](#16-estado-atual-e-o-que-falta) e
-[`docs/go-live.md`](go-live.md).
+externos (tenant Entra, Exchange RBAC, `Mail.Send` Delegated, borda de rede,
+cofre, Log Analytics) serem validados no ambiente corporativo real — ver
+[§16](#16-estado-atual-e-o-que-falta) e [`docs/go-live.md`](go-live.md).
 
 ---
 
@@ -318,6 +319,43 @@ quem precisa das duas recebe as duas atribuições no Entra. Exceção deliberad
 cadastros funcionais (órgãos, tipos, naturezas) aceitam `PGCP.Assessoria` **OU**
 `PGCP.Admin`.
 
+### Ciclo de vida da reunião — três eixos independentes
+
+Criar reunião **não envia nada à Microsoft**. O convite é um ato próprio,
+liberado só depois que as pautas voltam aprovadas:
+
+```
+Preparação → validação das pautas (PDF por e-mail) → aprovação → convite Outlook/Teams
+```
+
+| Etapa | Onde vive o estado | Quem pode |
+| --- | --- | --- |
+| Preparação | `meetings.agenda_validation_status = 'draft'` | `PGCP.Assessoria` |
+| Enviar pautas para validação | `… = 'sent'` + `agenda_validation_sent_to` | `PGCP.Assessoria` |
+| Marcar pautas como aprovadas | `… = 'approved'` + `agenda_approved_by_user_id` | `PGCP.Assessoria` |
+| Enviar convite Outlook/Teams | `meeting_calendar_integrations.sync_status` | `PGCP.Assessoria` |
+
+**Três eixos que não se confundem** e por isso não compartilham coluna:
+
+- `meetings.status` — ciclo da **reunião** (`scheduled`, `in_progress`, `done`);
+- `meetings.agenda_validation_status` — ciclo da **pauta**;
+- `meeting_calendar_integrations.sync_status` — estado do **convite**, com
+  `provider_event_id` como prova de que o evento existe.
+
+Aprovar a pauta **não** altera `meetings.status`. "Convite enviado" não ganhou
+coluna própria: já é `sync_status = 'synced'`, e uma segunda fonte poderia
+discordar dela.
+
+**A barreira do convite está no backend.** `POST /meetings/:id/calendar-sync`
+confere `agenda_validation_status` **antes de qualquer chamada ao Graph** e
+responde **409** `agenda_not_approved` quando a pauta não está aprovada.
+Desabilitar o botão na tela é cortesia — convidar é irreversível para terceiros.
+
+A **aprovação acontece fora do sistema**: o aprovador responde por e-mail e
+alguém da Secretaria registra o fato no PGCP. Não há leitura automática de
+resposta, link de aprovação nem portal externo — afirmar aprovação sem evidência
+seria o mesmo erro da assinatura fictícia removida na 4.10.
+
 ### Testes que dependem do ambiente real (⚠️ pendente externo)
 - usuário comum tentando ação de Assessoria → **403** (`missing_app_role`);
 - usuário comum tentando ação Admin → **403**;
@@ -342,6 +380,7 @@ e `apps/api/src/graph/client.ts`.
 | Diretório (busca de pessoas) | Application | `User.Read.All` | `GET /users?$search` | App Registration da API (Entra) |
 | Meu calendário | Delegated (OBO) | `Calendars.Read` | `GET /me/calendarView` | App Registration da API (Entra) |
 | Sincronizar reunião / Teams / Outlook | Application | `Calendars.ReadWrite` | `POST/PATCH /users/{id}/events` (com `isOnlineMeeting`) | **Exchange Online RBAC for Applications** (Resource Scope de mailbox) |
+| Enviar pautas para validação | **Delegated (OBO)** | `Mail.Send` | `POST /me/sendMail` | App Registration da API (Entra) — ⚠️ **ainda não concedida** |
 | SPA (navegador) | — | **nenhuma** | — | zero permissão de Graph |
 
 Pontos-chave:
@@ -352,7 +391,60 @@ Pontos-chave:
 - **Exchange RBAC com Resource Scope** limita **quais mailboxes** a aplicação
   alcança. **Não** conceder `Calendars.ReadWrite` (Application) **tenant-wide no
   Entra** — passaria por cima do escopo do Exchange.
-- Mail e Teams-messages: **adiados**, sem permissão concedida — nada a reduzir.
+- Teams-messages: **adiado**, sem permissão concedida — nada a reduzir.
+
+### `Mail.Send` — Delegated com OBO, nunca Application
+
+Estratégia **definida e implementada** para o e-mail de validação de pautas:
+
+```
+usuário autenticado → PGCP API → OBO → Microsoft Graph → POST /me/sendMail
+```
+
+| Decisão | Estado |
+| --- | --- |
+| `Mail.Send` **Delegated** | estratégia definida para este fluxo |
+| `Mail.Send` **Application** | **NÃO é utilizado** — nem agora, nem como alternativa |
+| Caixa remetente | a do **usuário autenticado**, resolvida pelo token |
+| Aquisição do token | **On-Behalf-Of** na API (`apps/api/src/mail/send.ts`) |
+| Mailbox técnica / remetente institucional | **não** usado neste fluxo |
+
+**Por que Delegated e não Application.** `Mail.Send` Application permite enviar
+como **qualquer caixa do tenant**, a menos que restringida por uma *Application
+Access Policy* do Exchange. É o mesmo padrão que este projeto já recusou para
+`Calendars.ReadWrite` (ver ponto acima). Delegated envia como a **própria
+pessoa**, só enquanto ela tem sessão, e não alcança caixa alheia — não há
+privilégio novo a conter.
+
+Além disso o e-mail é um pedido pessoal da Secretaria ao aprovador: sair da caixa
+de quem pediu é o comportamento correto, e o aprovador responde para a pessoa
+certa. `MAIL_SENDER_ADDRESS` **não participa** deste fluxo.
+
+`/me/sendMail` não aceita identificador de caixa na chamada — não há parâmetro
+por onde o PGCP enviar como outra pessoa, nem por engano nem por manipulação.
+
+**O corpo é enviado como `contentType: "text"`**, nunca HTML: o texto vem de um
+modelo editável pela administração somado a dados da reunião, e HTML
+transformaria qualquer título em superfície de injeção no cliente do
+destinatário. O anexo é um **PDF** gerado no servidor.
+
+#### ⚠️ Pendência de ambiente corporativo — não tratar como pronto
+
+| Item | Estado |
+| --- | --- |
+| Permissão `Mail.Send` (Delegated) no App Registration da API | ⚠️ **não concedida** |
+| Consentimento do administrador do tenant | ⚠️ **pendente** |
+| Envio real de e-mail | ⚠️ **nunca executado / não validado** |
+
+Enquanto os três itens acima não forem concluídos e verificados no tenant real,
+**este fluxo não deve ser considerado pronto para produção.**
+
+Comportamento hoje, sem a permissão: a troca OBO falha com `AADSTS65001`, a API
+traduz para `consent_required` (403) com mensagem acionável, e — o que importa
+para integridade — **a validação NÃO é marcada como enviada**. O envio acontece
+antes de qualquer escrita no banco; se o Graph falha, o estado permanece
+inalterado e resta apenas a entrada de auditoria da tentativa, com
+`status: "failure"`.
 
 ### Como validar (⚠️ pendente externo)
 - `POST /integrations/graph/test` (Admin) → `connected`;
@@ -506,7 +598,7 @@ por produto. Detalhe e comandos de teste em
 
 ## 15. Checklist de go-live
 
-A checklist operacional completa (12 passos, com responsável / o que configurar /
+A checklist operacional completa (13 passos, com responsável / o que configurar /
 como testar / resultado esperado / evidência / status) está **integralmente no
 repositório** em **[`docs/go-live.md`](go-live.md)** — é a fonte para o dia da
 liberação. Não depende de nenhum link externo.
@@ -534,6 +626,7 @@ Hardening de produção no código  ✅ concluído
 npm audit                        ✅ 0 vulnerabilidades
 Build / typecheck / testes       ✅ verdes
 Pré-go-live local                ✅ concluído
+Validação de pautas por e-mail   ⚠️ Mail.Send Delegated não concedida
 Pré-go-live corporativo          ⚠️ pendente
 ```
 

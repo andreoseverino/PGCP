@@ -217,7 +217,7 @@ Criar e alterar eventos usa **Exchange Online RBAC for Applications** com
 |---|---|---|
 | `Calendars.ReadWrite` **Application** no Entra | **NÃO** | daria escrita em todas as mailboxes do tenant; usamos o escopo do Exchange |
 | `OnlineMeetings.ReadWrite` | **NÃO** | o Teams nasce dentro do próprio evento do Outlook (`isOnlineMeeting` + `onlineMeetingProvider`) |
-| `Mail.Send` | **ainda NÃO** | o convite e as atualizações já saem pelo Outlook; e-mail próprio só se houver requisito real |
+| `Mail.Send` (**Delegada**, via OBO) | **pendente de concessão** | envia as pautas para validação em PDF, pela caixa do próprio usuário. A versão **Aplicação** não é usada |
 
 Detalhes operacionais:
 
@@ -255,7 +255,8 @@ React (apps/web) ──REST + token Entra──▶ Node/Express (apps/api) ─�
 | `PGCP.Assessoria` — Assessoria do PGCP | ✅ perfil funcional (reuniões + cadastros) |
 | `PGCP.Admin` — Administrador do PGCP | ✅ perfil técnico (usuários, integrações, auditoria) |
 | Auditoria (trilha corporativa) | ✅ funcional, restrita a `PGCP.Admin` |
-| `Mail.Send` | ⏳ não implementado |
+| Validação de pautas (PDF) antes do convite | ✅ implementada — convite bloqueado até a aprovação |
+| `Mail.Send` (Delegada + OBO) | ⚠️ código pronto; permissão pendente no Entra |
 | DocuSign | ⏳ futuro |
 
 > `PGCP.Admin` protege criação e edição de órgãos de governança, a lista de

@@ -1,5 +1,6 @@
 import pool from "../database.js";
 import { HttpError } from "../http-error.js";
+import type { AgendaValidationStatus } from "./agenda-validation.js";
 import { findCalendarIntegration, type CalendarIntegration } from "../calendar/service.js";
 
 /**
@@ -80,6 +81,23 @@ export interface MeetingSummary {
    */
   onlineMeetingProvider: "teamsForBusiness" | null;
   status: MeetingStatus;
+  /**
+   * Ciclo da PAUTA — eixo SEPARADO de `status`, que e o ciclo da reuniao.
+   *
+   *   draft     em preparacao; nada saiu do PGCP
+   *   sent      PDF enviado ao aprovador, aguardando validacao
+   *   approved  validacao registrada pela Secretaria
+   *
+   * O convite do Outlook so pode ser enviado em `approved`, e a barreira esta
+   * no backend (`POST /:id/calendar-sync`), nao apenas na tela.
+   */
+  agendaValidation: {
+    status: AgendaValidationStatus;
+    sentAt: string | null;
+    /** E-mail do aprovador. Dado de negocio, nunca credencial. */
+    sentTo: string | null;
+    approvedAt: string | null;
+  };
   recurrence: string | null;
   pendingRequirements: string | null;
   /** DERIVADO: COUNT em meeting_participants. Nao existe coluna equivalente. */
@@ -179,6 +197,10 @@ interface MeetingRow {
   meeting_link: string | null;
   online_meeting_provider: "teamsForBusiness" | null;
   status: MeetingStatus;
+  agenda_validation_status: AgendaValidationStatus;
+  agenda_validation_sent_at: Date | null;
+  agenda_validation_sent_to: string | null;
+  agenda_approved_at: Date | null;
   recurrence: string | null;
   pending_requirements: string | null;
   created_at: Date;
@@ -237,6 +259,12 @@ function toSummary(row: MeetingRow): MeetingSummary {
     meetingLink: row.meeting_link,
     onlineMeetingProvider: row.online_meeting_provider,
     status: row.status,
+    agendaValidation: {
+      status: row.agenda_validation_status,
+      sentAt: row.agenda_validation_sent_at?.toISOString() ?? null,
+      sentTo: row.agenda_validation_sent_to,
+      approvedAt: row.agenda_approved_at?.toISOString() ?? null,
+    },
     recurrence: row.recurrence,
     pendingRequirements: row.pending_requirements,
     participantsCount: row.participants_count,
@@ -305,6 +333,10 @@ const SUMMARY_SELECT = `
          m.meeting_link,
          m.online_meeting_provider,
          m.status,
+         m.agenda_validation_status,
+         m.agenda_validation_sent_at,
+         m.agenda_validation_sent_to,
+         m.agenda_approved_at,
          m.recurrence,
          m.pending_requirements,
          m.created_at,

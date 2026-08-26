@@ -10,6 +10,13 @@ import {
   syncCalendarAfterMutationIfNeeded,
   syncMeetingCalendar,
 } from "../calendar/service.js";
+import { GraphError } from "../graph/client.js";
+import {
+  aprovarPautas,
+  enviarPautasParaValidacao,
+  lerStatusDeValidacao,
+  parseEmailDoAprovador,
+} from "./agenda-validation.js";
 import { getNotesHandler, putNotesHandler } from "../meeting-notes/routes.js";
 import {
   clearMinutesHandler,
@@ -150,35 +157,19 @@ meetingsRouter.post("/", requirePgcpAssessoria, async (req: Request, res: Respon
     const criada = await createMeeting(input, ator);
 
     /*
-     * SINCRONIZACAO INICIAL — depois do COMMIT, nunca dentro dele.
+     * NADA SAI PARA A MICROSOFT AQUI.
      *
-     * Toda reuniao do PGCP e um evento do Outlook com reuniao do Teams, entao
-     * criar a reuniao e pedir o evento sao um gesto so para quem usa. Mas o
-     * PostgreSQL e o Graph nao compartilham transacao: a chamada acontece com a
-     * reuniao JA gravada.
+     * Criar reuniao e um ato INTERNO do PGCP. Ate a 5.5 esta rota chamava
+     * `syncMeetingCalendar` logo apos o commit, e o convite chegava na caixa
+     * dos participantes antes de existir uma unica pauta — corrigir a pauta
+     * depois significava reenviar convite a executivos.
      *
-     * FALHA DA MICROSOFT NAO APAGA REUNIAO. `syncMeetingCalendar` ja registra
-     * `failed` com mensagem sanitizada e a trilha da falha; aqui o erro e
-     * engolido de proposito para o 201 continuar valendo — a reuniao existe, e
-     * o que faltou foi o convite, com botao proprio para tentar de novo.
-     *
-     * O retry reusa a MESMA `idempotency_key` gravada na criacao, entao repetir
-     * nunca cria um segundo evento.
+     * Agora a reuniao nasce em preparacao. O convite e um ATO PROPRIO e
+     * explicito (`POST /:id/calendar-sync`), liberado so depois que as pautas
+     * forem aprovadas. A linha de integracao continua sendo criada na mesma
+     * transacao da reuniao, em `pending`, com a `idempotency_key` que o envio
+     * vai reusar.
      */
-    try {
-      await syncMeetingCalendar(criada.id, { id: ator.userId, name: ator.name });
-    } catch {
-      /*
-       * Engolido de proposito, e SEMPRE aguardado antes de seguir: a leitura
-       * abaixo precisa acontecer depois que o resultado — sucesso ou falha — ja
-       * esta gravado, senao o 201 devolveria um estado que envelheceu no
-       * caminho. `syncMeetingCalendar` ja gravou `failed`, a mensagem
-       * sanitizada e a trilha da falha.
-       */
-    }
-
-    // Relido: o corpo precisa dizer em que estado a projecao ficou, e quem sabe
-    // isso e o banco depois da tentativa — nao a resposta da criacao.
     res.status(201).json(await findMeeting(criada.id));
   } catch (error) {
     sendError(res, error, "criar");
@@ -334,6 +325,27 @@ meetingsRouter.post("/:id/calendar-sync", requirePgcpAssessoria, async (req, res
   }
 
   try {
+    /*
+     * PRE-CONDICAO NO BACKEND, nao so na tela.
+     *
+     * Esconder o botao enquanto a pauta nao foi aprovada e cortesia; a barreira
+     * e esta. Enviar convite e IRREVERSIVEL para terceiros — o e-mail entra na
+     * caixa de executivos e cancelar depois custa mais do que nunca ter
+     * enviado. Por isso a checagem vem antes de qualquer chamada ao Graph.
+     */
+    const validacao = await lerStatusDeValidacao(req.params.id as string);
+    if (validacao !== "approved") {
+      res.status(409).json({
+        error:
+          validacao === "sent"
+            ? "As pautas foram enviadas para validação, mas ainda não foram marcadas como aprovadas. O convite só pode ser enviado após a aprovação."
+            : "As pautas ainda não foram validadas. Envie-as para validação e registre a aprovação antes de enviar o convite.",
+        code: "agenda_not_approved",
+        agendaValidationStatus: validacao,
+      });
+      return;
+    }
+
     res.json(await syncMeetingCalendar(req.params.id as string, { id: usuario.id, name: usuario.name }));
   } catch (error) {
     if (error instanceof CalendarPreconditionError) {
@@ -366,6 +378,67 @@ meetingsRouter.post("/:id/calendar-sync", requirePgcpAssessoria, async (req, res
  * dele esta exposta: assinar so podera ser afirmado a partir de evidencia
  * externa real, e aceitar a confirmacao do navegador seria assinatura falsa.
  */
+/**
+ * VALIDACAO DE PAUTAS — o passo entre preparar e convidar.
+ *
+ * `POST /:id/agenda-validation` gera o .pdf, envia ao aprovador pela caixa de
+ * QUEM ESTA NA SESSAO (Graph delegado, On-Behalf-Of) e marca `sent`. O
+ * aprovador nao precisa ter conta no PGCP.
+ *
+ * `POST /:id/agenda-approval` registra que a validacao voltou aprovada. E um
+ * ato humano da Secretaria: nao existe leitura automatica de resposta de
+ * e-mail, e afirmar aprovacao sem evidencia seria o mesmo erro da assinatura
+ * ficticia que a 4.10 removeu.
+ *
+ * Ambas exigem `PGCP.Assessoria`, como toda mutacao de reuniao.
+ */
+meetingsRouter.post("/:id/agenda-validation", requirePgcpAssessoria, async (req, res) => {
+  const ator = atorDa(req);
+  const token = req.entraAccessToken;
+  if (!ator || !token) {
+    // A cadeia de middleware garante os dois; falhar alto se ela mudar.
+    res.status(500).json({ error: "Erro interno ao resolver a credencial da sessão." });
+    return;
+  }
+
+  try {
+    const email = parseEmailDoAprovador((req.body as Record<string, unknown> | undefined)?.approverEmail);
+    const resultado = await enviarPautasParaValidacao(
+      req.params.id as string,
+      email,
+      { userId: ator.userId, name: ator.name },
+      token,
+    );
+    res.json({ ...resultado, meeting: await findMeeting(req.params.id as string) });
+  } catch (error) {
+    if (error instanceof GraphError) {
+      // Falha do Graph (consentimento ausente, throttling, caixa sem licenca)
+      // atravessa com o codigo dela — a pessoa precisa saber o que corrigir.
+      res.status(error.status ?? 502).json({ error: error.message, code: error.code });
+      return;
+    }
+    sendError(res, error, "enviar pautas para validação");
+  }
+});
+
+meetingsRouter.post("/:id/agenda-approval", requirePgcpAssessoria, async (req, res) => {
+  const ator = atorDa(req);
+  if (!ator) {
+    res.status(500).json({ error: "Erro interno ao resolver a identidade." });
+    return;
+  }
+
+  try {
+    const resultado = await aprovarPautas(req.params.id as string, {
+      userId: ator.userId,
+      name: ator.name,
+    });
+    res.json({ ...resultado, meeting: await findMeeting(req.params.id as string) });
+  } catch (error) {
+    sendError(res, error, "aprovar pautas");
+  }
+});
+
 meetingsRouter.get("/:id/minutes", requireActivePgcpUser, getMinutesHandler);
 meetingsRouter.put("/:id/minutes", requirePgcpAssessoria, putMinutesHandler);
 meetingsRouter.post("/:id/minutes/clear-by-secretariat", requirePgcpAssessoria, clearMinutesHandler);
