@@ -209,8 +209,22 @@ O go-live só fecha com os 13 passos concluídos e evidência guardada.
 - **Como validar:** em uma reunião preparada, usar **Enviar pautas para
   validação**, informar um endereço de teste e confirmar que o e-mail chega com
   o **PDF anexado** e que o remetente é a **caixa de quem está na sessão**.
-- **Resultado esperado:** e-mail entregue; a reunião passa a `sent`.
+- **Resultado esperado:** e-mail entregue; a reunião passa a `sent`; a trilha
+  registra **sucesso**; a interface confirma o envio.
 - **Se falhar com `consent_required`:** a permissão não foi concedida — a
   validação **não** é marcada como enviada, e nada precisa ser desfeito.
-- **Status:** ⚠️ pendente externo. *(Fluxo implementado e testado localmente;
-  o envio real nunca foi executado — ver `docs/security.md` §9.)*
+- **Status:** 🟡 **parcialmente validado (26/08/2026).**
+
+  ✅ Concessão, OBO com usuário real, `202 Accepted` do Graph, envio pela caixa
+  do usuário e recebimento com PDF anexado — **todos confirmados**.
+
+  ⚠️ **Falta revalidar** — no mesmo teste, o `202` com corpo vazio quebrava o
+  cliente do Graph, então o estado não chegou a ser gravado. Corrigido; repetir
+  o passo e confirmar os três pontos:
+
+  - [ ] a reunião fica em `agenda_validation_status = 'sent'`
+  - [ ] `audit_logs` registra **"Pautas enviadas para validação"** com sucesso
+  - [ ] a interface mostra confirmação, e não erro
+
+  Detalhe do incidente e da correção em [`security.md`](security.md) §9. As duas
+  entradas `failure` já gravadas são evidência do incidente e **permanecem**.

@@ -25,9 +25,10 @@ Auditoria de código              ✅ concluída
 Hardening PostgreSQL             ✅ concluído
 Hardening de produção no código  ✅ concluído
 npm audit                        ✅ 0 vulnerabilidades
-Build / typecheck / testes       ✅ verdes (107 testes)
+Build / typecheck / testes       ✅ verdes (117 testes)
 Pré-go-live local                ✅ concluído
-Validação de pautas por e-mail   ⚠️ Mail.Send Delegated não concedida; envio nunca validado
+Mail.Send Delegated / OBO        ✅ validado no tenant real (envio e recebimento)
+Validação de pautas — pós-envio  ⚠️ revalidar após a correção do 202 (ver §9)
 Pré-go-live corporativo          ⚠️ pendente (ver docs/go-live.md)
 ```
 
@@ -380,7 +381,7 @@ e `apps/api/src/graph/client.ts`.
 | Diretório (busca de pessoas) | Application | `User.Read.All` | `GET /users?$search` | App Registration da API (Entra) |
 | Meu calendário | Delegated (OBO) | `Calendars.Read` | `GET /me/calendarView` | App Registration da API (Entra) |
 | Sincronizar reunião / Teams / Outlook | Application | `Calendars.ReadWrite` | `POST/PATCH /users/{id}/events` (com `isOnlineMeeting`) | **Exchange Online RBAC for Applications** (Resource Scope de mailbox) |
-| Enviar pautas para validação | **Delegated (OBO)** | `Mail.Send` | `POST /me/sendMail` | App Registration da API (Entra) — ⚠️ **ainda não concedida** |
+| Enviar pautas para validação | **Delegated (OBO)** | `Mail.Send` | `POST /me/sendMail` | App Registration da API (Entra) — ✅ **concedida e validada** |
 | SPA (navegador) | — | **nenhuma** | — | zero permissão de Graph |
 
 Pontos-chave:
@@ -428,23 +429,56 @@ modelo editável pela administração somado a dados da reunião, e HTML
 transformaria qualquer título em superfície de injeção no cliente do
 destinatário. O anexo é um **PDF** gerado no servidor.
 
-#### ⚠️ Pendência de ambiente corporativo — não tratar como pronto
+#### Estado da validação no tenant real
+
+Primeiro teste corporativo em **26/08/2026**.
+
+**✅ Validado no tenant real:**
+
+| Item | Evidência |
+| --- | --- |
+| Permissão `Mail.Send` (Delegated) concedida | consentimento do administrador aplicado |
+| Fluxo OBO com usuário corporativo real | troca de token concluída; sem `AADSTS65001` |
+| `POST /me/sendMail` | Graph respondeu **202 Accepted** |
+| Envio pela caixa do **usuário autenticado** | mensagem saiu da caixa de quem clicou |
+| Recebimento real com o **PDF anexado** | destinatário recebeu e abriu o anexo |
+
+Isso encerra a dúvida sobre a estratégia: **`Mail.Send` Delegated + OBO funciona
+no tenant**, e a versão Application segue sem necessidade.
+
+**⚠️ Ainda a revalidar — o mesmo teste expôs um defeito, já corrigido:**
 
 | Item | Estado |
 | --- | --- |
-| Permissão `Mail.Send` (Delegated) no App Registration da API | ⚠️ **não concedida** |
-| Consentimento do administrador do tenant | ⚠️ **pendente** |
-| Envio real de e-mail | ⚠️ **nunca executado / não validado** |
+| Persistência de `agenda_validation_status = 'sent'` após envio real | ⚠️ **não confirmada** |
+| Entrada de auditoria de **sucesso** | ⚠️ **não confirmada** |
+| Retorno de sucesso na interface | ⚠️ **não confirmado** |
 
-Enquanto os três itens acima não forem concluídos e verificados no tenant real,
-**este fluxo não deve ser considerado pronto para produção.**
+**O que aconteceu.** `/me/sendMail` responde `202 Accepted` com corpo **vazio**.
+O cliente do Graph tratava apenas `204` como "sem corpo" e chamava
+`response.json()` no resto, então o `202` virava
+`SyntaxError: Unexpected end of JSON input` **depois** de a Microsoft já ter
+aceitado a mensagem. O e-mail chegou; a tela mostrou *"Erro interno ao processar
+a solicitação"*; o `UPDATE` para `sent` nunca executou; a trilha registrou
+**falha**. A pessoa reenviou e o aprovador recebeu **dois e-mails**.
 
-Comportamento hoje, sem a permissão: a troca OBO falha com `AADSTS65001`, a API
-traduz para `consent_required` (403) com mensagem acionável, e — o que importa
-para integridade — **a validação NÃO é marcada como enviada**. O envio acontece
-antes de qualquer escrita no banco; se o Graph falha, o estado permanece
-inalterado e resta apenas a entrada de auditoria da tentativa, com
-`status: "failure"`.
+As duas entradas `failure` em `audit_logs` são **evidência legítima do
+incidente** e não devem ser removidas nem editadas — `audit_logs` é append-only.
+
+Corrigido em `apps/api/src/graph/client.ts` (lê o corpo como texto e só faz parse
+se houver conteúdo), com teste de regressão em `graph/client.test.ts`. A cadeia
+pós-envio foi exercitada contra o banco (`draft → sent → approved`,
+`meetings.status` inalterado, aprovação idempotente, trilha com dois sucessos),
+mas **com o envio simulado** — falta repetir com envio real.
+
+**Enquanto os três itens de revalidação não forem confirmados no tenant, este
+fluxo não deve ser considerado pronto para produção.**
+
+Comportamento quando o Graph falha de verdade: a API traduz para erro acionável
+e — o que importa para integridade — **a validação NÃO é marcada como enviada**.
+O envio acontece antes de qualquer escrita no banco. Se a falha ocorrer **depois**
+de o Graph aceitar, a API devolve mensagem explícita dizendo que o e-mail **foi
+enviado** e que não se deve reenviar, e registra o descompasso na trilha.
 
 ### Como validar (⚠️ pendente externo)
 - `POST /integrations/graph/test` (Admin) → `connected`;
@@ -626,7 +660,8 @@ Hardening de produção no código  ✅ concluído
 npm audit                        ✅ 0 vulnerabilidades
 Build / typecheck / testes       ✅ verdes
 Pré-go-live local                ✅ concluído
-Validação de pautas por e-mail   ⚠️ Mail.Send Delegated não concedida
+Mail.Send Delegated / OBO        ✅ validado no tenant real
+Validação de pautas — pós-envio  ⚠️ revalidar após a correção do 202
 Pré-go-live corporativo          ⚠️ pendente
 ```
 

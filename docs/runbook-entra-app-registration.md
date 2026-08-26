@@ -382,10 +382,11 @@ um recurso independente do calendário, que não é o que queremos.
 
 Portanto: não conceder `OnlineMeetings.ReadWrite`.
 
-### 13. `Mail.Send` — **Delegada**, necessária e ainda não concedida
+### 13. `Mail.Send` — **Delegada**, concedida e validada
 
-**Conceder `Mail.Send` do tipo `Delegated` no App Registration da PGCP API, com
-consentimento do administrador.**
+> ✅ **Concedida no tenant e validada em 26/08/2026.** O fluxo OBO funcionou com
+> usuário corporativo real, o Graph respondeu **202 Accepted** e o e-mail chegou
+> ao destinatário com o PDF anexado.
 
 O código que a consome já existe (`apps/api/src/mail/send.ts`) e serve ao envio
 das **pautas para validação**: um PDF anexado a um e-mail que sai da caixa de
@@ -520,7 +521,7 @@ Validação ponta a ponta
 | `Calendars.ReadWrite` **Application no Entra** | **NÃO** | Aplicação | — | daria escrita em todas as mailboxes; usar Exchange RBAC |
 | `Application Calendars.ReadWrite` **no Exchange** | **SIM agora** | Exchange RBAC + Resource Scope | criar/alterar evento nas mailboxes autorizadas | ver runbook do Exchange |
 | `OnlineMeetings.ReadWrite` | **NÃO** | Aplicação/Delegada | — | Teams nasce dentro do próprio evento |
-| `Mail.Send` **Delegada** | **SIM — pendente** | Delegada (PGCP API) | enviar pautas para validação pela caixa do usuário (OBO) | exige admin consent; sem ela o envio falha com `consent_required` |
+| `Mail.Send` **Delegada** | ✅ **SIM — concedida** | Delegada (PGCP API) | enviar pautas para validação pela caixa do usuário (OBO) | validada no tenant real |
 | `Mail.Send` **Aplicação** | **NÃO** | Aplicação | — | enviaria como qualquer caixa do tenant |
 | Client secret **no SPA** | **NÃO** | — | — | público não guarda segredo, jamais |
 | Client secret **na API** | **SIM agora** | Credencial confidencial | OBO e app-only | só no servidor; rotacionar conforme a política |

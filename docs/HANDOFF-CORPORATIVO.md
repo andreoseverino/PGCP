@@ -647,7 +647,7 @@ a quem está autenticado.
 | Microsoft Teams | **homologado** | `isOnlineMeeting` no próprio evento; `joinUrl` real; ingresso validado |
 | PostgreSQL | **funcional** | migrations 001–014 aplicadas; `/health` conectado |
 | Auditoria | **homologada** | `GET /audit-logs` restrito a `PGCP.Admin`, lendo a trilha real |
-| `Mail.Send` **Delegated** | **código pronto; permissão pendente** | envia as pautas para validação (PDF) pela caixa do usuário, via OBO. A versão **Aplicação** não é usada |
+| `Mail.Send` **Delegated** | ✅ **concedida e validada no tenant real** | envia as pautas para validação (PDF) pela caixa do usuário, via OBO. A versão **Aplicação** não é usada |
 | DocuSign | **futuro** | domínio modelado; sem credenciais e sem rota |
 | Observabilidade (Azure) | **pendente** | variável no catálogo; nenhum exportador implementado |
 
@@ -906,7 +906,7 @@ Lacunas reais — nenhuma é bug:
 | Lacuna | Situação |
 |---|---|
 | Observabilidade (Azure) | pendente; variável existe, código não |
-| `Mail.Send` (Delegated) | código pronto; **permissão pendente no Entra**, envio real nunca validado |
+| `Mail.Send` (Delegated) | ✅ concedida; envio e recebimento validados. ⚠️ falta revalidar a persistência de `sent` após a correção do 202 |
 | DocuSign | domínio pronto, **sem** provedor, credenciais ou rota |
 | Reunião confidencial/restrita | **não existe** no modelo |
 | Experiência pública | futura; hoje o usuário sem role já tem leitura corporativa |

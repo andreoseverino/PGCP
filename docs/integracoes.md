@@ -974,7 +974,7 @@ Princípio de menor privilégio: pedir na etapa em que a funcionalidade entra.
 | `User.Read` | API | Delegated | não | 3 | perfil do próprio usuário via OBO |
 | `Application Calendars.ReadWrite` | — **Exchange Online RBAC**, não o App Registration | Application | n/a — atribuição no Exchange | 5 | criar/editar o evento na caixa do organizador, sem depender da sessão dele, com Resource Scope limitando as caixas |
 | `OnlineMeetings.ReadWrite` | API | Delegated (OBO) | não | 5 | criar reunião Teams e obter join URL |
-| `Mail.Send` | API | **Delegated (OBO)** | admin consent | **5.5 — pendente** | enviar as pautas para validação (PDF) pela caixa do próprio usuário. A versão **Application** NÃO é usada |
+| `Mail.Send` | API | **Delegated (OBO)** | admin consent | **5.5 — ✅ concedida** | enviar as pautas para validação (PDF) pela caixa do próprio usuário. A versão **Application** NÃO é usada |
 | `Chat.Create` + `ChatMessage.Send` | API | Delegated (OBO) | não | 7 | ações "Chamar" e "Mensagem" |
 
 **Não** solicitar `ProfilePhoto.Read.All` enquanto `User.Read.All` estiver em uso:
