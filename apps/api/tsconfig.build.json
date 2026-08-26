@@ -1,0 +1,16 @@
+{
+  /*
+   * Configuracao do BUILD. Igual a base, menos os testes.
+   *
+   * Existe para separar duas coisas que estavam presas no mesmo arquivo:
+   *
+   *   `npm run build`  -> emite dist/ e NAO pode carregar teste para producao
+   *   `npm run lint`   -> checa tipos e PRECISA incluir os testes
+   *
+   * Antes o `exclude` dos testes vivia no tsconfig.json, entao o lint (que usa
+   * a mesma configuracao) tambem os ignorava: um erro de tipo dentro de um
+   * arquivo .test.ts passava despercebido pelo typecheck.
+   */
+  "extends": "./tsconfig.json",
+  "exclude": ["src/**/*.test.ts"]
+}
