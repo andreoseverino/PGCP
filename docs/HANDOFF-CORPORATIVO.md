@@ -455,6 +455,9 @@ Secretaria registra o fato. Não há leitura de resposta nem portal externo.
 O e-mail leva um **PDF** gerado no servidor (`apps/api/src/agenda-pdf/`) e sai da
 caixa **do próprio usuário autenticado**, via `Mail.Send` **Delegated** + OBO.
 ⚠️ A permissão ainda não foi concedida no tenant — ver `docs/security.md` §9.
+Cada pauta no PDF pode trazer, quando presentes: **responsável, duração, Tipo,
+Natureza, Descrição, Tema circular, Tema de FUP e os participantes da pauta** (nomes);
+o snapshot da pauta é a fonte, com fallback ao tema mestre em itens antigos.
 
 `failed` **não** é reenviado automaticamente a cada edição; fica no botão.
 
@@ -549,6 +552,18 @@ preserva `agenda_topic_id`; **depois são independentes** (editar o mestre não
 retroage; editar a pauta não altera o mestre). Editar é **UPDATE parcial por UUID**
 (nunca delete+insert). Alterar esses campos antes da reunião reabre a validação
 (016), como os demais campos estruturais.
+
+**Participantes POR PAUTA (Opção A, 020).** `meeting_agenda_item_participants` liga a
+pauta a **`meeting_participants`** (não ao diretório) — conceito distinto de
+`meeting_agenda_item_presenters` (apresentador). Regra: *todo participante de uma
+pauta é também participante da reunião*. **Adicionar** alguém reutiliza o participante
+se já existe (dedup por `entra_object_id`/`user_id`, nunca por nome; sem `UNIQUE` novo)
+ou o **adiciona à reunião** pelo mesmo fluxo da aba Participantes (calendário fica
+`stale`, auditoria). **Remover** da pauta **remove da reunião** — apaga o
+`meeting_participant`, e o `ON DELETE CASCADE` tira os vínculos dele com as demais
+pautas. Ao vincular da Biblioteca, os `agenda_topic_participants` viram
+`meeting_participants` + vínculos (snapshot; depois independente). Vincular/desvincular
+é estrutural → reabre a validação antes da reunião (016).
 
 `execution_status`: `pending` · `presenting` · `completed` · `postponed`.
 Postergar/retomar são rotas próprias, com procedência **estrutural** — o backend

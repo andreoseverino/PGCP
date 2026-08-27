@@ -542,14 +542,18 @@ Nunca se cria usuário fictício para permitir vínculo na biblioteca.
 **Ficha cadastral da pauta — snapshot Biblioteca → reunião (019).** `agenda_topics`
 continua o **tema mestre** (valor-padrão); `meeting_agenda_items` guarda o **snapshot
 efetivo** daquela pauta naquela reunião. Ao **vincular/criar a partir da Biblioteca**, o
-backend **copia uma vez** (COALESCE no INSERT do item) — título, responsável, duração,
-Tipo, Natureza, Tema circular, Tema de FUP e Descrição — e preserva `agenda_topic_id` como
-procedência. **Depois disso são independentes**: editar o mestre **não** retroage a
-reuniões existentes; editar a pauta da reunião **não** altera o mestre. Pauta criada direto
-na reunião (sem vínculo) grava os valores explícitos; ausentes ficam `NULL`/`false`. Os FKs
-de Tipo/Natureza usam `ON DELETE SET NULL` (e não `RESTRICT` como em `agenda_topics`): o
-snapshot degrada em vez de emitir erro cru se um cadastro for excluído. Regras de
-reabertura da validação (016) e de RBAC valem para estes campos como para os demais.
+backend **copia uma vez** (COALESCE no INSERT do item) — **título, responsável, duração,
+Tipo, Natureza, Tema circular, Tema de FUP, Descrição** e os **participantes** da pauta
+(via `agenda_topic_participants` → `meeting_agenda_item_participants`, ver 5.9.1) — e preserva
+`agenda_topic_id` como procedência. **Depois disso são independentes**: editar o mestre
+**não** retroage a reuniões existentes; editar a pauta da reunião **não** altera o mestre.
+Pauta criada direto na reunião (sem vínculo) grava os valores explícitos; ausentes ficam
+`NULL`/`false`. Os FKs de Tipo/Natureza usam `ON DELETE SET NULL` (e não `RESTRICT` como em
+`agenda_topics`): o snapshot degrada em vez de emitir erro cru se um cadastro for excluído.
+`is_circular_theme` (017) segue exatamente a mesma lógica de snapshot. Itens antigos
+permanecem compatíveis com `NULL`/defaults — **sem backfill**. Alterações estruturais destes
+campos reabrem a validação (016) quando `sent`/`approved` antes da reunião; RBAC vale como
+para os demais.
 
 **`UNIQUE (meeting_id, position)` DEFERRABLE** — ordem determinística sem travar a
 reordenação (o arrasta-e-solta troca várias posições na mesma transação).
@@ -595,6 +599,43 @@ UNIQUE (meeting_agenda_item_id) WHERE is_lead
 | `"Todos"`, `"Comitê Financeiro"`, `"Diretoria"`, `"Convidados"` | `presenter_label` no item; **nenhuma linha aqui** |
 
 Nunca criar usuário nem participante fictício para representar um coletivo.
+
+### 5.9.1 `meeting_agenda_item_participants` — participantes POR PAUTA (Opção A, 020)
+
+Relaciona `meeting_agenda_items` a **`meeting_participants`** — **não** ao diretório/Entra.
+Assim a invariante "quem participa de uma pauta participa da reunião" é **estrutural**
+(FK), não uma regra que possa furar. **Conceito distinto** de `meeting_agenda_item_presenters`
+(5.9, apresentador): aqui é "quem participa da discussão daquela pauta".
+
+| Campo | Tipo |
+|---|---|
+| `meeting_agenda_item_id` | uuid FK → `meeting_agenda_items`, PK composta, `ON DELETE CASCADE` |
+| `meeting_participant_id` | uuid FK → `meeting_participants`, PK composta, `ON DELETE CASCADE` |
+| `created_at` | timestamptz |
+
+**PK composta** impede vínculo duplicado (a mesma pessoa não entra duas vezes na mesma
+pauta). **`ON DELETE CASCADE` nos dois lados**: excluir a pauta, ou remover a pessoa da
+reunião, elimina o vínculo.
+
+**Regra de negócio (aprovada).** *Todo participante de uma pauta é também participante da
+reunião.*
+
+- **Adicionar** alguém a uma pauta: se já é participante da reunião, **reutiliza** o
+  `meeting_participant` (deduplicação pela lógica da aplicação — por `entra_object_id`/`user_id`,
+  **nunca** por `display_name`; sem `UNIQUE` novo sobre dados legados). Se ainda não é, ele é
+  **adicionado à reunião** pelo MESMO fluxo da aba Participantes — passa a constar na lista
+  geral e a integração de calendário fica `stale` (5.11 / ver §Calendário).
+- **Remover** alguém de uma pauta: ele é **removido de `meeting_participants`** — deixa a
+  reunião inteira. Pelo `ON DELETE CASCADE`, os vínculos dele com as **demais pautas** da mesma
+  reunião também somem. Mesma remoção da aba Participantes (calendário `stale` + auditoria).
+
+**Snapshot Biblioteca → reunião.** Ao vincular uma pauta da Biblioteca que tem participantes
+(`agenda_topic_participants`), cada pessoa é **localizada/criada** em `meeting_participants` e
+então vinculada aqui. A partir daí o vínculo da reunião é **independente** da Biblioteca — não
+há sincronização retroativa.
+
+**Validação.** Vincular/desvincular participante é **alteração estrutural**: antes da reunião,
+`sent`/`approved` → `draft` (016); durante `In Progress`/`Done`/`Closed`, não reabre.
 
 ### 5.10 `action_items` — FUP
 
@@ -742,6 +783,7 @@ externa real.
 | `meeting_agenda_items` | `meetings` | N:1 | sim | `CASCADE` |
 | `meeting_agenda_items` | `agenda_topics` | N:1 | opcional | `SET NULL` |
 | `meeting_agenda_item_presenters` | `meeting_agenda_items` / `meeting_participants` | **N:N** | — | `CASCADE` |
+| `meeting_agenda_item_participants` (020) | `meeting_agenda_items` / `meeting_participants` | **N:N** | — | `CASCADE` |
 | `agenda_topics` | `users` (owner) | N:1 | opcional | `RESTRICT` |
 | `agenda_topics` | `governance_bodies` | N:1 | opcional | `RESTRICT` |
 | `agenda_topics` | `agenda_topic_types` / `_natures` | N:1 | opcional | `RESTRICT` |
@@ -842,8 +884,10 @@ erDiagram
     AGENDA_TOPICS ||--o{ AGENDA_TOPIC_PARTICIPANTS : "possui"
 
     MEETING_PARTICIPANTS ||--o{ MEETING_AGENDA_ITEM_PRESENTERS : "apresenta"
+    MEETING_PARTICIPANTS ||--o{ MEETING_AGENDA_ITEM_PARTICIPANTS : "participa"
 
     MEETING_AGENDA_ITEMS ||--o{ MEETING_AGENDA_ITEM_PRESENTERS : "possui"
+    MEETING_AGENDA_ITEMS ||--o{ MEETING_AGENDA_ITEM_PARTICIPANTS : "possui"
     MEETING_AGENDA_ITEMS ||--o{ ACTION_ITEMS : "origina"
 
     USERS {
@@ -924,6 +968,10 @@ erDiagram
         uuid meeting_agenda_item_id PK
         uuid meeting_participant_id PK
         boolean is_lead
+    }
+    MEETING_AGENDA_ITEM_PARTICIPANTS {
+        uuid meeting_agenda_item_id PK
+        uuid meeting_participant_id PK
     }
     ACTION_ITEMS {
         uuid id PK
