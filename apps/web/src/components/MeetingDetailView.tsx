@@ -100,6 +100,7 @@ import { getInitials } from "../lib/user";
 import { hrefSeguro } from "../lib/safe-url";
 import DirectoryUserPicker from "./DirectoryUserPicker";
 import { directoryEmail, type DirectoryUser } from "../lib/directory";
+import type { TaxonomyItem } from "../lib/agenda-topics";
 import {
   parseDurationMinutes,
   parseTimeToMinutes,
@@ -158,6 +159,9 @@ interface MeetingDetailViewProps {
    * decisão de autorização é tomada aqui.
    */
   canSchedule?: boolean;
+  /** Mesmas fontes de Tipo/Natureza da Biblioteca (cadastros relacionais). */
+  pautaTypes?: TaxonomyItem[];
+  pautaNatures?: TaxonomyItem[];
 }
 
 export default function MeetingDetailView({
@@ -178,7 +182,9 @@ export default function MeetingDetailView({
   triggerToast,
   currentUser,
   canSchedule = false,
-  podeGerenciarFup = () => true
+  podeGerenciarFup = () => true,
+  pautaTypes = [],
+  pautaNatures = []
 }: MeetingDetailViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<string>("Overview");
 
@@ -193,6 +199,11 @@ export default function MeetingDetailView({
   const [editRespUser, setEditRespUser] = useState<DirectoryUser | null>(null);
   // Tema circular NESTA reunião. Editável Não↔Sim; nunca toca a Biblioteca.
   const [editCircular, setEditCircular] = useState(false);
+  // Ficha (019): edição da PRÓPRIA pauta da reunião; nunca toca a Biblioteca.
+  const [editTypeId, setEditTypeId] = useState("");
+  const [editNatureId, setEditNatureId] = useState("");
+  const [editFup, setEditFup] = useState(false);
+  const [editDescription, setEditDescription] = useState("");
   const [salvandoEdicao, setSalvandoEdicao] = useState(false);
   const [erroEdicao, setErroEdicao] = useState<string | null>(null);
 
@@ -721,7 +732,12 @@ export default function MeetingDetailView({
           responsibleEntraObjectId: item.author?.trim() ? item.authorEntraObjectId : undefined,
           // [EXTRA] carrega o valor escolhido; item da Biblioteca vem undefined e
           // o backend herda o padrão do tema mestre (cópia por agendaTopicId).
-          isCircularTheme: item.isCircularTheme
+          isCircularTheme: item.isCircularTheme,
+          // Ficha (019): explícito manda; ausente + agendaTopicId => herda do tema.
+          agendaTopicTypeId: item.agendaTopicTypeId,
+          agendaTopicNatureId: item.agendaTopicNatureId,
+          description: item.description?.trim() ? item.description.trim() : undefined,
+          generatesActionItem: item.generatesActionItem
         }),
       language === "en" ? "Agenda item added." : "Pauta incluída na reunião."
     );
@@ -1073,6 +1089,13 @@ export default function MeetingDetailView({
   const [extraDuration, setExtraDuration] = useState("15 mins");
   // Tema circular da nova pauta. Default visual "Não"; "Sim" só AFIRMA o fato.
   const [extraCircular, setExtraCircular] = useState(false);
+  // Ficha (019) da extraordinária — mesma dos demais fluxos. Complementar,
+  // recolhível, para não pesar a operação ao vivo.
+  const [extraTypeId, setExtraTypeId] = useState("");
+  const [extraNatureId, setExtraNatureId] = useState("");
+  const [extraFup, setExtraFup] = useState(false);
+  const [extraDescription, setExtraDescription] = useState("");
+  const [extraFichaAberta, setExtraFichaAberta] = useState(false);
 
   /** Recalcula os horários em cascata a partir do início da reunião. */
   const recalculateAgendaTimes = (agendaArray: AgendaItem[]): AgendaItem[] => {
@@ -1205,6 +1228,11 @@ export default function MeetingDetailView({
     setEditRespOid(item.authorEntraObjectId);
     setEditRespUser(null);
     setEditCircular(item.isCircularTheme === true);
+    // Ficha: pré-seleciona o snapshot atual; sem valor, cai no primeiro cadastro.
+    setEditTypeId(item.agendaTopicTypeId || pautaTypes[0]?.id || "");
+    setEditNatureId(item.agendaTopicNatureId || pautaNatures[0]?.id || "");
+    setEditFup(item.generatesActionItem === true);
+    setEditDescription(item.description || "");
     setErroEdicao(null);
   };
 
@@ -1226,6 +1254,11 @@ export default function MeetingDetailView({
         durationMinutes: parseDurationMinutes(editDuration),
         // Booleano estrito. Grava o estado do seletor sempre — permite Sim→Não.
         isCircularTheme: editCircular,
+        // Ficha (019): grava na PRÓPRIA pauta. `null` limpa; nunca toca a Biblioteca.
+        agendaTopicTypeId: editTypeId || null,
+        agendaTopicNatureId: editNatureId || null,
+        description: editDescription.trim() || null,
+        generatesActionItem: editFup,
       };
       if (label) {
         patch.responsibleLabel = label;
@@ -1323,7 +1356,9 @@ export default function MeetingDetailView({
     /** Só existe quando o responsável foi escolhido no diretório corporativo. */
     speakerEntraObjectId?: string,
     /** Tema circular desta pauta. Só um fato; não altera o fluxo [EXTRA]. */
-    circular = false
+    circular = false,
+    /** Ficha complementar (019). Sem tema mestre: gravada direto na pauta. */
+    ficha?: { typeId?: string; natureId?: string; fup?: boolean; description?: string }
   ) => {
     if (!titleText.trim()) return;
 
@@ -1334,7 +1369,11 @@ export default function MeetingDetailView({
       duration: durationText.trim() || "15 mins",
       author: speakerText.trim() || "Todos",
       authorEntraObjectId: speakerEntraObjectId,
-      isCircularTheme: circular
+      isCircularTheme: circular,
+      agendaTopicTypeId: ficha?.typeId || undefined,
+      agendaTopicNatureId: ficha?.natureId || undefined,
+      generatesActionItem: ficha?.fup ?? false,
+      description: ficha?.description?.trim() || undefined
     };
 
     void persistirNovaPauta(extraItem);
@@ -2797,6 +2836,68 @@ export default function MeetingDetailView({
                       </div>
                     </div>
 
+                    {/* Complementar (019) — recolhível, para não pesar a operação
+                        ao vivo. Mesma ficha; pode ser completada depois via Editar. */}
+                    <button
+                      type="button"
+                      onClick={() => setExtraFichaAberta((v) => !v)}
+                      className="flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wider text-[#00658d] hover:underline cursor-pointer"
+                    >
+                      {extraFichaAberta ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                      {language === "en" ? "More details (type, nature, FUP, description)" : "Mais detalhes (tipo, natureza, FUP, descrição)"}
+                    </button>
+
+                    {extraFichaAberta && (
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-3 pt-1">
+                        <div className="md:col-span-4 flex flex-col gap-1">
+                          <label className="text-[10px] font-extrabold text-slate-500 uppercase">Tipo</label>
+                          <select
+                            value={extraTypeId}
+                            onChange={(e) => setExtraTypeId(e.target.value)}
+                            className="w-full bg-white border border-slate-205 rounded-xl p-2.5 text-xs text-slate-705 cursor-pointer focus:outline-none"
+                          >
+                            <option value="">— Sem tipo —</option>
+                            {pautaTypes.map((pt) => (
+                              <option key={pt.id} value={pt.id}>{pt.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="md:col-span-4 flex flex-col gap-1">
+                          <label className="text-[10px] font-extrabold text-slate-500 uppercase">Natureza</label>
+                          <select
+                            value={extraNatureId}
+                            onChange={(e) => setExtraNatureId(e.target.value)}
+                            className="w-full bg-white border border-slate-205 rounded-xl p-2.5 text-xs text-slate-705 cursor-pointer focus:outline-none"
+                          >
+                            <option value="">— Sem natureza —</option>
+                            {pautaNatures.map((pn) => (
+                              <option key={pn.id} value={pn.id}>{pn.name}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="md:col-span-4 flex items-end">
+                          <label className="flex items-center gap-2 cursor-pointer select-none pb-2">
+                            <input
+                              type="checkbox"
+                              checked={extraFup}
+                              onChange={(e) => setExtraFup(e.target.checked)}
+                              className="w-4 h-4 accent-[#00658d] cursor-pointer"
+                            />
+                            <span className="text-[10px] font-extrabold text-slate-500 uppercase">Tema de FUP</span>
+                          </label>
+                        </div>
+                        <div className="md:col-span-12 flex flex-col gap-1">
+                          <label className="text-[10px] font-extrabold text-slate-500 uppercase">Descrição / Objetivo de Debate</label>
+                          <textarea
+                            rows={2}
+                            value={extraDescription}
+                            onChange={(e) => setExtraDescription(e.target.value)}
+                            className="w-full bg-white border border-slate-205 rounded-xl p-2.5 text-xs text-slate-800 focus:outline-none resize-none font-sans"
+                          />
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex justify-end pt-2">
                       <button
                         type="button"
@@ -2805,11 +2906,21 @@ export default function MeetingDetailView({
                             triggerToast(language === "en" ? "Please fill the topic title." : "Por favor preencha o assunto.");
                             return;
                           }
-                          handleAddLiveExtraTopic(extraTitle, extraDuration, extraSpeaker, extraSpeakerUser?.id, extraCircular);
+                          handleAddLiveExtraTopic(extraTitle, extraDuration, extraSpeaker, extraSpeakerUser?.id, extraCircular, {
+                            typeId: extraTypeId || undefined,
+                            natureId: extraNatureId || undefined,
+                            fup: extraFup,
+                            description: extraDescription
+                          });
                           setExtraTitle("");
                           setExtraSpeaker("Todos");
                           setExtraSpeakerUser(null);
                           setExtraCircular(false);
+                          setExtraTypeId("");
+                          setExtraNatureId("");
+                          setExtraFup(false);
+                          setExtraDescription("");
+                          setExtraFichaAberta(false);
                           setIsExtraFormOpen(false);
                         }}
                         className="px-4 py-2 bg-[#00658d] hover:bg-[#00aeef] text-white font-bold text-xs rounded-xl shadow-xs transition"
@@ -4003,10 +4114,10 @@ export default function MeetingDetailView({
           onClick={() => { if (!salvandoEdicao) setEditandoPautaId(null); }}
         >
           <div
-            className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-md w-full overflow-hidden"
+            className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-md w-full overflow-hidden max-h-[90vh] flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-6 space-y-4">
+            <div className="p-6 space-y-4 overflow-y-auto">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-[#c6e7ff]/40 flex items-center justify-center shrink-0">
                   <Pencil className="w-5 h-5 text-[#00658d]" />
@@ -4096,6 +4207,66 @@ export default function MeetingDetailView({
                   <option value="nao">{language === "pt" ? "Não" : "No"}</option>
                   <option value="sim">{language === "pt" ? "Sim" : "Yes"}</option>
                 </select>
+              </div>
+
+              {/* Ficha (019): Tipo e Natureza — MESMOS cadastros da Biblioteca. */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                    {language === "pt" ? "Tipo" : "Type"}
+                  </label>
+                  <select
+                    value={editTypeId}
+                    onChange={(e) => setEditTypeId(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                  >
+                    <option value="">{language === "pt" ? "— Sem tipo —" : "— None —"}</option>
+                    {pautaTypes.map((pt) => (
+                      <option key={pt.id} value={pt.id}>{pt.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                    {language === "pt" ? "Natureza" : "Nature"}
+                  </label>
+                  <select
+                    value={editNatureId}
+                    onChange={(e) => setEditNatureId(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                  >
+                    <option value="">{language === "pt" ? "— Sem natureza —" : "— None —"}</option>
+                    {pautaNatures.map((pn) => (
+                      <option key={pn.id} value={pn.id}>{pn.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Classificar como Tema de FUP — só classificação (não cria FUP). */}
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={editFup}
+                  onChange={(e) => setEditFup(e.target.checked)}
+                  className="w-4 h-4 accent-[#00658d] cursor-pointer"
+                />
+                <span className="text-[10px] font-extrabold text-slate-500 uppercase">
+                  {language === "pt" ? "Classificar como Tema de FUP" : "Classify as follow-up (FUP) theme"}
+                </span>
+              </label>
+
+              {/* Descrição / Objetivo de Debate. */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                  {language === "pt" ? "Descrição / Objetivo de Debate" : "Description / Debate objective"}
+                </label>
+                <textarea
+                  rows={4}
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d] resize-none font-sans"
+                />
               </div>
 
               {erroEdicao && (

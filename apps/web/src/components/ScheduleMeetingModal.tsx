@@ -4,7 +4,7 @@ import { AgendaItem, GovernanceBody, Participant, StandaloneAgenda } from "../ty
 import { newId } from "../lib/id";
 import DirectoryUserPicker from "./DirectoryUserPicker";
 import type { DirectoryUser } from "../lib/directory";
-import type { BibliotecaFormInput } from "../lib/agenda-topics";
+import type { BibliotecaFormInput, TaxonomyItem } from "../lib/agenda-topics";
 import {
   addParticipantOnce,
   canOfferAsParticipant,
@@ -39,7 +39,11 @@ interface ScheduleMeetingModalProps {
   onClose: () => void;
   /** Avisa que POST /meetings devolveu 201. O `id` é o UUID do banco. */
   onCreated: (meetingId: string, title: string) => void;
-  onAddStandaloneAgenda: (input: BibliotecaFormInput) => void;
+  /** Cria o tema na Biblioteca e DEVOLVE o tema criado (para o drawer vincular). */
+  onAddStandaloneAgenda: (input: BibliotecaFormInput) => Promise<StandaloneAgenda | null>;
+  /** Mesmas fontes de Tipo/Natureza da Biblioteca (cadastros relacionais). */
+  pautaTypes: TaxonomyItem[];
+  pautaNatures: TaxonomyItem[];
 }
 
 export default function ScheduleMeetingModal({
@@ -48,7 +52,9 @@ export default function ScheduleMeetingModal({
   standaloneAgendas = [],
   onClose,
   onCreated,
-  onAddStandaloneAgenda
+  onAddStandaloneAgenda,
+  pautaTypes = [],
+  pautaNatures = []
 }: ScheduleMeetingModalProps) {
   const [title, setTitle] = useState("");
   /** Identidade do órgão: UUID real de `governance_bodies`, nunca o nome. */
@@ -373,6 +379,18 @@ export default function ScheduleMeetingModal({
   const [tempPautaDescription, setTempPautaDescription] = useState("");
   // Tema circular da nova pauta. Default Não. Só REGISTRA o fato: sem automação.
   const [tempPautaCircular, setTempPautaCircular] = useState(false);
+  // Ficha (019): Tipo/Natureza usam os MESMOS cadastros da Biblioteca; FUP é só
+  // classificação. Tipo/Natureza caem no primeiro cadastro disponível.
+  const [tempPautaTypeId, setTempPautaTypeId] = useState("");
+  const [tempPautaNatureId, setTempPautaNatureId] = useState("");
+  const [tempPautaFup, setTempPautaFup] = useState(false);
+
+  useEffect(() => {
+    if (pautaTypes.length > 0 && !tempPautaTypeId) setTempPautaTypeId(pautaTypes[0].id);
+  }, [pautaTypes, tempPautaTypeId]);
+  useEffect(() => {
+    if (pautaNatures.length > 0 && !tempPautaNatureId) setTempPautaNatureId(pautaNatures[0].id);
+  }, [pautaNatures, tempPautaNatureId]);
 
   /** Sem pessoa escolhida, a pauta fica no coletivo — o mesmo padrão de antes. */
   const tempPautaAuthor = tempPautaAuthorUser?.displayName?.trim() || "Todos";
@@ -1088,9 +1106,18 @@ export default function ScheduleMeetingModal({
                         title: sa.title,
                         duration: sa.duration,
                         author: sa.author,
-                        // Vincular a Biblioteca: a pauta herda o padrão do tema
-                        // mestre (cópia snapshot; depois independente).
-                        isCircularTheme: sa.isCircularTheme
+                        authorEntraObjectId: sa.authorEntraObjectId,
+                        // Vincular a Biblioteca: preserva a procedência
+                        // (`agenda_topic_id`); o backend copia a ficha do tema
+                        // (snapshot), depois independente. Espelhamos para exibir já.
+                        agendaTopicId: sa.id,
+                        isCircularTheme: sa.isCircularTheme,
+                        agendaTopicTypeId: sa.pautaTypeId,
+                        pautaType: sa.pautaType,
+                        agendaTopicNatureId: sa.pautaNatureId,
+                        pautaNature: sa.pautaNature,
+                        description: sa.description || undefined,
+                        generatesActionItem: sa.isFUP
                       }));
                     // avoid duplicate imports by title matching
                     const currentTitles = agenda.map(a => a.title.toLowerCase());
@@ -1190,6 +1217,51 @@ export default function ScheduleMeetingModal({
                     </div>
                   </div>
 
+                  {/* Tipo e Natureza — MESMOS cadastros da Biblioteca. */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                        {language === "en" ? "Pauta type" : "Tipo de Pauta"}
+                      </label>
+                      <select
+                        value={tempPautaTypeId}
+                        onChange={(e) => setTempPautaTypeId(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-850 cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                      >
+                        {pautaTypes.map((pt) => (
+                          <option key={pt.id} value={pt.id}>{pt.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                        {language === "en" ? "Pauta nature" : "Natureza da Pauta"}
+                      </label>
+                      <select
+                        value={tempPautaNatureId}
+                        onChange={(e) => setTempPautaNatureId(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-850 cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                      >
+                        {pautaNatures.map((pn) => (
+                          <option key={pn.id} value={pn.id}>{pn.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Classificar como Tema de FUP — só classificação (não cria FUP). */}
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={tempPautaFup}
+                      onChange={(e) => setTempPautaFup(e.target.checked)}
+                      className="w-4 h-4 accent-[#00658d] cursor-pointer"
+                    />
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                      {language === "en" ? "Classify as follow-up (FUP) theme" : "Classificar como Tema de FUP"}
+                    </span>
+                  </label>
+
                   {/* Tema circular? — copiado para a pauta da reunião ao gravar.
                       Só registra o fato; sem automação. Default Não. */}
                   <div className="flex flex-col gap-1.5">
@@ -1208,7 +1280,7 @@ export default function ScheduleMeetingModal({
 
                   <div className="flex flex-col gap-1.5">
                     <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
-                      {language === "en" ? "Objectives / Agenda Scope" : "Objetivo e Diretrizes de Ata"}
+                      {language === "en" ? "Description / Debate objective" : "Descrição / Objetivo de Debate"}
                     </label>
                     <textarea
                       rows={5}
@@ -1232,30 +1304,31 @@ export default function ScheduleMeetingModal({
                 <button
                   type="button"
                   disabled={!tempPautaTitle.trim()}
-                  onClick={() => {
+                  onClick={async () => {
                     /*
-                     * Vai para o PostgreSQL pelo MESMO caminho da Biblioteca.
-                     *
-                     * Antes montava um `StandaloneAgenda` com id inventado
-                     * (`pauta-NNNNN`) e o empurrava direto no estado do App: a
-                     * pauta parecia criada, sumia no próximo refresh, e o tipo e
-                     * a natureza vinham fixos em texto que não correspondia a
-                     * nenhuma linha de `agenda_topic_types`/`_natures`.
-                     *
-                     * Sem tipo e natureza aqui: o formulário do modal não os
-                     * coleta, e a API aceita a pauta sem eles.
+                     * Cria o tema na Biblioteca pelo MESMO caminho/contrato e usa
+                     * o tema criado para VINCULAR o item da reunião (agenda_topic_id).
+                     * Assim a pauta da reunião nasce com procedência e recebe o
+                     * SNAPSHOT (tipo/natureza/descrição/FUP/circular) do backend —
+                     * nada de item solto (era o bug antigo do drawer).
                      */
-                    onAddStandaloneAgenda({
+                    const criado = await onAddStandaloneAgenda({
                       title: tempPautaTitle.trim(),
                       description: tempPautaDescription.trim(),
                       durationMinutes: parseDuracaoEmMinutos(tempPautaDuration),
                       responsibleLabel: tempPautaAuthor.trim(),
                       responsibleEntraObjectId: tempPautaAuthorUser?.id || undefined,
-                      // Padrão do tema mestre na Biblioteca.
+                      typeId: tempPautaTypeId || undefined,
+                      natureId: tempPautaNatureId || undefined,
+                      generatesActionItem: tempPautaFup,
                       isCircularTheme: tempPautaCircular
                     });
+                    // Se a criação falhou (toast já avisou), não adiciona item solto.
+                    if (!criado) return;
 
-                    // Add directly to current meeting agendas too
+                    // Item da reunião VINCULADO ao tema recém-criado. O backend
+                    // copia a ficha do tema (snapshot); aqui espelhamos para exibir
+                    // já na lista antes do reload.
                     setAgenda(prev => [...prev, {
                       id: newId(),
                       time: "10:00",
@@ -1263,8 +1336,14 @@ export default function ScheduleMeetingModal({
                       duration: tempPautaDuration,
                       author: tempPautaAuthor,
                       authorEntraObjectId: tempPautaAuthorUser?.id,
-                      // Valor efetivo da pauta desta reunião (mesmo do formulário).
-                      isCircularTheme: tempPautaCircular
+                      isCircularTheme: tempPautaCircular,
+                      agendaTopicId: criado.id,
+                      agendaTopicTypeId: criado.pautaTypeId,
+                      pautaType: criado.pautaType,
+                      agendaTopicNatureId: criado.pautaNatureId,
+                      pautaNature: criado.pautaNature,
+                      description: tempPautaDescription.trim() || undefined,
+                      generatesActionItem: tempPautaFup
                     }]);
 
                     if (tempPautaAuthorAsParticipant && tempPautaAuthorUser) {
@@ -1282,6 +1361,9 @@ export default function ScheduleMeetingModal({
                     setTempPautaAuthorAsParticipant(false);
                     setTempPautaDescription("");
                     setTempPautaCircular(false);
+                    setTempPautaFup(false);
+                    setTempPautaTypeId(pautaTypes[0]?.id || "");
+                    setTempPautaNatureId(pautaNatures[0]?.id || "");
                     setIsCreateAgendaDrawerOpen(false);
                   }}
                   className="w-full py-2.5 bg-[#00658d] hover:bg-[#00aeef] text-white rounded-xl text-[10px] font-bold uppercase tracking-wider transition disabled:opacity-50 cursor-pointer"

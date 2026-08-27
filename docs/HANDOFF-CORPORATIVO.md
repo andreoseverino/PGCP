@@ -536,7 +536,19 @@ meeting_agenda_items   instância dentro de UMA reunião
 ```
 
 `agenda_topic_types` e `agenda_topic_natures` são cadastros relacionais (não
-enums), mantidos na Administração.
+enums), mantidos na Administração. As MESMAS listas alimentam todos os formulários
+de pauta (Biblioteca, criação da reunião, Editar, Extraordinária).
+
+**Ficha cadastral — snapshot Biblioteca → reunião (019).** `agenda_topics` é o
+tema mestre (valor-padrão); `meeting_agenda_items` guarda o **snapshot efetivo**:
+além de título/responsável/duração/`is_circular_theme`, ganhou (019)
+`agenda_topic_type_id`, `agenda_topic_nature_id`, `description` e
+`generates_action_item` ("Tema de FUP", só classificação — não cria `action_items`).
+Ao vincular/criar da Biblioteca, o backend **copia uma vez** (COALESCE no INSERT) e
+preserva `agenda_topic_id`; **depois são independentes** (editar o mestre não
+retroage; editar a pauta não altera o mestre). Editar é **UPDATE parcial por UUID**
+(nunca delete+insert). Alterar esses campos antes da reunião reabre a validação
+(016), como os demais campos estruturais.
 
 `execution_status`: `pending` · `presenting` · `completed` · `postponed`.
 Postergar/retomar são rotas próprias, com procedência **estrutural** — o backend

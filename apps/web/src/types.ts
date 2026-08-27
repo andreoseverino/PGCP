@@ -125,6 +125,20 @@ export interface AgendaItem {
    * informa; não dispara comportamento. Ausente em item local ainda não gravado.
    */
   isCircularTheme?: boolean;
+  /**
+   * Ficha cadastral NESTA reunião (snapshot, migration 019). Snapshot de
+   * `agenda_topics.*` no vínculo; depois independente. Os `*Id` guardam a
+   * IDENTIDADE (para o form pré-selecionar); `pautaType`/`pautaNature` são só o
+   * rótulo de exibição. Ausentes em item antigo/sem classificação.
+   */
+  agendaTopicTypeId?: string;
+  pautaType?: string;
+  agendaTopicNatureId?: string;
+  pautaNature?: string;
+  /** Descrição / Objetivo de debate desta pauta. */
+  description?: string;
+  /** "Tema de FUP" — apenas classificação; não cria FUP. */
+  generatesActionItem?: boolean;
 }
 
 /**

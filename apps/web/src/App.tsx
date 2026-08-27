@@ -655,13 +655,19 @@ export default function App() {
    * Nada é inserido localmente: o `id` que passa a valer é o UUID gerado pelo
    * banco, e a resposta canônica vem do refetch.
    */
-  const handleRegisterStandaloneAgenda = async (input: BibliotecaFormInput) => {
+  const handleRegisterStandaloneAgenda = async (
+    input: BibliotecaFormInput,
+  ): Promise<StandaloneAgenda | null> => {
     try {
       const criada = await createAgendaTopic(buildTopicPayload(input));
       await loadAgendaTopics();
       triggerToast(`Pauta "${criada.title}" registrada na Biblioteca.`);
+      // Devolve o tema criado: o drawer da reunião usa o `id` para VINCULAR o
+      // item ao mestre (procedência + snapshot), em vez de criar item solto.
+      return agendaTopicToStandalone(criada);
     } catch (error) {
       triggerToast(describeTopicError(error, language));
+      return null;
     }
   };
 
@@ -811,6 +817,8 @@ export default function App() {
           currentUser={currentUser}
           canSchedule={usuarioPodeAgendar}
           podeGerenciarFup={podeGerenciarFup}
+          pautaTypes={pautaTypes}
+          pautaNatures={pautaNatures}
         />
       );
     }
@@ -1059,6 +1067,8 @@ export default function App() {
           governanceBodies={governanceBodies.filter((b) => b.isActive)}
           onCreated={handleMeetingCreated}
           onAddStandaloneAgenda={handleRegisterStandaloneAgenda}
+          pautaTypes={pautaTypes}
+          pautaNatures={pautaNatures}
         />
       )}
 

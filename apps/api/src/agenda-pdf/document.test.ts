@@ -41,6 +41,9 @@ function pauta(i: number) {
     horaInicio: "14:00",
     duracaoMinutos: 15,
     temaCircular: false,
+    tipo: null,
+    natureza: null,
+    temaFup: false,
   };
 }
 
@@ -276,6 +279,25 @@ test("tema circular: 'Sim' aparece na pauta circular; 'Não' nunca aparece", asy
   assert.ok(texto.includes("Sim"), "valor 'Sim' presente");
   // A nao-circular nunca deve poluir o PDF com "Tema circular: Não".
   assert.ok(!texto.includes("Tema circular: Não"), "nao-circular nao escreve 'Não'");
+});
+
+test("ficha (019): Tipo/Natureza aparecem quando existem; Tema de FUP só quando marcado", async () => {
+  const doc: ReuniaoDoDocumento = {
+    ...BASE,
+    pautas: [
+      { ...pauta(1), tipo: "Deliberativa", natureza: "Ordinária", temaFup: true },
+      { ...pauta(2), tipo: null, natureza: null, temaFup: false },
+    ],
+  };
+  const pdf = await gerarPdfDePautas(doc);
+  assert.deepEqual(validarEstrutura(pdf), []);
+
+  const texto = extrairTexto(pdf);
+  assert.ok(texto.includes("Tipo:") && texto.includes("Deliberativa"), "Tipo exibido");
+  assert.ok(texto.includes("Natureza:") && texto.includes("Ordinária"), "Natureza exibida");
+  assert.ok(texto.includes("Tema de FUP:"), "FUP marcado gera a linha");
+  // Item sem tipo/natureza e sem FUP não polui o documento.
+  assert.ok(!texto.includes("Tema de FUP: Não"), "FUP não-marcado não escreve 'Não'");
 });
 
 // --- conteudo hostil ---------------------------------------------------------

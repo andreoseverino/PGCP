@@ -130,13 +130,27 @@ async function carregarReuniao(meetingId: string) {
     scheduled_start_time: string | null;
     duration_minutes: number | null;
     is_circular_theme: boolean;
+    type_name: string | null;
+    nature_name: string | null;
+    generates_action_item: boolean;
   }>(
-    `SELECT ai.position, ai.title, t.description,
+    // SNAPSHOT primeiro (019); fallback ao tema mestre por compatibilidade nos
+    // campos nulos de itens antigos (Tipo/Natureza/Descrição). "Tema de FUP" usa
+    // o valor do item (NOT NULL): item antigo => false, coerente com a migration.
+    `SELECT ai.position, ai.title,
+            COALESCE(ai.description, t.description)          AS description,
             ai.responsible_label, ai.presenter_label,
-            to_char(ai.scheduled_start_time, 'HH24:MI') AS scheduled_start_time,
-            ai.duration_minutes, ai.is_circular_theme
+            to_char(ai.scheduled_start_time, 'HH24:MI')      AS scheduled_start_time,
+            ai.duration_minutes, ai.is_circular_theme,
+            COALESCE(itt.name, ttt.name)                     AS type_name,
+            COALESCE(itn.name, ttn.name)                     AS nature_name,
+            ai.generates_action_item
        FROM meeting_agenda_items ai
-       LEFT JOIN agenda_topics t ON t.id = ai.agenda_topic_id
+       LEFT JOIN agenda_topics t         ON t.id   = ai.agenda_topic_id
+       LEFT JOIN agenda_topic_types    itt ON itt.id = ai.agenda_topic_type_id
+       LEFT JOIN agenda_topic_types    ttt ON ttt.id = t.agenda_topic_type_id
+       LEFT JOIN agenda_topic_natures  itn ON itn.id = ai.agenda_topic_nature_id
+       LEFT JOIN agenda_topic_natures  ttn ON ttn.id = t.agenda_topic_nature_id
       WHERE ai.meeting_id = $1
       ORDER BY ai.position`,
     [meetingId],
@@ -163,6 +177,9 @@ async function carregarReuniao(meetingId: string) {
         horaInicio: p.scheduled_start_time,
         duracaoMinutos: p.duration_minutes,
         temaCircular: p.is_circular_theme,
+        tipo: p.type_name,
+        natureza: p.nature_name,
+        temaFup: p.generates_action_item,
       }),
     ),
     participantes: participantes.map((p) => p.nome).filter((n): n is string => Boolean(n)),

@@ -64,8 +64,13 @@ async function emTransacao<T>(
 
 function traduzirErro(error: unknown): unknown {
   if (error instanceof HttpError) return error;
-  if ((error as { code?: string } | null)?.code === "23505") {
+  const code = (error as { code?: string } | null)?.code;
+  if (code === "23505") {
     return new HttpError(409, "A mesma pessoa foi informada mais de uma vez nesta reunião.");
+  }
+  // FK inválida: tipo/natureza informados não existem no cadastro.
+  if (code === "23503") {
+    return new HttpError(400, "Tipo ou natureza de pauta informado não existe no cadastro.");
   }
   return error;
 }
@@ -455,9 +460,14 @@ export async function addAgendaItem(
               (meeting_id, agenda_topic_id, title, position, scheduled_start_time,
                duration_minutes, execution_status, responsible_label,
                responsible_entra_tenant_id, responsible_entra_object_id,
-               is_circular_theme)
+               is_circular_theme,
+               agenda_topic_type_id, agenda_topic_nature_id, description, generates_action_item)
             VALUES ($1, $9, $2, $3, $4, $5, 'pending', $6, $7, $8,
-               COALESCE($10::boolean, (SELECT is_circular_theme FROM agenda_topics WHERE id = $9), false))
+               COALESCE($10::boolean, (SELECT is_circular_theme FROM agenda_topics WHERE id = $9), false),
+               COALESCE($11::uuid,    (SELECT agenda_topic_type_id   FROM agenda_topics WHERE id = $9)),
+               COALESCE($12::uuid,    (SELECT agenda_topic_nature_id FROM agenda_topics WHERE id = $9)),
+               COALESCE($13::text,    (SELECT description            FROM agenda_topics WHERE id = $9)),
+               COALESCE($14::boolean, (SELECT generates_action_item  FROM agenda_topics WHERE id = $9), false))
          RETURNING id`,
       [
         meetingId,
@@ -472,6 +482,11 @@ export async function addAgendaItem(
         // Ausente + vínculo com a Biblioteca => herda o padrão do tema mestre
         // (snapshot). Ausente sem vínculo => false. Valor explícito manda.
         input.isCircularTheme ?? null,
+        // Ficha (019): ausente + vínculo => herda do tema; explícito manda.
+        input.agendaTopicTypeId ?? null,
+        input.agendaTopicNatureId ?? null,
+        input.description ?? null,
+        input.generatesActionItem ?? null,
       ],
     );
 
@@ -515,6 +530,12 @@ export interface AgendaItemPatch {
   executionStatus?: ExecutionStatus;
   /** Tema circular NESTA reuniao. So boolean; nunca toca a Biblioteca. */
   isCircularTheme?: boolean;
+  /** Ficha cadastral (019). `null` limpa; nunca toca a Biblioteca. */
+  agendaTopicTypeId?: string | null;
+  agendaTopicNatureId?: string | null;
+  description?: string | null;
+  /** "Tema de FUP" — apenas classificacao. Nao cria action_item. */
+  generatesActionItem?: boolean;
 }
 
 /**
@@ -534,6 +555,7 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
     "title", "durationMinutes", "scheduledStartTime",
     "responsibleLabel", "responsibleEntraObjectId", "executionStatus",
     "isCircularTheme",
+    "agendaTopicTypeId", "agendaTopicNatureId", "description", "generatesActionItem",
   ]);
   for (const chave of Object.keys(dados)) {
     if (!permitidos.has(chave)) {
@@ -613,6 +635,43 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
     saida.isCircularTheme = dados.isCircularTheme;
   }
 
+  // Ficha cadastral (019). `null` limpa. UUID validado por forma; a existência é
+  // garantida pela FK (23503 -> 400 no traduzirErro).
+  if ("agendaTopicTypeId" in dados) {
+    const valor = dados.agendaTopicTypeId;
+    if (valor === null) saida.agendaTopicTypeId = null;
+    else {
+      if (typeof valor !== "string") throw new HttpError(400, "'agendaTopicTypeId' deve ser um UUID.");
+      saida.agendaTopicTypeId = assertUuid(valor, "agendaTopicTypeId");
+    }
+  }
+  if ("agendaTopicNatureId" in dados) {
+    const valor = dados.agendaTopicNatureId;
+    if (valor === null) saida.agendaTopicNatureId = null;
+    else {
+      if (typeof valor !== "string") throw new HttpError(400, "'agendaTopicNatureId' deve ser um UUID.");
+      saida.agendaTopicNatureId = assertUuid(valor, "agendaTopicNatureId");
+    }
+  }
+  if ("description" in dados) {
+    const valor = dados.description;
+    if (valor === null || (typeof valor === "string" && valor.trim().length === 0)) {
+      saida.description = null;
+    } else if (typeof valor !== "string") {
+      throw new HttpError(400, "'description' deve ser um texto.");
+    } else if (valor.trim().length > 5000) {
+      throw new HttpError(400, "'description' excede 5000 caracteres.");
+    } else {
+      saida.description = valor.trim();
+    }
+  }
+  if ("generatesActionItem" in dados) {
+    if (typeof dados.generatesActionItem !== "boolean") {
+      throw new HttpError(400, "'generatesActionItem' deve ser booleano (true ou false).");
+    }
+    saida.generatesActionItem = dados.generatesActionItem;
+  }
+
   // Identidade sem rotulo nao entra — mesma regra da criacao.
   if (saida.responsibleEntraObjectId && saida.responsibleLabel === null) {
     throw new HttpError(400, "Informe 'responsibleLabel' junto de 'responsibleEntraObjectId'.");
@@ -657,6 +716,11 @@ export async function updateAgendaItem(
     if (input.scheduledStartTime !== undefined) bind("scheduled_start_time", input.scheduledStartTime);
     if (input.executionStatus !== undefined) bind("execution_status", input.executionStatus);
     if (input.isCircularTheme !== undefined) bind("is_circular_theme", input.isCircularTheme);
+    // Ficha (019). UPDATE parcial na PRÓPRIA pauta — nunca toca a Biblioteca.
+    if (input.agendaTopicTypeId !== undefined) bind("agenda_topic_type_id", input.agendaTopicTypeId);
+    if (input.agendaTopicNatureId !== undefined) bind("agenda_topic_nature_id", input.agendaTopicNatureId);
+    if (input.description !== undefined) bind("description", input.description);
+    if (input.generatesActionItem !== undefined) bind("generates_action_item", input.generatesActionItem);
 
     // Rotulo e identidade andam juntos: mexer num sem o outro deixaria um `oid`
     // apontando para alguem cujo nome exibido ja e outro.
@@ -693,7 +757,11 @@ export async function updateAgendaItem(
       input.durationMinutes !== undefined ||
       input.responsibleLabel !== undefined ||
       input.responsibleEntraObjectId !== undefined ||
-      input.isCircularTheme !== undefined;
+      input.isCircularTheme !== undefined ||
+      input.agendaTopicTypeId !== undefined ||
+      input.agendaTopicNatureId !== undefined ||
+      input.description !== undefined ||
+      input.generatesActionItem !== undefined;
     if (alterouEstrutura) {
       await reabrirValidacaoSePreReuniao(client, meetingId, actor);
     }

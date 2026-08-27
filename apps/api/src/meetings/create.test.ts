@@ -107,3 +107,51 @@ test("parseAgendaItemPatch recusa isCircularTheme não-boolean e mantém allowli
   assert.throws(() => parseAgendaItemPatch({ position: 3 }), HttpError);
   assert.throws(() => parseAgendaItemPatch({ agendaTopicId: "x" }), HttpError);
 });
+
+// --- Ficha cadastral 019 (tipo/natureza/descrição/FUP): create + patch --------
+
+const UUID_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
+test("parseAgendaItemInput aceita tipo/natureza/descrição/FUP válidos", () => {
+  const r = parseAgendaItemInput({
+    title: "P",
+    agendaTopicTypeId: UUID_A,
+    agendaTopicNatureId: UUID_A,
+    description: "  objetivo do debate  ",
+    generatesActionItem: true,
+  });
+  assert.equal(r.agendaTopicTypeId, UUID_A);
+  assert.equal(r.agendaTopicNatureId, UUID_A);
+  assert.equal(r.description, "objetivo do debate");
+  assert.equal(r.generatesActionItem, true);
+  // Ausentes => undefined (o INSERT herda do tema no vínculo, ou aplica default).
+  const vazio = parseAgendaItemInput({ title: "P" });
+  assert.equal(vazio.agendaTopicTypeId, undefined);
+  assert.equal(vazio.description, undefined);
+  assert.equal(vazio.generatesActionItem, undefined);
+});
+
+test("parseAgendaItemInput recusa tipo/natureza não-UUID e FUP não-boolean", () => {
+  assert.throws(() => parseAgendaItemInput({ title: "P", agendaTopicTypeId: "nope" }), HttpError);
+  assert.throws(() => parseAgendaItemInput({ title: "P", agendaTopicNatureId: 123 }), HttpError);
+  for (const v of ["true", 1, {}, "sim"]) {
+    assert.throws(() => parseAgendaItemInput({ title: "P", generatesActionItem: v }), HttpError);
+  }
+});
+
+test("parseAgendaItemPatch aceita a ficha e permite limpar (null) tipo/natureza/descrição", () => {
+  assert.equal(parseAgendaItemPatch({ agendaTopicTypeId: UUID_A }).agendaTopicTypeId, UUID_A);
+  assert.equal(parseAgendaItemPatch({ agendaTopicTypeId: null }).agendaTopicTypeId, null);
+  assert.equal(parseAgendaItemPatch({ agendaTopicNatureId: null }).agendaTopicNatureId, null);
+  assert.equal(parseAgendaItemPatch({ description: null }).description, null);
+  assert.equal(parseAgendaItemPatch({ description: "x" }).description, "x");
+  assert.equal(parseAgendaItemPatch({ generatesActionItem: false }).generatesActionItem, false);
+});
+
+test("parseAgendaItemPatch recusa ficha inválida e mantém allowlist", () => {
+  assert.throws(() => parseAgendaItemPatch({ agendaTopicTypeId: "nope" }), HttpError);
+  assert.throws(() => parseAgendaItemPatch({ generatesActionItem: "true" }), HttpError);
+  // Mass assignment: campo fora da allowlist recusado (nomes de coluna crus).
+  assert.throws(() => parseAgendaItemPatch({ agenda_topic_type_id: UUID_A }), HttpError);
+  assert.throws(() => parseAgendaItemPatch({ meeting_id: UUID_A }), HttpError);
+});

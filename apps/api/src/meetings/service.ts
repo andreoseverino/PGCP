@@ -168,6 +168,16 @@ export interface MeetingAgendaItem {
   presenterLabel: string | null;
   /** Tema circular NESTA reuniao — propriedade da pauta da reuniao. */
   isCircularTheme: boolean;
+  /**
+   * Ficha cadastral NESTA reuniao (snapshot, 019). Tipo e Natureza vêm com
+   * `{id, name}` para a tela pré-selecionar e o PDF exibir. `null` quando a
+   * pauta não tem o campo (item antigo ou criado sem classificação).
+   */
+  type: { id: string; name: string } | null;
+  nature: { id: string; name: string } | null;
+  description: string | null;
+  /** "Tema de FUP" — apenas classificação; não cria action_item. */
+  generatesActionItem: boolean;
 }
 
 export interface MeetingDetail extends MeetingSummary {
@@ -243,6 +253,12 @@ interface AgendaItemRow {
   responsible_entra_object_id: string | null;
   presenter_label: string | null;
   is_circular_theme: boolean;
+  agenda_topic_type_id: string | null;
+  type_name: string | null;
+  agenda_topic_nature_id: string | null;
+  nature_name: string | null;
+  description: string | null;
+  generates_action_item: boolean;
 }
 
 function toSummary(row: MeetingRow): MeetingSummary {
@@ -314,6 +330,13 @@ function toAgendaItem(row: AgendaItemRow): MeetingAgendaItem {
       : null,
     presenterLabel: row.presenter_label,
     isCircularTheme: row.is_circular_theme,
+    type: row.agenda_topic_type_id && row.type_name ? { id: row.agenda_topic_type_id, name: row.type_name } : null,
+    nature:
+      row.agenda_topic_nature_id && row.nature_name
+        ? { id: row.agenda_topic_nature_id, name: row.nature_name }
+        : null,
+    description: row.description,
+    generatesActionItem: row.generates_action_item,
   };
 }
 
@@ -455,22 +478,28 @@ async function listParticipants(meetingId: string): Promise<MeetingParticipant[]
 
 async function listAgendaItems(meetingId: string): Promise<MeetingAgendaItem[]> {
   const { rows } = await pool.query<AgendaItemRow>(
-    `SELECT id,
-            title,
-            position,
-            scheduled_start_time,
-            duration_minutes,
-            execution_status,
-            agenda_topic_id,
-            postponed_from_item_id,
-            responsible_label,
-            responsible_entra_tenant_id,
-            responsible_entra_object_id,
-            presenter_label,
-            is_circular_theme
-       FROM meeting_agenda_items
-      WHERE meeting_id = $1
-      ORDER BY position`,
+    `SELECT ai.id,
+            ai.title,
+            ai.position,
+            ai.scheduled_start_time,
+            ai.duration_minutes,
+            ai.execution_status,
+            ai.agenda_topic_id,
+            ai.postponed_from_item_id,
+            ai.responsible_label,
+            ai.responsible_entra_tenant_id,
+            ai.responsible_entra_object_id,
+            ai.presenter_label,
+            ai.is_circular_theme,
+            ai.agenda_topic_type_id,   tt.name AS type_name,
+            ai.agenda_topic_nature_id, tn.name AS nature_name,
+            ai.description,
+            ai.generates_action_item
+       FROM meeting_agenda_items ai
+       LEFT JOIN agenda_topic_types    tt ON tt.id = ai.agenda_topic_type_id
+       LEFT JOIN agenda_topic_natures  tn ON tn.id = ai.agenda_topic_nature_id
+      WHERE ai.meeting_id = $1
+      ORDER BY ai.position`,
     [meetingId],
   );
 

@@ -101,6 +101,11 @@ export interface ApiMeetingAgendaItem {
   presenterLabel: string | null;
   /** Tema circular nesta reunião (`meeting_agenda_items.is_circular_theme`). */
   isCircularTheme: boolean;
+  /** Ficha cadastral (snapshot 019). Tipo/Natureza vêm com `{id, name}`. */
+  type: { id: string; name: string } | null;
+  nature: { id: string; name: string } | null;
+  description: string | null;
+  generatesActionItem: boolean;
 }
 
 export interface ApiMeetingDetail extends ApiMeetingSummary {
@@ -283,7 +288,13 @@ export function agendaItemFromApi(item: ApiMeetingAgendaItem): AgendaItem {
       item.executionStatus === "completed" || item.executionStatus === "postponed"
         ? item.executionStatus
         : "pending",
-    isCircularTheme: item.isCircularTheme
+    isCircularTheme: item.isCircularTheme,
+    agendaTopicTypeId: item.type?.id,
+    pautaType: item.type?.name,
+    agendaTopicNatureId: item.nature?.id,
+    pautaNature: item.nature?.name,
+    description: item.description ?? undefined,
+    generatesActionItem: item.generatesActionItem
   };
 }
 
@@ -360,6 +371,14 @@ export interface CreateAgendaItemPayload {
    * um fato; a API recusa qualquer valor que não seja booleano estrito.
    */
   isCircularTheme?: boolean;
+  /**
+   * Ficha cadastral (019). Ausente + `agendaTopicId` => o backend herda do tema
+   * (snapshot). Explícito manda. `null` limpa (no PATCH). Allowlist estrita.
+   */
+  agendaTopicTypeId?: string | null;
+  agendaTopicNatureId?: string | null;
+  description?: string | null;
+  generatesActionItem?: boolean;
 }
 
 /**
@@ -441,7 +460,22 @@ export interface BuildPayloadInput {
       participantType?: "internal" | "external";
     }
   >;
-  agendaItems: Array<Pick<AgendaItem, "time" | "title" | "duration" | "author" | "authorEntraObjectId" | "isCircularTheme">>;
+  agendaItems: Array<
+    Pick<
+      AgendaItem,
+      | "time"
+      | "title"
+      | "duration"
+      | "author"
+      | "authorEntraObjectId"
+      | "isCircularTheme"
+      | "agendaTopicId"
+      | "agendaTopicTypeId"
+      | "agendaTopicNatureId"
+      | "description"
+      | "generatesActionItem"
+    >
+  >;
 }
 
 /**
@@ -492,7 +526,16 @@ export function buildCreatePayload(input: BuildPayloadInput): CreateMeetingPaylo
         responsibleEntraObjectId: responsibleLabel ? item.authorEntraObjectId : undefined,
         // Só envia quando true; ausência cai no default false do banco. Nunca
         // manda `false` para não travar em booleano por acaso.
-        isCircularTheme: item.isCircularTheme ? true : undefined
+        isCircularTheme: item.isCircularTheme ? true : undefined,
+        // Vínculo com o tema mestre (procedência + snapshot). Sem ele, o item
+        // nasce solto — era o bug do drawer "Criar Nova Pauta".
+        agendaTopicId: item.agendaTopicId,
+        // Ficha (019): explícito manda; ausente + `agendaTopicId` => o backend
+        // herda do tema (COALESCE). FUP só envia `true` (mesma razão do circular).
+        agendaTopicTypeId: item.agendaTopicTypeId,
+        agendaTopicNatureId: item.agendaTopicNatureId,
+        description: item.description?.trim() ? item.description.trim() : undefined,
+        generatesActionItem: item.generatesActionItem ? true : undefined
       };
     });
 

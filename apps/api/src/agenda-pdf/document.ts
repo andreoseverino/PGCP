@@ -33,6 +33,11 @@ export interface PautaDoDocumento {
   apresentador: string | null;
   /** Tema circular NESTA reuniao. So aparece no PDF quando `true`. */
   temaCircular: boolean;
+  /** Ficha cadastral (snapshot 019, com fallback ao mestre). Nulo => não exibe. */
+  tipo: string | null;
+  natureza: string | null;
+  /** "Tema de FUP" — só aparece quando `true` (classificação). */
+  temaFup: boolean;
   /** Hora local do dia da reuniao (HH:mm). */
   horaInicio: string | null;
   duracaoMinutos: number | null;
@@ -386,8 +391,12 @@ function desenharPauta(doc: Doc, pauta: PautaDoDocumento, total: number): void {
 
   campo(doc, "Responsável", pauta.responsavel, 120);
   campo(doc, "Apresentação", pauta.apresentador, 120);
+  campo(doc, "Tipo", pauta.tipo, 120);
+  campo(doc, "Natureza", pauta.natureza, 120);
   // Só quando circular: `campo` pula valor nulo, então não polui o PDF com "Não".
   campo(doc, "Tema circular", pauta.temaCircular ? "Sim" : null);
+  // "Tema de FUP" só quando marcado — classificação, sem poluir com "Não".
+  campo(doc, "Tema de FUP", pauta.temaFup ? "Sim" : null);
   campo(doc, "Início previsto", pauta.horaInicio);
   campo(
     doc,

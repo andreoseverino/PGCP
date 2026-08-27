@@ -533,7 +533,23 @@ Nunca se cria usuário fictício para permitir vínculo na biblioteca.
 | `execution_status` | text | sim | `pending`\|`presenting`\|`completed`\|`postponed` |
 | `postponed_from_item_id` | uuid FK → `meeting_agenda_items` | não | rastreia adiamento |
 | `is_circular_theme` | boolean | sim | `NOT NULL DEFAULT false` (017). Valor **EFETIVO** de tema circular desta pauta na reunião. Ao vincular da Biblioteca, é copiado de `agenda_topics.is_circular_theme` (snapshot); depois independente. Sem informação explícita e sem vínculo → `false` |
+| `agenda_topic_type_id` | uuid FK → `agenda_topic_types` | não | `ON DELETE SET NULL` (019). **Snapshot** do Tipo da Biblioteca |
+| `agenda_topic_nature_id` | uuid FK → `agenda_topic_natures` | não | `ON DELETE SET NULL` (019). **Snapshot** da Natureza da Biblioteca |
+| `description` | text | não | (019) **Snapshot** de Descrição/Objetivo de debate |
+| `generates_action_item` | boolean | sim | `NOT NULL DEFAULT false` (019). **Snapshot** de "Tema de FUP" — só **classificação**, NÃO cria `action_items` |
 | `created_at` / `updated_at` | timestamptz | sim | |
+
+**Ficha cadastral da pauta — snapshot Biblioteca → reunião (019).** `agenda_topics`
+continua o **tema mestre** (valor-padrão); `meeting_agenda_items` guarda o **snapshot
+efetivo** daquela pauta naquela reunião. Ao **vincular/criar a partir da Biblioteca**, o
+backend **copia uma vez** (COALESCE no INSERT do item) — título, responsável, duração,
+Tipo, Natureza, Tema circular, Tema de FUP e Descrição — e preserva `agenda_topic_id` como
+procedência. **Depois disso são independentes**: editar o mestre **não** retroage a
+reuniões existentes; editar a pauta da reunião **não** altera o mestre. Pauta criada direto
+na reunião (sem vínculo) grava os valores explícitos; ausentes ficam `NULL`/`false`. Os FKs
+de Tipo/Natureza usam `ON DELETE SET NULL` (e não `RESTRICT` como em `agenda_topics`): o
+snapshot degrada em vez de emitir erro cru se um cadastro for excluído. Regras de
+reabertura da validação (016) e de RBAC valem para estes campos como para os demais.
 
 **`UNIQUE (meeting_id, position)` DEFERRABLE** — ordem determinística sem travar a
 reordenação (o arrasta-e-solta troca várias posições na mesma transação).
@@ -899,6 +915,10 @@ erDiagram
         text presenter_label "coletivo, nao pessoa"
         text execution_status
         boolean is_circular_theme "efetivo; copiado da Biblioteca ao vincular"
+        uuid agenda_topic_type_id FK "snapshot 019"
+        uuid agenda_topic_nature_id FK "snapshot 019"
+        text description "snapshot 019"
+        boolean generates_action_item "snapshot 019; so classifica"
     }
     MEETING_AGENDA_ITEM_PRESENTERS {
         uuid meeting_agenda_item_id PK

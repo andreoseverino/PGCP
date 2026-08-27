@@ -84,6 +84,16 @@ export interface AgendaItemInput {
    * fato registrado — nao dispara nenhum comportamento.
    */
   isCircularTheme?: boolean;
+  /**
+   * Ficha cadastral NESTA reuniao (snapshot, migration 019). Ausente + vinculo
+   * com a Biblioteca => herda do tema mestre. `agenda_topics` continua o mestre;
+   * aqui e a copia efetiva da pauta daquela reuniao.
+   */
+  agendaTopicTypeId?: string | null;
+  agendaTopicNatureId?: string | null;
+  description?: string | null;
+  /** "Tema de FUP" — APENAS classificacao. Nao cria action_item. */
+  generatesActionItem?: boolean;
 }
 
 /**
@@ -348,6 +358,35 @@ export function parseAgendaItemInput(bruto: unknown, onde = "agendaItem"): Agend
     isCircularTheme = dados.isCircularTheme;
   }
 
+  // Ficha cadastral (019). Ausente => herda do tema no vinculo (COALESCE no
+  // INSERT). `null` explicito limpa. UUID de tipo/natureza validado por forma; a
+  // existencia e garantida pela FK (23503 -> 400 no traduzirErro).
+  const agendaTopicTypeId =
+    "agendaTopicTypeId" in dados
+      ? dados.agendaTopicTypeId === null
+        ? null
+        : (uuidOpcional(dados.agendaTopicTypeId, `${onde}.agendaTopicTypeId`) ?? null)
+      : undefined;
+  const agendaTopicNatureId =
+    "agendaTopicNatureId" in dados
+      ? dados.agendaTopicNatureId === null
+        ? null
+        : (uuidOpcional(dados.agendaTopicNatureId, `${onde}.agendaTopicNatureId`) ?? null)
+      : undefined;
+  const description =
+    "description" in dados
+      ? (textoOpcional(dados.description, `${onde}.description`, 5000) ?? null)
+      : undefined;
+
+  // "Tema de FUP" — SO boolean de verdade, como o Tema circular. Apenas classifica.
+  let generatesActionItem: boolean | undefined;
+  if (dados.generatesActionItem !== undefined && dados.generatesActionItem !== null) {
+    if (typeof dados.generatesActionItem !== "boolean") {
+      throw new HttpError(400, `${onde}.generatesActionItem deve ser booleano (true ou false).`);
+    }
+    generatesActionItem = dados.generatesActionItem;
+  }
+
   return {
     title: textoObrigatorio(dados.title, `${onde}.title`, 300),
     agendaTopicId: uuidOpcional(dados.agendaTopicId, `${onde}.agendaTopicId`),
@@ -356,6 +395,10 @@ export function parseAgendaItemInput(bruto: unknown, onde = "agendaItem"): Agend
     responsibleLabel,
     responsibleEntraObjectId,
     isCircularTheme,
+    agendaTopicTypeId,
+    agendaTopicNatureId,
+    description,
+    generatesActionItem,
   };
 }
 
@@ -799,9 +842,14 @@ export async function createMeeting(
                 (meeting_id, agenda_topic_id, title, position, scheduled_start_time,
                  duration_minutes, execution_status, responsible_label,
                  responsible_entra_tenant_id, responsible_entra_object_id,
-                 is_circular_theme)
+                 is_circular_theme,
+                 agenda_topic_type_id, agenda_topic_nature_id, description, generates_action_item)
               VALUES ($1, $10, $2, $3, $4, $5, $6, $7, $8, $9,
-                 COALESCE($11::boolean, (SELECT is_circular_theme FROM agenda_topics WHERE id = $10), false))`,
+                 COALESCE($11::boolean, (SELECT is_circular_theme FROM agenda_topics WHERE id = $10), false),
+                 COALESCE($12::uuid,    (SELECT agenda_topic_type_id   FROM agenda_topics WHERE id = $10)),
+                 COALESCE($13::uuid,    (SELECT agenda_topic_nature_id FROM agenda_topics WHERE id = $10)),
+                 COALESCE($14::text,    (SELECT description            FROM agenda_topics WHERE id = $10)),
+                 COALESCE($15::boolean, (SELECT generates_action_item  FROM agenda_topics WHERE id = $10), false))`,
         [
           meetingId,
           item.title,
@@ -816,6 +864,11 @@ export async function createMeeting(
           // Ausente + vínculo com a Biblioteca => herda o padrão do tema mestre
           // (snapshot). Ausente sem vínculo => false. Valor explícito manda.
           item.isCircularTheme ?? null,
+          // Ficha (019): ausente + vínculo => herda do tema; explícito manda.
+          item.agendaTopicTypeId ?? null,
+          item.agendaTopicNatureId ?? null,
+          item.description ?? null,
+          item.generatesActionItem ?? null,
         ],
       );
     }
@@ -879,6 +932,10 @@ function traduzirErroDeBanco(error: unknown): unknown {
   const codigo = (error as { code?: string } | null)?.code;
   if (codigo === "23505") {
     return new HttpError(409, "A mesma pessoa foi informada mais de uma vez nesta reunião.");
+  }
+  // FK inválida: tipo/natureza de pauta informado não existe no cadastro.
+  if (codigo === "23503") {
+    return new HttpError(400, "Tipo ou natureza de pauta informado não existe no cadastro.");
   }
 
   return error;
