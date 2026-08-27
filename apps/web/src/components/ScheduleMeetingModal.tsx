@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, Calendar, Clock, MapPin, CheckCircle, Sparkles, User, Users, Plus, Trash2, ListTodo, FileText, Info, GripVertical, Edit2, Video } from "lucide-react";
+import { X, Calendar, Clock, MapPin, CheckCircle, Sparkles, User, Users, Plus, Trash2, ListTodo, FileText, Info, GripVertical, Edit2 } from "lucide-react";
 import { AgendaItem, GovernanceBody, Participant, StandaloneAgenda } from "../types";
 import { newId } from "../lib/id";
 import DirectoryUserPicker from "./DirectoryUserPicker";
@@ -94,7 +94,6 @@ export default function ScheduleMeetingModal({
    * que sequer identifica um fuso sem ambiguidade.
    */
   const [timeZone] = useState(DEFAULT_TIMEZONE);
-  const [location, setLocation] = useState("Sala Principal de Conselhos, 4º Andar");
   const [organizer, setOrganizer] = useState("Secretaria Geral de Governança");
   const [recurrence, setRecurrence] = useState("Mensal");
   const [description, setDescription] = useState("");
@@ -428,7 +427,6 @@ export default function ScheduleMeetingModal({
     lblStartTime: language === "en" ? "Start Time" : "Horário de Início",
     lblEndTime: language === "en" ? "End Time" : "Horário de Término",
     lblTimeZone: "Fuso Horário",
-    lblLocation: language === "en" ? "Conference Venue / Room" : "Local de Realização (Físico ou Link)",
     lblOrganizer: language === "en" ? "Meeting Organizer" : "Organizador da Reunião",
     lblDescription: language === "en" ? "Objective & Introductory Guidelines" : "Objetivos Principais e Diretrizes Executivas",
     
@@ -455,16 +453,6 @@ export default function ScheduleMeetingModal({
     btnSubmit: language === "en" ? "Schedule & Log Session" : "Gravar e Agendar Reunião",
     placeholderTitle: language === "en" ? "e.g. Board of Directors Meeting" : "Ex: Reunião do Conselho de Administração (RCA)",
     placeholderDesc: language === "en" ? "Provide background contexts or briefing materials." : "Descreva em poucas palavras as pautas norteadoras e documentos anexos importantes.",
-    placeholderLoc: "Ex: Sala Presidencial (a reunião do Teams é criada automaticamente)",
-    /*
-     * Não é opção. Toda reunião do PGCP nasce como evento do Outlook com
-     * reunião do Teams, e oferecer uma caixa para desmarcar sugeriria uma
-     * reunião que o produto não cria.
-     */
-    infoTeams:
-      language === "en"
-        ? "Outlook invitation and Microsoft Teams meeting are created automatically."
-        : "O convite no Outlook e a reunião no Microsoft Teams são criados automaticamente.",
     btnAdd: language === "en" ? "Add" : "Adicionar",
   };
 
@@ -554,7 +542,8 @@ export default function ScheduleMeetingModal({
         startTime,
         endTime,
         timezone: timeZone,
-        location,
+        // `location` saiu do formulário de Novo Evento; a reunião nasce sem local
+        // (coluna nullable, preservada para reuniões antigas e edição no detalhe).
         recurrence,
         participants,
         agendaItems: agenda
@@ -643,7 +632,7 @@ export default function ScheduleMeetingModal({
                 {/* Date */}
                 <div className="flex flex-col gap-1">
                   <label htmlFor="meetDate" className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
-                    {t.lblDate}
+                    {t.lblDate} *
                   </label>
                   <input
                     id="meetDate"
@@ -729,7 +718,7 @@ export default function ScheduleMeetingModal({
                 <div className="flex flex-col gap-1">
                   <label htmlFor="startTime" className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex items-center gap-1">
                     <Clock className="w-3 h-3 text-slate-400" />
-                    {t.lblStartTime}
+                    {t.lblStartTime} *
                   </label>
                   <input
                     id="startTime"
@@ -746,7 +735,7 @@ export default function ScheduleMeetingModal({
                 <div className="flex flex-col gap-1">
                   <label htmlFor="endTime" className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex items-center gap-1">
                     <Clock className="w-3 h-3 text-slate-400" />
-                    {t.lblEndTime}
+                    {t.lblEndTime} *
                   </label>
                   <input
                     id="endTime"
@@ -760,28 +749,6 @@ export default function ScheduleMeetingModal({
                 </div>
               </div>
 
-              {/* Location Input */}
-              <div className="flex flex-col gap-1">
-                <label htmlFor="meetLoc" className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
-                  {t.lblLocation}
-                </label>
-                <input
-                  id="meetLoc"
-                  type="text"
-                  required
-                  value={location}
-                  placeholder={t.placeholderLoc}
-                  onChange={(e) => setLocation(e.target.value)}
-                  className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none"
-                />
-              </div>
-
-              {/* Outlook + Teams: informação, não escolha. */}
-              <p className="text-[10px] text-slate-500 font-semibold bg-white border border-slate-200 rounded-xl px-3 py-2.5 flex items-start gap-2 leading-relaxed">
-                <Video className="w-3.5 h-3.5 text-[#00658d] shrink-0 mt-0.5" />
-                {t.infoTeams}
-              </p>
-
               {/* Description Input */}
               <div className="flex flex-col gap-1">
                 <label htmlFor="meetDesc" className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
@@ -790,7 +757,6 @@ export default function ScheduleMeetingModal({
                 <textarea
                   id="meetDesc"
                   rows={2}
-                  required
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder={t.placeholderDesc}
