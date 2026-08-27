@@ -893,7 +893,7 @@ erDiagram
     USERS {
         uuid id PK
         text name
-        text email UK
+        text email
         text user_type
         boolean is_active
     }
