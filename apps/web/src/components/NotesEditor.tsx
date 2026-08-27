@@ -84,7 +84,12 @@ export default function NotesEditor({
   // Mantém o editor em sincronia quando o conteúdo muda por fora (ex.: apoio
   // contextual inserindo blocos). Evita loop comparando com o HTML atual.
   useEffect(() => {
-    if (!editor) return;
+    // `isDestroyed` NÃO é redundante com `!editor`: sob React 19 StrictMode, o
+    // `useEditor` cria um editor descartável no primeiro mount e o DESTRÓI no
+    // ciclo de reconexão. Neste intervalo o editor ainda é uma referência
+    // válida, mas seu schema já é `null` — e `getHTML()` chama
+    // `DOMSerializer.fromSchema(null)`, que lança e derruba o detalhe da reunião.
+    if (!editor || editor.isDestroyed) return;
     if (value !== editor.getHTML()) {
       editor.commands.setContent(value || "", { emitUpdate: false });
     }
