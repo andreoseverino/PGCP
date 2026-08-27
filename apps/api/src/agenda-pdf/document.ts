@@ -38,6 +38,8 @@ export interface PautaDoDocumento {
   natureza: string | null;
   /** "Tema de FUP" — só aparece quando `true` (classificação). */
   temaFup: boolean;
+  /** Participantes POR PAUTA (nomes). Vazio => linha não aparece. */
+  participantes: string[];
   /** Hora local do dia da reuniao (HH:mm). */
   horaInicio: string | null;
   duracaoMinutos: number | null;
@@ -397,6 +399,8 @@ function desenharPauta(doc: Doc, pauta: PautaDoDocumento, total: number): void {
   campo(doc, "Tema circular", pauta.temaCircular ? "Sim" : null);
   // "Tema de FUP" só quando marcado — classificação, sem poluir com "Não".
   campo(doc, "Tema de FUP", pauta.temaFup ? "Sim" : null);
+  // Participantes da pauta (nomes). Sem participantes, a linha não aparece.
+  campo(doc, "Participantes", pauta.participantes.length ? pauta.participantes.join(", ") : null, 120);
   campo(doc, "Início previsto", pauta.horaInicio);
   campo(
     doc,

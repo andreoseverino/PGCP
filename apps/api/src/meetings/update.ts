@@ -15,6 +15,13 @@ import {
 } from "./create.js";
 import { findMeeting, type MeetingDetail } from "./service.js";
 import { reabrirValidacaoSePreReuniao } from "./agenda-validation.js";
+import {
+  excluirMeetingParticipant,
+  findOrCreateMeetingParticipant,
+  inserirMeetingParticipant,
+  snapshotTopicParticipantsIntoItem,
+  vincularParticipanteNaPauta,
+} from "./agenda-item-participants.js";
 
 /**
  * Mutacoes direcionadas do nucleo da reuniao.
@@ -349,39 +356,9 @@ export async function addParticipant(
       throw new HttpError(409, "Esta pessoa já é participante da reunião.");
     }
 
-    const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO meeting_participants
-              (meeting_id, user_id, display_name, email, participant_type,
-               role_in_meeting, is_confirmed, entra_tenant_id, entra_object_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING id`,
-      [
-        meetingId,
-        preparado!.userId,
-        preparado!.displayName,
-        preparado!.email,
-        preparado!.participantType,
-        preparado!.roleInMeeting,
-        preparado!.isConfirmed,
-        preparado!.entraObjectId ? actor.entraTenantId : null,
-        preparado!.entraObjectId,
-      ],
-    );
-
-    // A lista de convidados mudou: o evento no calendario deixa de refletir a
-    // reuniao. Mesma transacao da alteracao.
-    await marcarComoDesatualizada(client, meetingId);
-
-    await recordAuditIn(client, {
-      actorUserId: actor.userId,
-      actorName: actor.name,
-      action: "Participante adicionado",
-      entityType: "meeting_participant",
-      entityId: rows[0]!.id,
-      // Título da reunião, não o nome nem o e-mail de quem entrou.
-      entityLabel: titulo,
-      status: "success",
-    });
+    // INSERT + calendário desatualizado + auditoria: fonte única, reutilizada
+    // pelo fluxo de participante-por-pauta.
+    await inserirMeetingParticipant(client, meetingId, preparado!, actor, titulo);
   });
 
   return findMeeting(meetingId);
@@ -398,27 +375,10 @@ export async function removeParticipant(
   await emTransacao(async (client) => {
     const titulo = await exigirReuniao(client, meetingId);
 
-    // `meeting_id` no WHERE não é redundante: sem ele, o id de um participante
-    // de outra reunião apagaria a linha errada.
-    const { rowCount } = await client.query(
-      "DELETE FROM meeting_participants WHERE id = $1 AND meeting_id = $2",
-      [participantId, meetingId],
-    );
+    // DELETE + calendário desatualizado + auditoria: fonte única, reutilizada
+    // pela remoção via pauta. `meeting_id` no WHERE evita apagar de outra reunião.
+    const rowCount = await excluirMeetingParticipant(client, meetingId, participantId, actor, titulo);
     if (rowCount === 0) throw new HttpError(404, "Participante não encontrado nesta reunião.");
-
-    // A lista de convidados mudou: o evento no calendario deixa de refletir a
-    // reuniao. Mesma transacao da alteracao.
-    await marcarComoDesatualizada(client, meetingId);
-
-    await recordAuditIn(client, {
-      actorUserId: actor.userId,
-      actorName: actor.name,
-      action: "Participante removido",
-      entityType: "meeting_participant",
-      entityId: participantId,
-      entityLabel: titulo,
-      status: "success",
-    });
   });
 
   return findMeeting(meetingId);
@@ -499,6 +459,19 @@ export async function addAgendaItem(
       entityLabel: titulo,
       status: "success",
     });
+
+    // Vínculo com a Biblioteca: snapshot dos participantes do tema para a pauta
+    // (find-or-create em meeting_participants + vínculo). Depois, independente.
+    if (input.agendaTopicId) {
+      await snapshotTopicParticipantsIntoItem(
+        client,
+        meetingId,
+        rows[0]!.id,
+        input.agendaTopicId,
+        actor,
+        titulo,
+      );
+    }
 
     // Alteracao ESTRUTURAL: reabre a validacao se ainda for planejamento.
     await reabrirValidacaoSePreReuniao(client, meetingId, actor);
@@ -806,6 +779,119 @@ export async function removeAgendaItem(
   });
 
   return findMeeting(meetingId);
+}
+
+// -----------------------------------------------------------------------------
+// Participantes POR PAUTA (Opção A) — rotas direcionadas
+// -----------------------------------------------------------------------------
+
+/** Confere que a pauta pertence À reunião. Evita IDOR entre reuniões. */
+async function exigirPautaNaReuniao(
+  client: PoolClient,
+  meetingId: string,
+  agendaItemId: string,
+): Promise<void> {
+  const { rows } = await client.query(
+    "SELECT 1 FROM meeting_agenda_items WHERE id = $1 AND meeting_id = $2",
+    [agendaItemId, meetingId],
+  );
+  if (rows.length === 0) throw new HttpError(404, "Pauta não encontrada nesta reunião.");
+}
+
+/**
+ * Vincula uma pessoa a uma pauta (Opção A).
+ *
+ * Se a pessoa ainda não está na reunião, é ADICIONADA a ela pelo mesmo caminho da
+ * aba Participantes (identidade, calendário desatualizado, auditoria). Serializa
+ * o find-or-create bloqueando a reunião (`FOR UPDATE`) — não há UNIQUE de
+ * identidade em `meeting_participants`, então o lock é o que evita corrida.
+ */
+export async function addAgendaItemParticipant(
+  meetingId: string,
+  agendaItemId: string,
+  input: ParticipantInput,
+  actor: MeetingActor,
+): Promise<MeetingDetail> {
+  assertUuid(meetingId, "Identificador");
+  assertUuid(agendaItemId, "Identificador da pauta");
+
+  await emTransacao(async (client) => {
+    // Lock da reunião: serializa o find-or-create do participante.
+    const { rows: reuniao } = await client.query<{ title: string }>(
+      "SELECT title FROM meetings WHERE id = $1 FOR UPDATE",
+      [meetingId],
+    );
+    if (reuniao.length === 0) throw new HttpError(404, "Reunião não encontrada.");
+    const titulo = reuniao[0]!.title;
+
+    await exigirPautaNaReuniao(client, meetingId, agendaItemId);
+
+    const { id } = await findOrCreateMeetingParticipant(client, meetingId, input, actor, titulo);
+    const novo = await vincularParticipanteNaPauta(client, agendaItemId, id);
+    if (!novo) throw new HttpError(409, "Esta pessoa já está vinculada a esta pauta.");
+
+    await recordAuditIn(client, {
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      action: "Participante vinculado à pauta",
+      entityType: "meeting_agenda_item",
+      entityId: agendaItemId,
+      entityLabel: titulo,
+      status: "success",
+    });
+
+    // Vincular participante é alteração ESTRUTURAL da pauta (§ validação).
+    await reabrirValidacaoSePreReuniao(client, meetingId, actor);
+  });
+
+  return findMeeting(meetingId);
+}
+
+/**
+ * Remove uma pessoa de uma pauta.
+ *
+ * REGRA DE NEGÓCIO (corrigida): remover da pauta remove a pessoa DA REUNIÃO
+ * inteira — não só o vínculo. Apaga o `meeting_participant`; o `ON DELETE
+ * CASCADE` da 020 elimina os vínculos dela com ESTA e com as DEMAIS pautas da
+ * reunião. Reutiliza `excluirMeetingParticipant` (mesma remoção da aba
+ * Participantes): calendário desatualizado + auditoria, na mesma transação.
+ */
+export async function removeAgendaItemParticipant(
+  meetingId: string,
+  agendaItemId: string,
+  meetingParticipantId: string,
+  actor: MeetingActor,
+): Promise<MeetingDetail> {
+  assertUuid(meetingId, "Identificador");
+  assertUuid(agendaItemId, "Identificador da pauta");
+  assertUuid(meetingParticipantId, "Identificador do participante");
+
+  await emTransacao(async (client) => {
+    const titulo = await exigirReuniao(client, meetingId);
+    await exigirPautaNaReuniao(client, meetingId, agendaItemId);
+
+    // A pessoa precisa estar vinculada A ESTA pauta (a ação parte da pauta).
+    const { rows } = await client.query(
+      `SELECT 1 FROM meeting_agenda_item_participants
+        WHERE meeting_agenda_item_id = $1 AND meeting_participant_id = $2`,
+      [agendaItemId, meetingParticipantId],
+    );
+    if (rows.length === 0) throw new HttpError(404, "Participante não está vinculado a esta pauta.");
+
+    // Remove da REUNIÃO (cascata apaga os vínculos com todas as pautas).
+    const rowCount = await excluirMeetingParticipant(client, meetingId, meetingParticipantId, actor, titulo);
+    if (rowCount === 0) throw new HttpError(404, "Participante não encontrado nesta reunião.");
+
+    // Mudança ESTRUTURAL da pauta (§ validação).
+    await reabrirValidacaoSePreReuniao(client, meetingId, actor);
+  });
+
+  return findMeeting(meetingId);
+}
+
+/** Lê o corpo do vínculo. Reaproveita o parser de participante (identidade + anti-mass-assignment). */
+export function parseAgendaItemParticipantInput(body: unknown): ParticipantInput {
+  return parseParticipantInput(body, "participante da pauta");
 }
 
 /**

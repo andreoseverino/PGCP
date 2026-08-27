@@ -158,6 +158,18 @@ export const removeAgendaItem = (meetingId: string, itemId: string) =>
   mutar(`/meetings/${meetingId}/agenda-items/${itemId}`, "DELETE");
 
 /**
+ * Participantes POR PAUTA (020, Opção A). Vincular usa o MESMO payload de
+ * participante — se a pessoa não estiver na reunião, o backend a adiciona.
+ * Remover da pauta REMOVE a pessoa da reunião inteira (cascade elimina os
+ * vínculos com as demais pautas).
+ */
+export const addAgendaItemParticipant = (meetingId: string, itemId: string, payload: CreateParticipantPayload) =>
+  mutar(`/meetings/${meetingId}/agenda-items/${itemId}/participants`, "POST", payload);
+
+export const removeAgendaItemParticipant = (meetingId: string, itemId: string, participantId: string) =>
+  mutar(`/meetings/${meetingId}/agenda-items/${itemId}/participants/${participantId}`, "DELETE");
+
+/**
  * Reordena enviando a lista COMPLETA de ids na ordem desejada.
  *
  * Os ids são preservados: o servidor só reescreve `position`. Enviar as pautas

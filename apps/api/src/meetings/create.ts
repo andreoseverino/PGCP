@@ -4,6 +4,9 @@ import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
 import { prepararIntegracao } from "../calendar/service.js";
 import { findMeeting, type MeetingDetail } from "./service.js";
+// Ciclo só de funções (usadas em runtime, nunca no topo do módulo): seguro em
+// ESM. Reutiliza o snapshot de participantes do tema no create da reunião.
+import { snapshotTopicParticipantsIntoItem } from "./agenda-item-participants.js";
 
 /**
  * Criacao de reuniao — reuniao, participantes e pautas em UMA transacao.
@@ -837,7 +840,7 @@ export async function createMeeting(
     let posicao = 0;
     for (const item of input.agendaItems) {
       posicao += 1;
-      await client.query(
+      const { rows: itemRows } = await client.query<{ id: string }>(
         `INSERT INTO meeting_agenda_items
                 (meeting_id, agenda_topic_id, title, position, scheduled_start_time,
                  duration_minutes, execution_status, responsible_label,
@@ -849,7 +852,8 @@ export async function createMeeting(
                  COALESCE($12::uuid,    (SELECT agenda_topic_type_id   FROM agenda_topics WHERE id = $10)),
                  COALESCE($13::uuid,    (SELECT agenda_topic_nature_id FROM agenda_topics WHERE id = $10)),
                  COALESCE($14::text,    (SELECT description            FROM agenda_topics WHERE id = $10)),
-                 COALESCE($15::boolean, (SELECT generates_action_item  FROM agenda_topics WHERE id = $10), false))`,
+                 COALESCE($15::boolean, (SELECT generates_action_item  FROM agenda_topics WHERE id = $10), false))
+           RETURNING id`,
         [
           meetingId,
           item.title,
@@ -871,6 +875,20 @@ export async function createMeeting(
           item.generatesActionItem ?? null,
         ],
       );
+
+      // SNAPSHOT dos participantes do tema (020, Opção A): find-or-create em
+      // meeting_participants + vínculo. Mesma função do fluxo pós-criação; aqui
+      // `marcarComoDesatualizada` é no-op (a reunião ainda não tem calendário).
+      if (item.agendaTopicId) {
+        await snapshotTopicParticipantsIntoItem(
+          client,
+          meetingId,
+          itemRows[0]!.id,
+          item.agendaTopicId,
+          actor,
+          input.title,
+        );
+      }
     }
 
     // Na MESMA transacao: ou o ato e a trilha existem juntos, ou nenhum dos

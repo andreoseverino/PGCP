@@ -139,6 +139,11 @@ export interface AgendaItem {
   description?: string;
   /** "Tema de FUP" — apenas classificação; não cria FUP. */
   generatesActionItem?: boolean;
+  /**
+   * Participantes POR PAUTA (020, Opção A). Cada um existe também na reunião.
+   * `participantId` é a participação na reunião (para desvincular); `name` exibe.
+   */
+  participants?: { participantId: string; name: string }[];
 }
 
 /**

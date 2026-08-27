@@ -84,12 +84,14 @@ import {
 } from "../lib/meetings";
 import {
   addAgendaItem as apiAddAgendaItem,
+  addAgendaItemParticipant as apiAddAgendaItemParticipant,
   addParticipant as apiAddParticipant,
   describeMeetingError,
   localToInstant,
   getMeeting,
   meetingFromApi,
   removeAgendaItem as apiRemoveAgendaItem,
+  removeAgendaItemParticipant as apiRemoveAgendaItemParticipant,
   reorderAgendaItems as apiReorderAgendaItems,
   setAgendaItemStatus as apiSetAgendaItemStatus,
   updateAgendaItem as apiUpdateAgendaItem,
@@ -1096,6 +1098,9 @@ export default function MeetingDetailView({
   const [extraFup, setExtraFup] = useState(false);
   const [extraDescription, setExtraDescription] = useState("");
   const [extraFichaAberta, setExtraFichaAberta] = useState(false);
+  // Participantes da extraordinária: coletados aqui e VINCULADOS após criar o
+  // item (o item precisa existir para receber o vínculo).
+  const [extraParticipants, setExtraParticipants] = useState<DirectoryUser[]>([]);
 
   /** Recalcula os horários em cascata a partir do início da reunião. */
   const recalculateAgendaTimes = (agendaArray: AgendaItem[]): AgendaItem[] => {
@@ -1276,6 +1281,32 @@ export default function MeetingDetailView({
   };
 
   /**
+   * Participantes POR PAUTA (Opção A). Add/remove são IMEDIATOS (persistem o
+   * vínculo já). `persistir` absorve a reunião relida e dispara o aviso de
+   * reabertura da validação quando for o caso. Vincular alguém novo o adiciona à
+   * reunião no backend (mesmo caminho da aba Participantes).
+   */
+  const vincularParticipantePauta = (itemId: string, user: DirectoryUser) =>
+    persistir(
+      () =>
+        apiAddAgendaItemParticipant(meeting.id, itemId, {
+          entraObjectId: user.id,
+          displayName: user.displayName ?? directoryEmail(user) ?? "",
+          email: directoryEmail(user),
+          isConfirmed: false,
+        }),
+      language === "en" ? "Participant linked to the topic." : "Participante vinculado à pauta.",
+    );
+
+  const desvincularParticipantePauta = (itemId: string, participantId: string) =>
+    persistir(
+      () => apiRemoveAgendaItemParticipant(meeting.id, itemId, participantId),
+      language === "en"
+        ? "Participant removed from the topic and the meeting."
+        : "Participante removido da pauta e da reunião.",
+    );
+
+  /**
    * Postergar retira a pauta do fluxo desta reunião sem tê-la concluído.
    *
    * A pauta PERMANECE na posição original. Antes ela era removida do índice e
@@ -1357,29 +1388,53 @@ export default function MeetingDetailView({
     speakerEntraObjectId?: string,
     /** Tema circular desta pauta. Só um fato; não altera o fluxo [EXTRA]. */
     circular = false,
-    /** Ficha complementar (019). Sem tema mestre: gravada direto na pauta. */
-    ficha?: { typeId?: string; natureId?: string; fup?: boolean; description?: string }
+    /** Ficha complementar (019/020). Sem tema mestre: gravada direto na pauta. */
+    ficha?: { typeId?: string; natureId?: string; fup?: boolean; description?: string; participants?: DirectoryUser[] }
   ) => {
     if (!titleText.trim()) return;
 
-    const extraItem: AgendaItem = {
-      id: newId(),
-      time: "10:00", // Will be recalculated instantly
-      title: `[EXTRA] ${titleText.trim()}`,
-      duration: durationText.trim() || "15 mins",
-      author: speakerText.trim() || "Todos",
-      authorEntraObjectId: speakerEntraObjectId,
-      isCircularTheme: circular,
-      agendaTopicTypeId: ficha?.typeId || undefined,
-      agendaTopicNatureId: ficha?.natureId || undefined,
-      generatesActionItem: ficha?.fup ?? false,
-      description: ficha?.description?.trim() || undefined
-    };
+    const tituloExtra = `[EXTRA] ${titleText.trim()}`;
+    void (async () => {
+      try {
+        // 1) Cria o item [EXTRA].
+        let atualizada = meetingFromApi(
+          await apiAddAgendaItem(meeting.id, {
+            title: tituloExtra,
+            durationMinutes: durationText.trim() ? parseDurationMinutes(durationText) : undefined,
+            responsibleLabel: speakerText.trim() || "Todos",
+            responsibleEntraObjectId: speakerText.trim() ? speakerEntraObjectId : undefined,
+            isCircularTheme: circular,
+            agendaTopicTypeId: ficha?.typeId || undefined,
+            agendaTopicNatureId: ficha?.natureId || undefined,
+            description: ficha?.description?.trim() || undefined,
+            generatesActionItem: ficha?.fup ?? false,
+          }),
+        );
 
-    void persistirNovaPauta(extraItem);
+        // 2) Vincula os participantes ao item recém-criado (o mais recente com
+        //    este título). Cada um entra também na reunião (Opção A).
+        const novo = [...(atualizada.agenda || [])].reverse().find((a) => a.title === tituloExtra);
+        if (novo && (ficha?.participants?.length ?? 0) > 0) {
+          for (const u of ficha!.participants!) {
+            atualizada = meetingFromApi(
+              await apiAddAgendaItemParticipant(meeting.id, novo.id, {
+                entraObjectId: u.id,
+                displayName: u.displayName ?? directoryEmail(u) ?? "",
+                email: directoryEmail(u),
+                isConfirmed: false,
+              }),
+            );
+          }
+        }
 
-    triggerToast(language === "en" ? "Extra topic successfully added live!" : "Pauta Extraordinária cadastrada e horários recalculados!");
-
+        setSelectedMeeting(atualizada);
+        setMeetings((prev) => prev.map((m) => (m.id === atualizada.id ? atualizada : m)));
+        triggerToast(language === "en" ? "Extra topic successfully added live!" : "Pauta Extraordinária cadastrada e horários recalculados!");
+        avisarSeValidacaoReaberta(atualizada);
+      } catch (error) {
+        triggerToast(describeMeetingError(error, language));
+      }
+    })();
   };
 
   const calculateNextTimeSlot = (startTime: string, duration: string): string =>
@@ -2895,6 +2950,33 @@ export default function MeetingDetailView({
                             className="w-full bg-white border border-slate-205 rounded-xl p-2.5 text-xs text-slate-800 focus:outline-none resize-none font-sans"
                           />
                         </div>
+                        <div className="md:col-span-12 flex flex-col gap-1">
+                          <label className="text-[10px] font-extrabold text-slate-500 uppercase">Participantes da pauta</label>
+                          <DirectoryUserPicker
+                            language={language}
+                            selected={null}
+                            placeholder="Adicionar participante..."
+                            onSelect={(u) =>
+                              setExtraParticipants((prev) => (prev.some((x) => x.id === u.id) ? prev : [...prev, u]))
+                            }
+                            onClear={() => {}}
+                          />
+                          {extraParticipants.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mt-1">
+                              {extraParticipants.map((u) => (
+                                <span key={u.id} className="inline-flex items-center gap-1 bg-[#00658d]/5 text-[#00658d] text-[10px] font-bold px-2 py-0.5 rounded-full">
+                                  {u.displayName ?? directoryEmail(u)}
+                                  <button type="button" onClick={() => setExtraParticipants((prev) => prev.filter((x) => x.id !== u.id))} className="hover:text-red-600" aria-label="Remover">
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          <p className="text-[10px] text-slate-400 font-semibold">
+                            Estas pessoas também serão adicionadas aos participantes da reunião e receberão o convite quando a reunião for enviada.
+                          </p>
+                        </div>
                       </div>
                     )}
 
@@ -2910,7 +2992,8 @@ export default function MeetingDetailView({
                             typeId: extraTypeId || undefined,
                             natureId: extraNatureId || undefined,
                             fup: extraFup,
-                            description: extraDescription
+                            description: extraDescription,
+                            participants: extraParticipants
                           });
                           setExtraTitle("");
                           setExtraSpeaker("Todos");
@@ -2920,6 +3003,7 @@ export default function MeetingDetailView({
                           setExtraNatureId("");
                           setExtraFup(false);
                           setExtraDescription("");
+                          setExtraParticipants([]);
                           setExtraFichaAberta(false);
                           setIsExtraFormOpen(false);
                         }}
@@ -4268,6 +4352,62 @@ export default function MeetingDetailView({
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d] resize-none font-sans"
                 />
               </div>
+
+              {/* Participantes da pauta (Opção A) — add/remove IMEDIATOS (persistem
+                  já). Vincular alguém novo o adiciona também à reunião. */}
+              {(() => {
+                const itemAtual = (meeting.agenda || []).find((a) => a.id === editandoPautaId);
+                const vinculados = itemAtual?.participants ?? [];
+                return (
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                      {language === "pt" ? "Participantes da pauta" : "Pauta participants"}
+                    </label>
+                    {vinculados.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mb-1">
+                        {vinculados.map((p) => (
+                          <span key={p.participantId} className="inline-flex items-center gap-1 bg-[#00658d]/5 text-[#00658d] text-[10px] font-bold px-2 py-0.5 rounded-full">
+                            {p.name}
+                            {canSchedule && (
+                              <button
+                                type="button"
+                                disabled={isPersisting}
+                                onClick={() => {
+                                  const msg = language === "pt"
+                                    ? "Ao remover esta pessoa da pauta, ela também será removida dos participantes da reunião. Continuar?"
+                                    : "Removing this person from the topic also removes them from the meeting participants. Continue?";
+                                  if (window.confirm(msg)) void desvincularParticipantePauta(itemAtual!.id, p.participantId);
+                                }}
+                                className="hover:text-red-600 disabled:opacity-40"
+                                title={language === "pt" ? "Remover da pauta e da reunião" : "Remove from topic and meeting"}
+                                aria-label={language === "pt" ? "Remover da pauta e da reunião" : "Remove from topic and meeting"}
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {canSchedule && itemAtual && (
+                      <>
+                        <DirectoryUserPicker
+                          language={language}
+                          selected={null}
+                          placeholder={language === "pt" ? "Adicionar participante..." : "Add participant..."}
+                          onSelect={(user) => void vincularParticipantePauta(itemAtual.id, user)}
+                          onClear={() => {}}
+                        />
+                        <p className="text-[10px] text-slate-400 font-semibold">
+                          {language === "pt"
+                            ? "Esta pessoa também será adicionada aos participantes da reunião e receberá o convite quando a reunião for enviada."
+                            : "This person will also be added to the meeting participants and invited when the meeting is sent."}
+                        </p>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
 
               {erroEdicao && (
                 <p className="text-[11px] font-bold text-red-600">{erroEdicao}</p>

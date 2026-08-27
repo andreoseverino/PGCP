@@ -106,6 +106,7 @@ export interface ApiMeetingAgendaItem {
   nature: { id: string; name: string } | null;
   description: string | null;
   generatesActionItem: boolean;
+  participants: { participantId: string; name: string }[];
 }
 
 export interface ApiMeetingDetail extends ApiMeetingSummary {
@@ -294,7 +295,8 @@ export function agendaItemFromApi(item: ApiMeetingAgendaItem): AgendaItem {
     agendaTopicNatureId: item.nature?.id,
     pautaNature: item.nature?.name,
     description: item.description ?? undefined,
-    generatesActionItem: item.generatesActionItem
+    generatesActionItem: item.generatesActionItem,
+    participants: item.participants ?? []
   };
 }
 

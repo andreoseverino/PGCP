@@ -25,13 +25,16 @@ import {
 } from "../meeting-minutes/routes.js";
 import {
   addAgendaItem,
+  addAgendaItemParticipant,
   addParticipant,
   parseAgendaItemInput,
+  parseAgendaItemParticipantInput,
   parseAgendaItemPatch,
   parseParticipantInput,
   parseReorderInput,
   parseUpdateInput,
   removeAgendaItem,
+  removeAgendaItemParticipant,
   removeParticipant,
   reorderAgendaItems,
   updateAgendaItem,
@@ -271,6 +274,20 @@ meetingsRouter.patch("/:id/agenda-items/:agendaItemId", requirePgcpAssessoria, m
 
 meetingsRouter.delete("/:id/agenda-items/:agendaItemId", requirePgcpAssessoria, mutacao("remover pauta", (req, ator) =>
   removeAgendaItem(req.params.id as string, req.params.agendaItemId as string, ator),
+));
+
+/**
+ * Participantes POR PAUTA (Opção A). Vincular alguém que ainda não está na
+ * reunião o ADICIONA à reunião (mesmo caminho da aba Participantes). Remover da
+ * pauta REMOVE a pessoa da reunião inteira (cascade tira os demais vínculos).
+ * Ambas exigem `PGCP.Assessoria`.
+ */
+meetingsRouter.post("/:id/agenda-items/:agendaItemId/participants", requirePgcpAssessoria, mutacao("vincular participante à pauta", (req, ator) =>
+  addAgendaItemParticipant(req.params.id as string, req.params.agendaItemId as string, parseAgendaItemParticipantInput(req.body), ator),
+));
+
+meetingsRouter.delete("/:id/agenda-items/:agendaItemId/participants/:participantId", requirePgcpAssessoria, mutacao("desvincular participante da pauta", (req, ator) =>
+  removeAgendaItemParticipant(req.params.id as string, req.params.agendaItemId as string, req.params.participantId as string, ator),
 ));
 
 /**

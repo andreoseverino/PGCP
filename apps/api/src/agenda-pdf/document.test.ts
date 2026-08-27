@@ -44,6 +44,7 @@ function pauta(i: number) {
     tipo: null,
     natureza: null,
     temaFup: false,
+    participantes: [],
   };
 }
 
@@ -298,6 +299,22 @@ test("ficha (019): Tipo/Natureza aparecem quando existem; Tema de FUP só quando
   assert.ok(texto.includes("Tema de FUP:"), "FUP marcado gera a linha");
   // Item sem tipo/natureza e sem FUP não polui o documento.
   assert.ok(!texto.includes("Tema de FUP: Não"), "FUP não-marcado não escreve 'Não'");
+});
+
+test("participantes por pauta: nomes aparecem; pauta sem participantes não gera a linha", async () => {
+  const doc: ReuniaoDoDocumento = {
+    ...BASE,
+    pautas: [
+      { ...pauta(1), participantes: ["Ana Souza", "Bruno Lima"] },
+      { ...pauta(2), participantes: [] },
+    ],
+  };
+  const pdf = await gerarPdfDePautas(doc);
+  assert.deepEqual(validarEstrutura(pdf), []);
+
+  const texto = extrairTexto(pdf);
+  assert.ok(texto.includes("Participantes:"), "pauta com participantes gera a linha");
+  assert.ok(texto.includes("Ana Souza") && texto.includes("Bruno Lima"), "nomes presentes");
 });
 
 // --- conteudo hostil ---------------------------------------------------------

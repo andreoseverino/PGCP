@@ -4,7 +4,7 @@ import { AgendaItem, GovernanceBody, Participant, StandaloneAgenda } from "../ty
 import { newId } from "../lib/id";
 import DirectoryUserPicker from "./DirectoryUserPicker";
 import type { DirectoryUser } from "../lib/directory";
-import type { BibliotecaFormInput, TaxonomyItem } from "../lib/agenda-topics";
+import type { BibliotecaFormInput, TaxonomyItem, TopicParticipantPayload } from "../lib/agenda-topics";
 import {
   addParticipantOnce,
   canOfferAsParticipant,
@@ -384,6 +384,9 @@ export default function ScheduleMeetingModal({
   const [tempPautaTypeId, setTempPautaTypeId] = useState("");
   const [tempPautaNatureId, setTempPautaNatureId] = useState("");
   const [tempPautaFup, setTempPautaFup] = useState(false);
+  // Participantes da pauta (Opção A). No drawer eles nascem no TEMA criado e o
+  // backend faz o snapshot para a reunião ao vincular.
+  const [tempPautaParticipants, setTempPautaParticipants] = useState<TopicParticipantPayload[]>([]);
 
   useEffect(() => {
     if (pautaTypes.length > 0 && !tempPautaTypeId) setTempPautaTypeId(pautaTypes[0].id);
@@ -1290,6 +1293,50 @@ export default function ScheduleMeetingModal({
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-850 focus:outline-none resize-none font-sans"
                     />
                   </div>
+
+                  {/* Participantes da pauta (Opção A). Ao criar a reunião, cada um
+                      é adicionado também aos participantes dela (snapshot do tema). */}
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                      {language === "en" ? "Pauta participants" : "Participantes da Pauta"}
+                    </label>
+                    <DirectoryUserPicker
+                      language={language}
+                      selected={null}
+                      placeholder={language === "en" ? "Add a participant..." : "Adicionar participante..."}
+                      onSelect={(u) => {
+                        const oid = u.id;
+                        setTempPautaParticipants((prev) =>
+                          prev.some((p) => p.entraObjectId === oid)
+                            ? prev
+                            : [...prev, { entraObjectId: oid, displayName: u.displayName ?? enderecoDoDiretorio(u) ?? "", email: enderecoDoDiretorio(u) }],
+                        );
+                      }}
+                      onClear={() => {}}
+                    />
+                    {tempPautaParticipants.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-1">
+                        {tempPautaParticipants.map((p) => (
+                          <span key={p.entraObjectId ?? p.displayName} className="inline-flex items-center gap-1 bg-[#00658d]/5 text-[#00658d] text-[10px] font-bold px-2 py-0.5 rounded-full">
+                            {p.displayName}
+                            <button
+                              type="button"
+                              onClick={() => setTempPautaParticipants((prev) => prev.filter((x) => x !== p))}
+                              className="hover:text-red-600"
+                              aria-label="Remover"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-[10px] text-slate-400 font-semibold">
+                      {language === "en"
+                        ? "These people will also be added to the meeting participants and invited when the meeting is sent."
+                        : "Estas pessoas também serão adicionadas aos participantes da reunião e receberão o convite quando a reunião for enviada."}
+                    </p>
+                  </div>
                 </div>
               </div>
 
@@ -1321,7 +1368,8 @@ export default function ScheduleMeetingModal({
                       typeId: tempPautaTypeId || undefined,
                       natureId: tempPautaNatureId || undefined,
                       generatesActionItem: tempPautaFup,
-                      isCircularTheme: tempPautaCircular
+                      isCircularTheme: tempPautaCircular,
+                      participants: tempPautaParticipants.length ? tempPautaParticipants : undefined
                     });
                     // Se a criação falhou (toast já avisou), não adiciona item solto.
                     if (!criado) return;
@@ -1362,6 +1410,7 @@ export default function ScheduleMeetingModal({
                     setTempPautaDescription("");
                     setTempPautaCircular(false);
                     setTempPautaFup(false);
+                    setTempPautaParticipants([]);
                     setTempPautaTypeId(pautaTypes[0]?.id || "");
                     setTempPautaNatureId(pautaNatures[0]?.id || "");
                     setIsCreateAgendaDrawerOpen(false);

@@ -122,6 +122,7 @@ async function carregarReuniao(meetingId: string) {
   if (!reuniao) throw new HttpError(404, "Reunião não encontrada.");
 
   const { rows: pautas } = await pool.query<{
+    id: string;
     position: number;
     title: string;
     description: string | null;
@@ -137,7 +138,7 @@ async function carregarReuniao(meetingId: string) {
     // SNAPSHOT primeiro (019); fallback ao tema mestre por compatibilidade nos
     // campos nulos de itens antigos (Tipo/Natureza/Descrição). "Tema de FUP" usa
     // o valor do item (NOT NULL): item antigo => false, coerente com a migration.
-    `SELECT ai.position, ai.title,
+    `SELECT ai.id, ai.position, ai.title,
             COALESCE(ai.description, t.description)          AS description,
             ai.responsible_label, ai.presenter_label,
             to_char(ai.scheduled_start_time, 'HH24:MI')      AS scheduled_start_time,
@@ -165,6 +166,27 @@ async function carregarReuniao(meetingId: string) {
     [meetingId],
   );
 
+  // Participantes POR PAUTA (020) — só NOME (preferência do produto: nada de
+  // e-mail desnecessário no PDF). Agrupados por item.
+  const { rows: partPorPauta } = await pool.query<{ item_id: string; nome: string }>(
+    `SELECT aip.meeting_agenda_item_id AS item_id,
+            coalesce(mp.display_name, u.name, mp.email) AS nome
+       FROM meeting_agenda_item_participants aip
+       JOIN meeting_agenda_items ai ON ai.id = aip.meeting_agenda_item_id
+       JOIN meeting_participants  mp ON mp.id = aip.meeting_participant_id
+       LEFT JOIN users u ON u.id = mp.user_id
+      WHERE ai.meeting_id = $1
+      ORDER BY coalesce(mp.display_name, u.name, mp.email), mp.id`,
+    [meetingId],
+  );
+  const partDaPauta = new Map<string, string[]>();
+  for (const r of partPorPauta) {
+    if (!r.nome) continue;
+    const lista = partDaPauta.get(r.item_id) ?? [];
+    lista.push(r.nome);
+    partDaPauta.set(r.item_id, lista);
+  }
+
   return {
     reuniao,
     pautas: pautas.map(
@@ -180,6 +202,7 @@ async function carregarReuniao(meetingId: string) {
         tipo: p.type_name,
         natureza: p.nature_name,
         temaFup: p.generates_action_item,
+        participantes: partDaPauta.get(p.id) ?? [],
       }),
     ),
     participantes: participantes.map((p) => p.nome).filter((n): n is string => Boolean(n)),

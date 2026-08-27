@@ -178,6 +178,12 @@ export interface MeetingAgendaItem {
   description: string | null;
   /** "Tema de FUP" — apenas classificação; não cria action_item. */
   generatesActionItem: boolean;
+  /**
+   * Participantes POR PAUTA (020, Opção A). Cada um existe também em
+   * `meeting_participants` — `participantId` é o id da participação na reunião,
+   * usado para desvincular. `name` é o rótulo de exibição.
+   */
+  participants: { participantId: string; name: string }[];
 }
 
 export interface MeetingDetail extends MeetingSummary {
@@ -337,6 +343,7 @@ function toAgendaItem(row: AgendaItemRow): MeetingAgendaItem {
         : null,
     description: row.description,
     generatesActionItem: row.generates_action_item,
+    participants: [], // preenchido por listAgendaItems numa segunda consulta.
   };
 }
 
@@ -503,7 +510,36 @@ async function listAgendaItems(meetingId: string): Promise<MeetingAgendaItem[]> 
     [meetingId],
   );
 
-  return rows.map(toAgendaItem);
+  const itens = rows.map(toAgendaItem);
+
+  // Participantes POR PAUTA (020): uma consulta para toda a reunião, agrupada por
+  // item. `name` prioriza o nome de exibição/usuário; e-mail é último recurso.
+  const { rows: vinculos } = await pool.query<{
+    meeting_agenda_item_id: string;
+    participant_id: string;
+    name: string;
+  }>(
+    `SELECT aip.meeting_agenda_item_id,
+            mp.id AS participant_id,
+            coalesce(mp.display_name, u.name, mp.email) AS name
+       FROM meeting_agenda_item_participants aip
+       JOIN meeting_agenda_items ai ON ai.id = aip.meeting_agenda_item_id
+       JOIN meeting_participants  mp ON mp.id = aip.meeting_participant_id
+       LEFT JOIN users u ON u.id = mp.user_id
+      WHERE ai.meeting_id = $1
+      ORDER BY coalesce(mp.display_name, u.name, mp.email), mp.id`,
+    [meetingId],
+  );
+
+  const porItem = new Map<string, { participantId: string; name: string }[]>();
+  for (const v of vinculos) {
+    const lista = porItem.get(v.meeting_agenda_item_id) ?? [];
+    lista.push({ participantId: v.participant_id, name: v.name });
+    porItem.set(v.meeting_agenda_item_id, lista);
+  }
+  for (const item of itens) item.participants = porItem.get(item.id) ?? [];
+
+  return itens;
 }
 
 // -----------------------------------------------------------------------------
