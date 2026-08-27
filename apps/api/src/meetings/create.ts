@@ -800,7 +800,8 @@ export async function createMeeting(
                  duration_minutes, execution_status, responsible_label,
                  responsible_entra_tenant_id, responsible_entra_object_id,
                  is_circular_theme)
-              VALUES ($1, $10, $2, $3, $4, $5, $6, $7, $8, $9, $11)`,
+              VALUES ($1, $10, $2, $3, $4, $5, $6, $7, $8, $9,
+                 COALESCE($11::boolean, (SELECT is_circular_theme FROM agenda_topics WHERE id = $10), false))`,
         [
           meetingId,
           item.title,
@@ -812,7 +813,9 @@ export async function createMeeting(
           item.responsibleEntraObjectId ? actor.entraTenantId : null,
           item.responsibleEntraObjectId ?? null,
           item.agendaTopicId ?? null,
-          item.isCircularTheme ?? false,
+          // Ausente + vínculo com a Biblioteca => herda o padrão do tema mestre
+          // (snapshot). Ausente sem vínculo => false. Valor explícito manda.
+          item.isCircularTheme ?? null,
         ],
       );
     }

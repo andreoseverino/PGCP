@@ -682,7 +682,10 @@ export default function MeetingDetailView({
           scheduledStartTime: /^\d{2}:\d{2}$/.test(item.time) ? item.time : undefined,
           responsibleLabel: item.author?.trim() || undefined,
           // Identidade só acompanha rótulo — a API recusa o contrário.
-          responsibleEntraObjectId: item.author?.trim() ? item.authorEntraObjectId : undefined
+          responsibleEntraObjectId: item.author?.trim() ? item.authorEntraObjectId : undefined,
+          // [EXTRA] carrega o valor escolhido; item da Biblioteca vem undefined e
+          // o backend herda o padrão do tema mestre (cópia por agendaTopicId).
+          isCircularTheme: item.isCircularTheme
         }),
       language === "en" ? "Agenda item added." : "Pauta incluída na reunião."
     );

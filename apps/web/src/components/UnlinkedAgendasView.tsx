@@ -94,6 +94,11 @@ export default function UnlinkedAgendasView({
    */
   const [pautaTypeId, setPautaTypeId] = useState("");
   const [pautaNatureId, setPautaNatureId] = useState("");
+  /**
+   * PADRÃO de tema circular do tema mestre. Default Não. Ao vincular a uma
+   * reunião, o backend copia este valor para a pauta da reunião (snapshot).
+   */
+  const [isCircular, setIsCircular] = useState(false);
   
   // Search query
   const [searchQuery, setSearchQuery] = useState("");
@@ -203,6 +208,7 @@ export default function UnlinkedAgendasView({
       typeId: pautaTypeId || undefined,
       natureId: pautaNatureId || undefined,
       generatesActionItem: isFupForm,
+      isCircularTheme: isCircular,
       participants
     };
 
@@ -226,6 +232,7 @@ export default function UnlinkedAgendasView({
     setMeetingId("");
     setPautaTypeId(pautaTypes[0]?.id || "");
     setPautaNatureId(pautaNatures[0]?.id || "");
+    setIsCircular(false);
     setSelectedParticipantToAdd("");
   };
 
@@ -247,7 +254,8 @@ export default function UnlinkedAgendasView({
     // ainda não tem tipo/natureza definidos.
     setPautaTypeId(agenda.pautaTypeId || pautaTypes[0]?.id || "");
     setPautaNatureId(agenda.pautaNatureId || pautaNatures[0]?.id || "");
-    
+    setIsCircular(agenda.isCircularTheme === true);
+
     const parsed = parseDurationString(agenda.duration);
     setDurationHours(parsed.hours);
     setDurationMinutes(parsed.minutes);
@@ -267,6 +275,7 @@ export default function UnlinkedAgendasView({
     setMeetingId("");
     setPautaTypeId(pautaTypes[0]?.id || "");
     setPautaNatureId(pautaNatures[0]?.id || "");
+    setIsCircular(false);
     setSelectedParticipantToAdd("");
   };
 
@@ -403,6 +412,23 @@ export default function UnlinkedAgendasView({
                 {pautaNatures.map((pn) => (
                   <option key={pn.id} value={pn.id}>{pn.name}</option>
                 ))}
+              </select>
+            </div>
+
+            {/* Tema circular? — PADRÃO da Biblioteca. Copiado para a pauta ao
+                vincular a uma reunião; sem automação. Default Não. */}
+            <div className="flex flex-col gap-1">
+              <label htmlFor="agendaCircularInput" className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
+                {language === "en" ? "Recurring theme?" : "Tema circular?"} *
+              </label>
+              <select
+                id="agendaCircularInput"
+                value={isCircular ? "sim" : "nao"}
+                onChange={(e) => setIsCircular(e.target.value === "sim")}
+                className="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] transition-all duration-200"
+              >
+                <option value="nao">{language === "en" ? "No" : "Não"}</option>
+                <option value="sim">{language === "en" ? "Yes" : "Sim"}</option>
               </select>
             </div>
 

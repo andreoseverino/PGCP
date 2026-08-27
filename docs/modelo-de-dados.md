@@ -488,9 +488,18 @@ como distinto e permitiria a mesma pessoa várias vezes. Assim, usuários não d
 | `agenda_topic_nature_id` | uuid FK → `agenda_topic_natures` | não | ← `pautaNature` |
 | `estimated_duration_minutes` | integer | não | **inteiro** — resolve 3.9 |
 | `generates_action_item` | boolean | sim | default `false` ← `isFUP` |
+| `is_circular_theme` | boolean | sim | `NOT NULL DEFAULT false` (018). **Valor PADRÃO** de tema circular do tema mestre. Copiado para a pauta ao vincular a uma reunião (ver 5.8) |
 | `created_at` / `updated_at` | timestamptz | sim | |
 
 **Removido:** `meetingId`. O vínculo com reunião é `meeting_agenda_items`.
+
+**Tema circular — dois eixos.** `agenda_topics.is_circular_theme` é o **padrão** da
+Biblioteca; `meeting_agenda_items.is_circular_theme` (5.8) é o valor **efetivo** da
+pauta naquela reunião. Ao vincular um tema à reunião, o padrão é **copiado uma vez**
+(snapshot no INSERT do item, via `COALESCE`) e a partir daí os dois são
+**independentes**: editar a pauta da reunião não altera a Biblioteca, e editar a
+Biblioteca não retroage para reuniões existentes. Pauta sem informação explícita e
+sem vínculo nasce `false`.
 
 ### 5.7 `agenda_topic_participants`
 
@@ -523,7 +532,7 @@ Nunca se cria usuário fictício para permitir vínculo na biblioteca.
 | `presenter_label` | text | não | apresentador **coletivo/textual** (`"Todos"`, `"Comitê Financeiro"`) |
 | `execution_status` | text | sim | `pending`\|`presenting`\|`completed`\|`postponed` |
 | `postponed_from_item_id` | uuid FK → `meeting_agenda_items` | não | rastreia adiamento |
-| `is_circular_theme` | boolean | sim | `NOT NULL DEFAULT false` (017). Tema circular **desta** pauta na reunião — **não** vive na `agenda_topics`; item importado nasce `false` |
+| `is_circular_theme` | boolean | sim | `NOT NULL DEFAULT false` (017). Valor **EFETIVO** de tema circular desta pauta na reunião. Ao vincular da Biblioteca, é copiado de `agenda_topics.is_circular_theme` (snapshot); depois independente. Sem informação explícita e sem vínculo → `false` |
 | `created_at` / `updated_at` | timestamptz | sim | |
 
 **`UNIQUE (meeting_id, position)` DEFERRABLE** — ordem determinística sem travar a
@@ -874,6 +883,7 @@ erDiagram
         text title
         integer estimated_duration_minutes
         boolean generates_action_item
+        boolean is_circular_theme "padrao; copiado ao vincular"
     }
     AGENDA_TOPIC_PARTICIPANTS {
         uuid agenda_topic_id PK
@@ -888,7 +898,7 @@ erDiagram
         integer duration_minutes
         text presenter_label "coletivo, nao pessoa"
         text execution_status
-        boolean is_circular_theme "tema circular desta pauta"
+        boolean is_circular_theme "efetivo; copiado da Biblioteca ao vincular"
     }
     MEETING_AGENDA_ITEM_PRESENTERS {
         uuid meeting_agenda_item_id PK

@@ -455,7 +455,8 @@ export async function addAgendaItem(
                duration_minutes, execution_status, responsible_label,
                responsible_entra_tenant_id, responsible_entra_object_id,
                is_circular_theme)
-            VALUES ($1, $9, $2, $3, $4, $5, 'pending', $6, $7, $8, $10)
+            VALUES ($1, $9, $2, $3, $4, $5, 'pending', $6, $7, $8,
+               COALESCE($10::boolean, (SELECT is_circular_theme FROM agenda_topics WHERE id = $9), false))
          RETURNING id`,
       [
         meetingId,
@@ -467,7 +468,9 @@ export async function addAgendaItem(
         input.responsibleEntraObjectId ? actor.entraTenantId : null,
         input.responsibleEntraObjectId ?? null,
         input.agendaTopicId ?? null,
-        input.isCircularTheme ?? false,
+        // Ausente + vínculo com a Biblioteca => herda o padrão do tema mestre
+        // (snapshot). Ausente sem vínculo => false. Valor explícito manda.
+        input.isCircularTheme ?? null,
       ],
     );
 

@@ -78,6 +78,8 @@ export interface AgendaTopicSummary {
   nature: NamedRef | null;
   governanceBody: NamedRef | null;
   ownerUserId: string | null;
+  /** PADRÃO de tema circular. Copiado para a pauta ao vincular a uma reunião. */
+  isCircularTheme: boolean;
   source: TopicSource | null;
   /** DERIVADO: nasceu de um Postergar. Equivale a `source !== null`. */
   isAutomaticCopy: boolean;
@@ -107,6 +109,7 @@ interface TopicRow {
   responsible_entra_tenant_id: string | null;
   responsible_entra_object_id: string | null;
   owner_user_id: string | null;
+  is_circular_theme: boolean;
   source_meeting_id: string | null;
   source_agenda_item_id: string | null;
   type_id: string | null;
@@ -144,6 +147,7 @@ function toSummary(row: TopicRow): AgendaTopicSummary {
     nature: row.nature_id && row.nature_name ? { id: row.nature_id, name: row.nature_name } : null,
     governanceBody: row.body_id && row.body_name ? { id: row.body_id, name: row.body_name } : null,
     ownerUserId: row.owner_user_id,
+    isCircularTheme: row.is_circular_theme,
     source,
     isAutomaticCopy: source !== null,
     linkedMeetingsCount: row.linked_meetings_count,
@@ -163,6 +167,7 @@ const SUMMARY_SELECT = `
          t.responsible_entra_tenant_id,
          t.responsible_entra_object_id,
          t.owner_user_id,
+         t.is_circular_theme,
          t.source_meeting_id,
          t.source_agenda_item_id,
          tt.id   AS type_id,   tt.name AS type_name,

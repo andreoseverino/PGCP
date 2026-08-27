@@ -162,6 +162,13 @@ export interface StandaloneAgenda {
   pautaNatureId?: string;
   pautaNature?: string;
 
+  /**
+   * PADRÃO de tema circular do tema mestre (`agenda_topics.is_circular_theme`).
+   * Ao vincular a uma reunião, é copiado para a pauta da reunião (snapshot);
+   * depois os valores são independentes. Ausente em registro ainda não gravado.
+   */
+  isCircularTheme?: boolean;
+
   /** Em quantas reuniões a pauta está. Vem da FK, nunca de casar título. */
   linkedMeetingsCount?: number;
 

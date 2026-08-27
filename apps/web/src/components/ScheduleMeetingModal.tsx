@@ -371,6 +371,8 @@ export default function ScheduleMeetingModal({
   /** Opção explícita de incluir o responsável entre os participantes. */
   const [tempPautaAuthorAsParticipant, setTempPautaAuthorAsParticipant] = useState(false);
   const [tempPautaDescription, setTempPautaDescription] = useState("");
+  // Tema circular da nova pauta. Default Não. Só REGISTRA o fato: sem automação.
+  const [tempPautaCircular, setTempPautaCircular] = useState(false);
 
   /** Sem pessoa escolhida, a pauta fica no coletivo — o mesmo padrão de antes. */
   const tempPautaAuthor = tempPautaAuthorUser?.displayName?.trim() || "Todos";
@@ -1085,7 +1087,10 @@ export default function ScheduleMeetingModal({
                         time: "10:00",
                         title: sa.title,
                         duration: sa.duration,
-                        author: sa.author
+                        author: sa.author,
+                        // Vincular a Biblioteca: a pauta herda o padrão do tema
+                        // mestre (cópia snapshot; depois independente).
+                        isCircularTheme: sa.isCircularTheme
                       }));
                     // avoid duplicate imports by title matching
                     const currentTitles = agenda.map(a => a.title.toLowerCase());
@@ -1185,6 +1190,22 @@ export default function ScheduleMeetingModal({
                     </div>
                   </div>
 
+                  {/* Tema circular? — copiado para a pauta da reunião ao gravar.
+                      Só registra o fato; sem automação. Default Não. */}
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                      {language === "en" ? "Recurring theme?" : "Tema circular?"}
+                    </label>
+                    <select
+                      value={tempPautaCircular ? "sim" : "nao"}
+                      onChange={(e) => setTempPautaCircular(e.target.value === "sim")}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-850 cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                    >
+                      <option value="nao">{language === "en" ? "No" : "Não"}</option>
+                      <option value="sim">{language === "en" ? "Yes" : "Sim"}</option>
+                    </select>
+                  </div>
+
                   <div className="flex flex-col gap-1.5">
                     <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
                       {language === "en" ? "Objectives / Agenda Scope" : "Objetivo e Diretrizes de Ata"}
@@ -1229,7 +1250,9 @@ export default function ScheduleMeetingModal({
                       description: tempPautaDescription.trim(),
                       durationMinutes: parseDuracaoEmMinutos(tempPautaDuration),
                       responsibleLabel: tempPautaAuthor.trim(),
-                      responsibleEntraObjectId: tempPautaAuthorUser?.id || undefined
+                      responsibleEntraObjectId: tempPautaAuthorUser?.id || undefined,
+                      // Padrão do tema mestre na Biblioteca.
+                      isCircularTheme: tempPautaCircular
                     });
 
                     // Add directly to current meeting agendas too
@@ -1239,7 +1262,9 @@ export default function ScheduleMeetingModal({
                       title: tempPautaTitle,
                       duration: tempPautaDuration,
                       author: tempPautaAuthor,
-                      authorEntraObjectId: tempPautaAuthorUser?.id
+                      authorEntraObjectId: tempPautaAuthorUser?.id,
+                      // Valor efetivo da pauta desta reunião (mesmo do formulário).
+                      isCircularTheme: tempPautaCircular
                     }]);
 
                     if (tempPautaAuthorAsParticipant && tempPautaAuthorUser) {
@@ -1256,6 +1281,7 @@ export default function ScheduleMeetingModal({
                     setTempPautaAuthorUser(null);
                     setTempPautaAuthorAsParticipant(false);
                     setTempPautaDescription("");
+                    setTempPautaCircular(false);
                     setIsCreateAgendaDrawerOpen(false);
                   }}
                   className="w-full py-2.5 bg-[#00658d] hover:bg-[#00aeef] text-white rounded-xl text-[10px] font-bold uppercase tracking-wider transition disabled:opacity-50 cursor-pointer"

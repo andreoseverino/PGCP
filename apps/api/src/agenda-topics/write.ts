@@ -134,6 +134,8 @@ export interface AgendaTopicInput {
   agendaTopicTypeId?: string | null;
   agendaTopicNatureId?: string | null;
   governanceBodyId?: string | null;
+  /** PADRÃO de tema circular. Copiado para a pauta ao vincular a uma reunião. */
+  isCircularTheme?: boolean;
   participants?: TopicParticipantInput[];
 }
 
@@ -147,6 +149,7 @@ const CAMPOS_PERMITIDOS = new Set([
   "agendaTopicTypeId",
   "agendaTopicNatureId",
   "governanceBodyId",
+  "isCircularTheme",
   "participants",
 ]);
 
@@ -192,6 +195,13 @@ export function parseAgendaTopicInput(body: unknown, parcial = false): AgendaTop
       throw new HttpError(400, "'generatesActionItem' deve ser booleano.");
     }
     saida.generatesActionItem = dados.generatesActionItem;
+  }
+
+  if ("isCircularTheme" in dados) {
+    if (typeof dados.isCircularTheme !== "boolean") {
+      throw new HttpError(400, "'isCircularTheme' deve ser booleano (true ou false).");
+    }
+    saida.isCircularTheme = dados.isCircularTheme;
   }
 
   if ("responsibleLabel" in dados) {
@@ -284,8 +294,9 @@ export async function createAgendaTopic(
       `INSERT INTO agenda_topics
               (title, description, estimated_duration_minutes, generates_action_item,
                responsible_label, responsible_entra_tenant_id, responsible_entra_object_id,
-               agenda_topic_type_id, agenda_topic_nature_id, governance_body_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+               agenda_topic_type_id, agenda_topic_nature_id, governance_body_id,
+               is_circular_theme)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING id`,
       [
         input.title,
@@ -298,6 +309,7 @@ export async function createAgendaTopic(
         input.agendaTopicTypeId ?? null,
         input.agendaTopicNatureId ?? null,
         input.governanceBodyId ?? null,
+        input.isCircularTheme ?? false,
       ],
     );
 
@@ -331,6 +343,7 @@ const COLUNA_DE: Record<string, string> = {
   agendaTopicTypeId: "agenda_topic_type_id",
   agendaTopicNatureId: "agenda_topic_nature_id",
   governanceBodyId: "governance_body_id",
+  isCircularTheme: "is_circular_theme",
 };
 
 export async function updateAgendaTopic(

@@ -62,6 +62,8 @@ export interface ApiAgendaTopic {
   nature: NamedRef | null;
   governanceBody: NamedRef | null;
   ownerUserId: string | null;
+  /** PADRÃO de tema circular. Copiado para a pauta ao vincular a uma reunião. */
+  isCircularTheme: boolean;
   source: TopicSource | null;
   isAutomaticCopy: boolean;
   linkedMeetingsCount: number;
@@ -110,6 +112,8 @@ export interface AgendaTopicPayload {
   agendaTopicTypeId?: string | null;
   agendaTopicNatureId?: string | null;
   governanceBodyId?: string | null;
+  /** PADRÃO de tema circular do tema mestre. Booleano estrito no servidor. */
+  isCircularTheme?: boolean;
   participants?: TopicParticipantPayload[];
 }
 
@@ -151,6 +155,7 @@ export function agendaTopicToStandalone(t: ApiAgendaTopic): StandaloneAgenda {
     pautaType: t.type?.name,
     pautaNatureId: t.nature?.id,
     pautaNature: t.nature?.name,
+    isCircularTheme: t.isCircularTheme,
     linkedMeetingsCount: t.linkedMeetingsCount,
     participantsCount: t.participantsCount,
     /*
@@ -175,6 +180,8 @@ export interface BibliotecaFormInput {
   typeId?: string;
   natureId?: string;
   generatesActionItem?: boolean;
+  /** PADRÃO de tema circular. Default Não no formulário. */
+  isCircularTheme?: boolean;
   participants?: TopicParticipantPayload[];
 }
 
@@ -193,6 +200,9 @@ export function buildTopicPayload(input: BibliotecaFormInput): AgendaTopicPayloa
     responsibleEntraObjectId: label ? (input.responsibleEntraObjectId ?? null) : null,
     agendaTopicTypeId: input.typeId ?? null,
     agendaTopicNatureId: input.natureId ?? null,
+    // Só emite quando o formulário informou o campo. Um PATCH parcial que não o
+    // traz (ex.: alternar FUP) NÃO deve zerar um "Sim" já gravado.
+    ...(input.isCircularTheme !== undefined ? { isCircularTheme: input.isCircularTheme } : {}),
     ...(input.participants ? { participants: input.participants } : {})
   };
 }
