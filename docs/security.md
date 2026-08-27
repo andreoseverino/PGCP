@@ -103,6 +103,7 @@ configuração externa (§16, `docs/go-live.md`).
 | Defesa adicional no frontend (só renderiza link se esquema seguro) | `apps/web/src/lib/safe-url.ts` + `apps/web/src/components/MeetingDetailView.tsx` |
 | Remoção de dependências vulneráveis não usadas (`express`, `@google/genai` no web) + `npm audit fix` | `apps/web/package.json`, `package-lock.json` |
 | Testes negativos de segurança | `apps/api/src/meetings/create.test.ts` (meetingLink perigoso, mass assignment) |
+| Restauração de sessão preserva `appRoles` (perda de papel após remount/reload) — ver §7 | `apps/web/src/auth/session.ts`, `apps/web/src/App.tsx`, `apps/web/src/auth/session.test.ts` (commit `3a6f76d`) |
 
 Validação: ✅ `npm audit` = **0 vulnerabilidades**; typecheck/build verdes; erro
 não tratado passou a devolver JSON genérico sem stack (verificado ao vivo com
@@ -302,6 +303,39 @@ Rejeição comprovada (✅ local): token forjado (assinatura inválida), `Bearer
 malformado e ausência de credencial → **401** com mensagem genérica
 (`invalid_token`), sem oráculo. Validação de `aud`/`tid`/`exp` contra token
 **real** é ⚠️ pré-go-live (precisa do tenant).
+
+### Restauração de sessão no frontend — App Roles preservadas (correção, commit `3a6f76d`)
+
+**Sintoma:** após alguns minutos de inatividade (aba descartada/congelada pelo
+navegador) ou reload da SPA, o usuário seguia **autenticado**, mas a interface
+passava a tratá-lo como **sem papel** — funcionalidades condicionadas a App Role
+sumiam; logout+login restaurava.
+
+**Causa raiz:** o login gravava `name`, `role` **e `appRoles`** no `sessionStorage`,
+mas `readSessionUser()` restaurava **só `name`/`role`**, descartando `appRoles`.
+No remount, `isAuthenticated` voltava `true` (de `sessionStorage`) enquanto
+`currentUser.appRoles` vinha vazio → `podeAssessorar`/`podeAdministrar` = `false`.
+
+**Correção:** `apps/web/src/auth/session.ts` (`parseSessionUser`, pura) passa a
+restaurar `appRoles` (sanitizando: só array de strings); `App.tsx` delega a ela.
+
+**Não era expiração de token / MSAL / Graph.** `acquireTokenSilent` e a
+restauração da conta ativa (`initializeMsal` → `setActiveAccount`) funcionavam; a
+renovação do token **nunca** tocava `appRoles`; não há handler de `401` que zere
+papéis; o frontend **não** decodifica token — as roles vêm de `GET /me` (servidor).
+Era exclusivamente a **desserialização da sessão no navegador**.
+
+**`appRoles` no frontend = UX, não autorização.** O backend continua a autoridade:
+cada rota revalida a App Role e responde **403** sem o papel (§8). Restaurar as
+roles no cliente **não** escala privilégio — token/`azp`/`scp`/`roles` são
+reconferidos no servidor, e usuário sem papel continua recebendo 403.
+
+**Testes:** `apps/web/src/auth/session.test.ts` (7 casos — papéis preservados no
+remount, sem escalonamento, formato inválido ignorado, sessão corrompida →
+padrão); suíte web incorporada ao monorepo (`npm test`).
+
+**Pendência:** QA autenticado real dos cenários de inatividade/remount/renovação
+com o tenant Entra continua ⚠️ **pré-go-live** — não validado aqui.
 
 ---
 
