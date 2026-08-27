@@ -1049,9 +1049,14 @@ export default function App() {
         onLogout={handleSignout}
       />
 
-      {/* Main Content Layout Pane wrapper */}
-      <main className="flex-1 md:pl-64 min-h-screen flex flex-col pt-16 md:pt-0">
-        <div className="p-6 md:p-10 w-full flex-1 pb-16">
+      {/* Main Content Layout Pane wrapper.
+          `min-w-0`: sem isto o <main> é um flex item com min-width:auto e NÃO
+          encolhe abaixo da largura de conteúdo — uma tabela larga (min-w-[800px])
+          empurrava a página inteira em telas estreitas. Com min-w-0 o main respeita
+          a largura disponível e os contêineres overflow-x-auto passam a rolar
+          internamente em vez de estourar o viewport. */}
+      <main className="flex-1 md:pl-64 min-w-0 min-h-screen flex flex-col pt-16 md:pt-0">
+        <div className="p-6 md:p-10 w-full min-w-0 flex-1 pb-16">
           {renderTabContent()}
         </div>
       </main>
