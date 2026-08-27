@@ -45,6 +45,7 @@ import {
   podeAssessorar,
   type MeResponse
 } from "./auth/me";
+import { parseSessionUser } from "./auth/session";
 import { getInitials } from "./lib/user";
 import { newId } from "./lib/id";
 import {
@@ -89,19 +90,16 @@ const DEFAULT_SESSION_USER: SessionUser = {
   role: ""
 };
 
-/** Lê o usuário da sessão; sessão corrompida cai no padrão em vez de quebrar. */
+/**
+ * Lê o usuário da sessão; sessão corrompida cai no padrão em vez de quebrar.
+ *
+ * Delega a `parseSessionUser` (pura, testável). RESTAURA `appRoles` — a versão
+ * anterior os descartava, e por isso um remount (reload / aba descartada após
+ * inatividade) rebaixava Assessoria/Admin a usuário sem papel. Não é autoridade:
+ * o backend revalida cada rota.
+ */
 function readSessionUser(): SessionUser {
-  const saved = sessionStorage.getItem(SESSION_USER_KEY);
-  if (!saved) return DEFAULT_SESSION_USER;
-
-  try {
-    const parsed = JSON.parse(saved) as Partial<SessionUser>;
-    return parsed?.name && parsed?.role
-      ? { name: parsed.name, role: parsed.role }
-      : DEFAULT_SESSION_USER;
-  } catch {
-    return DEFAULT_SESSION_USER;
-  }
+  return parseSessionUser(sessionStorage.getItem(SESSION_USER_KEY)) ?? DEFAULT_SESSION_USER;
 }
 
 export default function App() {
