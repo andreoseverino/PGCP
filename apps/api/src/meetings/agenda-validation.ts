@@ -1,3 +1,4 @@
+import type { PoolClient } from "pg";
 import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 import { recordAudit, recordAuditIn } from "../audit/service.js";
@@ -433,6 +434,78 @@ export async function aprovarPautas(meetingId: string, ator: Ator): Promise<Resu
   } finally {
     client.release();
   }
+}
+
+/**
+ * Reabertura automatica da validacao por ALTERACAO ESTRUTURAL nas pautas.
+ *
+ * Regra de integridade (decisao de produto, opcao B): se as pautas mudam depois
+ * de a validacao ter saido (`sent`) ou sido registrada como aprovada
+ * (`approved`), o PDF que o aprovador viu deixou de refletir a reuniao. Em vez de
+ * travar a edicao, a validacao VOLTA para `draft` e a Secretaria reenvia.
+ *
+ * SO VALE ANTES DA REUNIAO COMECAR. A validacao e do PLANEJAMENTO pre-reuniao;
+ * durante (`in_progress`) e depois (`done`/`closed`) as pautas mudam por conducao
+ * — pauta extraordinaria, adiar, concluir, resetar — e NADA disso reabre a
+ * aprovacao. Por isso o gate abaixo, alem de os chamadores so invocarem esta
+ * funcao em mutacoes estruturais.
+ *
+ * Respeita o CHECK de coerencia da migration 016: `draft` exige `sent_at` e
+ * `approved_at` nulos. Zera tambem `sent_to` e `approved_by_user_id` — metadados
+ * de uma validacao que deixou de valer.
+ *
+ * Roda DENTRO da transacao do chamador (recebe o `client`). Devolve `true`
+ * quando reabriu, para a UI poder avisar o usuario.
+ */
+export async function reabrirValidacaoSePreReuniao(
+  client: PoolClient,
+  meetingId: string,
+  ator: Ator,
+): Promise<boolean> {
+  const { rows } = await client.query<{
+    title: string;
+    status: string;
+    agenda_validation_status: AgendaValidationStatus;
+  }>(
+    `SELECT title, status, agenda_validation_status
+       FROM meetings WHERE id = $1 FOR UPDATE`,
+    [meetingId],
+  );
+  const reuniao = rows[0];
+  if (!reuniao) return false;
+
+  // Durante/depois da reuniao a validacao nao reabre: conducao nao e planejamento.
+  if (["in_progress", "done", "closed"].includes(reuniao.status)) return false;
+  // So reabre o que estava em curso: rascunho ja e o estado de destino.
+  if (
+    reuniao.agenda_validation_status !== "sent" &&
+    reuniao.agenda_validation_status !== "approved"
+  ) {
+    return false;
+  }
+
+  await client.query(
+    `UPDATE meetings
+        SET agenda_validation_status = 'draft',
+            agenda_validation_sent_at = NULL,
+            agenda_validation_sent_to = NULL,
+            agenda_approved_at = NULL,
+            agenda_approved_by_user_id = NULL
+      WHERE id = $1`,
+    [meetingId],
+  );
+
+  await recordAuditIn(client, {
+    actorUserId: ator.userId,
+    actorName: ator.name,
+    action: "Validação de pautas reaberta por alteração nas pautas",
+    entityType: "Reunião",
+    entityId: meetingId,
+    entityLabel: `${reuniao.title} — validação anterior invalidada; reenviar para aprovação`,
+    status: "success",
+  });
+
+  return true;
 }
 
 /** Estado da validacao, para a rota do convite conferir a pre-condicao. */

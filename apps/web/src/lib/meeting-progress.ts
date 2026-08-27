@@ -160,3 +160,21 @@ export function getMeetingStage(
 }
 
 export const stageIndex = (stage: MeetingStage) => MEETING_STAGES.indexOf(stage);
+
+/**
+ * Modo da aba Pautas — derivado SÓ de `meetings.status`, sem status novo.
+ *
+ *   planejamento  antes da reunião: montar/editar/ordenar a agenda, Biblioteca
+ *   execução      `In Progress`: conduzir ao vivo (iniciar/aprovar/adiar/cron.)
+ *   resultado     `Done`/`Closed`: leitura do desfecho
+ *
+ * É de APRESENTAÇÃO, não de autorização: o backend segue exigindo
+ * `PGCP.Assessoria` em toda mutação. Esconder um controle é cortesia de UX.
+ */
+export type PautasMode = "planning" | "execution" | "result";
+
+export function getPautasMode(meeting: Meeting): PautasMode {
+  if (meeting.status === "In Progress") return "execution";
+  if (meeting.status === "Done" || meeting.status === "Closed") return "result";
+  return "planning";
+}

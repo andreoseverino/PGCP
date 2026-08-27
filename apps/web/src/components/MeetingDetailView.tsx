@@ -109,6 +109,7 @@ import {
 import {
   getAgendaProgress,
   getMeetingStage,
+  getPautasMode,
   stageIndex,
   type MeetingStage
 } from "../lib/meeting-progress";
@@ -521,6 +522,21 @@ export default function MeetingDetailView({
   const statusValidacao = validacao?.status ?? "draft";
   const pautasAprovadas = statusValidacao === "approved";
 
+  /**
+   * Modo da aba Pautas, derivado só de `meetings.status` (sem status novo):
+   *   planning   antes da reunião — montar/editar/ordenar, Biblioteca
+   *   execution  In Progress — conduzir ao vivo
+   *   result     Done/Closed — leitura do desfecho
+   * Só apresentação: o backend segue exigindo PGCP.Assessoria em toda mutação.
+   */
+  const pautasMode = getPautasMode(meeting);
+  const modoPlanejamento = pautasMode === "planning";
+  const modoExecucao = pautasMode === "execution";
+  const modoResultado = pautasMode === "result";
+  // "Notificar Teams" é stub (só toast, não envia nada) — não oferecer ação que
+  // não funciona. Código da função preservado; apenas não renderizamos o botão.
+  const MOSTRAR_NOTIFICAR_TEAMS = false;
+
   const [modalValidacaoAberto, setModalValidacaoAberto] = useState(false);
   const [emailAprovador, setEmailAprovador] = useState("");
   const [enviandoValidacao, setEnviandoValidacao] = useState(false);
@@ -528,10 +544,28 @@ export default function MeetingDetailView({
   const [aprovando, setAprovando] = useState(false);
 
   /** Substitui o estado pela reunião relida que a própria resposta devolve. */
-  const absorverReuniao = (api: import("../lib/meetings").ApiMeetingDetail) => {
+  const absorverReuniao = (api: import("../lib/meetings").ApiMeetingDetail): Meeting => {
     const convertida = meetingFromApi(api);
     setSelectedMeeting(convertida);
     setMeetings((prev) => prev.map((m) => (m.id === convertida.id ? convertida : m)));
+    return convertida;
+  };
+
+  /**
+   * Avisa, sem silêncio, quando uma alteração ESTRUTURAL pré-reunião reabriu a
+   * validação (backend voltou `sent`/`approved` para `draft`). `statusValidacao`
+   * é o estado ANTES da mutação (derivado no render corrente); só `draft` é o
+   * destino da reabertura, então a transição não-draft→draft é inequívoca.
+   */
+  const avisarSeValidacaoReaberta = (depois: Meeting) => {
+    const depoisStatus = depois.agendaValidation?.status ?? "draft";
+    if ((statusValidacao === "sent" || statusValidacao === "approved") && depoisStatus === "draft") {
+      triggerToast(
+        language === "en"
+          ? "The agenda changed. The previous validation was reopened and must be sent for approval again."
+          : "As pautas foram alteradas. A validação anterior foi reaberta e será necessário enviar novamente para aprovação."
+      );
+    }
   };
 
   const handleEnviarParaValidacao = async () => {
@@ -636,6 +670,8 @@ export default function MeetingDetailView({
       setSelectedMeeting(atualizada);
       setMeetings((prev) => prev.map((m) => (m.id === atualizada.id ? atualizada : m)));
       triggerToast(sucesso);
+      // Mensagem de reabertura sobrepõe o toast genérico: é o aviso importante.
+      avisarSeValidacaoReaberta(atualizada);
       return true;
     } catch (error) {
       triggerToast(describeMeetingError(error, language));
@@ -1195,10 +1231,10 @@ export default function MeetingDetailView({
         patch.responsibleLabel = label;
         patch.responsibleEntraObjectId = editRespOid ?? undefined;
       }
-      const atualizada = await apiUpdateAgendaItem(meeting.id, editandoPautaId, patch);
-      absorverReuniao(atualizada);
+      const atualizada = absorverReuniao(await apiUpdateAgendaItem(meeting.id, editandoPautaId, patch));
       setEditandoPautaId(null);
       triggerToast(language === "en" ? "Agenda item updated." : "Pauta atualizada.");
+      avisarSeValidacaoReaberta(atualizada);
     } catch (erro) {
       setErroEdicao(describeMeetingError(erro, language === "en" ? "en" : "pt"));
     } finally {
@@ -1448,6 +1484,9 @@ export default function MeetingDetailView({
   const saldoTempoMin = duracaoReuniaoMin > 0 ? duracaoReuniaoMin - tempoPlanejadoMin : null;
   const pautasSemResponsavel = pautasArray.filter((ag) => !ag.author || ag.author.trim().length === 0).length;
   const pautasDaBiblioteca = pautasArray.filter((ag) => !!ag.agendaTopicId).length;
+  // Contagens de desfecho (persistidas) — usadas na faixa de Execução/Resultado.
+  const qtdeConcluidas = pautasArray.filter((ag) => ag.executionStatus === "completed").length;
+  const qtdeAdiadas = pautasArray.filter((ag) => ag.executionStatus === "postponed").length;
 
   /** "1h20" / "45min" / "0min" — rótulo curto de duração para a faixa. */
   const formatarDuracao = (min: number): string => {
@@ -2307,9 +2346,11 @@ export default function MeetingDetailView({
         // ---------------------------------------------------------------------
         <div className="mt-8 space-y-6">
           {/*
-            FAIXA-RESUMO DE PLANEJAMENTO — só dado derivado. Informa, não impede:
-            o estouro de tempo é avisado, nunca bloqueia salvar.
+            FAIXA-RESUMO por MODO — só dado já derivado, sem cálculo novo.
+            Planejamento: tempo e pendências. Execução: pauta atual/próxima e
+            desfechos. Resultado: contagem por status. Informa, nunca bloqueia.
           */}
+          {modoPlanejamento ? (
           <div className="rounded-2xl border border-slate-200/80 bg-white card-shadow px-4 py-3 flex flex-wrap items-center gap-x-5 gap-y-2">
             <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
               <CheckSquare className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
@@ -2346,20 +2387,80 @@ export default function MeetingDetailView({
               {pautasDaBiblioteca} {language === "pt" ? "da Biblioteca" : "from Library"}
             </span>
           </div>
+          ) : modoExecucao ? (
+          <div className="rounded-2xl border border-emerald-200/70 bg-emerald-50/40 card-shadow px-4 py-3 flex flex-wrap items-center gap-x-5 gap-y-2">
+            {(() => {
+              const atual = pautasArray.find((a) => a.id === activeAgendaId) ?? null;
+              const proxima = pautasArray.find((a) => a.id !== activeAgendaId && getTopicStatus(a) === "Pendente") ?? null;
+              return (
+                <>
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-800">
+                    <Play className="w-3.5 h-3.5 text-emerald-600" aria-hidden="true" />
+                    {language === "pt" ? "Pauta atual:" : "Current:"}{" "}
+                    <strong className="text-slate-900">
+                      {atual ? atual.title : (language === "pt" ? "nenhuma em discussão" : "none in discussion")}
+                    </strong>
+                  </span>
+                  {atual && timeLeft !== null && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
+                      <Clock className="w-3.5 h-3.5" aria-hidden="true" />
+                      {formatTime(timeLeft)}
+                    </span>
+                  )}
+                  {proxima && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-600">
+                      {language === "pt" ? "Próxima:" : "Next:"} {proxima.title}
+                    </span>
+                  )}
+                  <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
+                    {qtdeConcluidas} {language === "pt" ? "concluídas" : "done"} · {qtdeAdiadas} {language === "pt" ? "adiadas" : "postponed"}
+                  </span>
+                </>
+              );
+            })()}
+          </div>
+          ) : (
+          <div className="rounded-2xl border border-slate-200/80 bg-white card-shadow px-4 py-3 flex flex-wrap items-center gap-x-5 gap-y-2">
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
+              <CheckSquare className="w-3.5 h-3.5" aria-hidden="true" />
+              {qtdeConcluidas} {language === "pt" ? "concluídas" : "done"}
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-600">
+              <Clock className="w-3.5 h-3.5" aria-hidden="true" />
+              {qtdeAdiadas} {language === "pt" ? "adiadas" : "postponed"}
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
+              {totalPautas} {language === "pt" ? "no total" : "total"}
+            </span>
+          </div>
+          )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2 space-y-6">
+          {/* Planejamento: agenda (2/3) + Biblioteca (1/3). Execução/Resultado:
+              a agenda ocupa a largura toda e a Biblioteca não aparece. */}
+          <div className={`grid grid-cols-1 gap-8 ${modoPlanejamento ? "lg:grid-cols-3" : ""}`}>
+          <div className={modoPlanejamento ? "lg:col-span-2 space-y-6" : "space-y-6"}>
             <div className="bg-white border border-slate-200 p-6 md:p-8 rounded-2xl card-shadow">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-4 border-b border-slate-100">
                 <div>
                   <h3 className="text-base font-extrabold text-slate-900 uppercase tracking-wide">
-                    {language === "en" ? "Interactive Meeting Agenda Execution" : "Cronograma Dinâmico da Sessão em Tempo Real"}
+                    {modoExecucao
+                      ? (language === "en" ? "Pautas · Live Meeting" : "Pautas · Reunião ao Vivo")
+                      : modoResultado
+                      ? (language === "en" ? "Pautas · Result" : "Pautas · Resultado")
+                      : (language === "en" ? "Pautas · Planning" : "Pautas · Planejamento")}
                   </h3>
                   <p className="text-xs text-slate-400 font-semibold mt-0.5">
-                    {language === "en" 
-                      ? "Track timelines, speakers and manage topics postponed live." 
-                      : "Controle cronômetros, responsáveis e gerencie temas prorrogados ou concluídos ao vivo."
-                    }
+                    {modoExecucao
+                      ? (language === "en"
+                          ? "Conduct the meeting: start, approve, postpone and time each topic."
+                          : "Conduza a reunião: inicie, aprove, adie e cronometre cada pauta.")
+                      : modoResultado
+                      ? (language === "en"
+                          ? "Read-only outcome of the executed agenda."
+                          : "Leitura do desfecho da agenda executada.")
+                      : (language === "en"
+                          ? "Build the agenda: add, edit, order, owners, duration and recurring theme."
+                          : "Monte a agenda: adicione, edite, ordene, responsáveis, duração e Tema circular.")}
                   </p>
                 </div>
                 {meeting.status === "In Progress" && (
@@ -2381,7 +2482,7 @@ export default function MeetingDetailView({
                   return (
                     <div 
                       key={ag.id} 
-                      draggable={canSchedule}
+                      draggable={canSchedule && modoPlanejamento}
                       onDragStart={(e) => handleDragStart(e, index)}
                       onDragOver={(e) => handleDragOver(e, index)}
                       onDragLeave={() => setHoveredOverIndex(null)}
@@ -2461,8 +2562,8 @@ export default function MeetingDetailView({
  
                         {/* Control buttons & reordering controls during execution */}
                         <div className="flex items-center gap-3 shrink-0 select-none">
-                          {/* Reordenar — só com canSchedule (o servidor exige PGCP.Assessoria). */}
-                          {canSchedule && (
+                          {/* Reordenar — planejamento e com canSchedule (o servidor exige PGCP.Assessoria). */}
+                          {canSchedule && modoPlanejamento && (
                           <div className="flex flex-col gap-0.5">
                             <button
                               type="button"
@@ -2499,8 +2600,8 @@ export default function MeetingDetailView({
                           <div className="flex gap-1 items-center">
                             {/* Editar pauta — modal com título, duração e
                                 responsável (PATCH). Preserva UUID e agendaTopicId.
-                                Só com canSchedule; o servidor revalida. */}
-                            {canSchedule && (
+                                Só no planejamento e com canSchedule; o servidor revalida. */}
+                            {canSchedule && modoPlanejamento && (
                               <button
                                 type="button"
                                 onClick={() => abrirEdicaoPauta(ag)}
@@ -2511,7 +2612,11 @@ export default function MeetingDetailView({
                               </button>
                             )}
 
-                              {/* Teams notification button - Item 1.1 */}
+                              {/* Notificar Teams — HOJE é stub (só toast, não envia
+                                  nada). Escondido nesta rodada para não oferecer uma
+                                  ação que não funciona; `handleNotifyTeams` fica no
+                                  código, intacto, para quando houver envio real. */}
+                              {canSchedule && MOSTRAR_NOTIFICAR_TEAMS && (
                               <button
                                 type="button"
                                 onClick={() => handleNotifyTeams(ag.title, ag.author)}
@@ -2520,14 +2625,16 @@ export default function MeetingDetailView({
                               >
                                 <Send className="w-4 h-4" />
                               </button>
+                              )}
 
                               {/*
                                 CONDUZIR A PAUTA — iniciar, aprovar, postergar,
-                                redefinir. Todas exigem `PGCP.Assessoria` no
-                                servidor; sem a role o botão não aparece, porque
+                                redefinir. Só no modo EXECUÇÃO (reunião In Progress):
+                                conduzir não é planejar. Todas exigem `PGCP.Assessoria`
+                                no servidor; sem a role o botão não aparece, porque
                                 oferecer o que responde 403 não é informação.
                               */}
-                              {canSchedule && (<>
+                              {canSchedule && modoExecucao && (<>
                               {currentStatus === "Pendente" && (
                                 <button
                                   onClick={() => handleStartAgendaTopic(ag)}
@@ -2578,7 +2685,7 @@ export default function MeetingDetailView({
                             )}
                               </>)}
 
-                            {canSchedule && (
+                            {canSchedule && modoPlanejamento && (
                               <button
                                 onClick={() => setPautaParaExcluir(ag)}
                                 className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-all cursor-pointer"
@@ -2595,7 +2702,8 @@ export default function MeetingDetailView({
                   })}
               </div>
 
-              {/* Pauta extraordinária ao vivo */}
+              {/* Pauta extraordinária — só no modo Execução (reunião In Progress). */}
+              {modoExecucao && (
               <div className="mt-6 pt-5 border-t border-slate-100 select-none">
                 {isExtraFormOpen ? (
                   <div className="bg-slate-50/60 border border-slate-200 rounded-2xl p-4 space-y-3 animate-fade-in text-xs">
@@ -2710,7 +2818,9 @@ export default function MeetingDetailView({
                       </button>
                     </div>
                   </div>
-                ) : canSchedule ? (
+                ) : (canSchedule && modoExecucao) ? (
+                  // Pauta extraordinária SÓ durante a reunião (In Progress): é ato
+                  // de condução ao vivo, não de planejamento.
                   <button
                     type="button"
                     onClick={() => setIsExtraFormOpen(true)}
@@ -2721,6 +2831,7 @@ export default function MeetingDetailView({
                   </button>
                 ) : null}
               </div>
+              )}
 
               {(!meeting.agenda || meeting.agenda.length === 0) && (
                 <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-xl">
@@ -2736,7 +2847,9 @@ export default function MeetingDetailView({
             </div>
           </div>
 
-          {/* Coluna direita: cronograma anual / biblioteca de pautas */}
+          {/* Coluna direita: Biblioteca — SÓ no Planejamento. Durante a reunião
+              e depois dela ela não deve competir com a condução/leitura. */}
+          {modoPlanejamento && (
           <div className="space-y-6">
             <div className="bg-white border border-slate-200 p-5 rounded-2xl card-shadow">
               <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-wider mb-2 flex items-center gap-1.5">
@@ -2785,6 +2898,7 @@ export default function MeetingDetailView({
               </div>
             </div>
           </div>
+          )}
           </div>
         </div>
       )}

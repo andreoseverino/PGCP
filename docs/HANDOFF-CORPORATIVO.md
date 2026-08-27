@@ -458,6 +458,22 @@ caixa **do próprio usuário autenticado**, via `Mail.Send` **Delegated** + OBO.
 
 `failed` **não** é reenviado automaticamente a cada edição; fica no botão.
 
+**Reabertura automática por alteração de pauta (integridade da validação).**
+ANTES de a reunião começar, se `agenda_validation_status ∈ {sent, approved}` e
+ocorre uma alteração **estrutural** nas pautas, o backend volta o estado para
+`draft`: o PDF que o aprovador viu deixou de refletir a agenda. Limpa os
+metadados incompatíveis (`sent_at`, `sent_to`, `approved_at`,
+`approved_by_user_id`) respeitando o CHECK de coerência da 016, grava auditoria
+(`"Validação de pautas reaberta por alteração nas pautas"`) e a tela avisa que é
+preciso **enviar de novo**. São estruturais: adicionar, excluir, reordenar, e
+alterar título, duração, responsável ou Tema circular.
+
+**NÃO reabre durante `in_progress`/`done`/`closed`** — a validação é do
+**planejamento pré-reunião**, não da execução. Logo, não invalidam a aprovação
+prévia: pauta extraordinária ao vivo, adiar, concluir/aprovar item, resetar
+execução, e mudanças **apenas** de `execution_status` ou de
+`scheduled_start_time`.
+
 ---
 
 ## 15. Teams
@@ -529,6 +545,34 @@ localiza a cópia pelo par (reunião, item), não por título.
 > **Responsável ≠ apresentador.** `responsible_label` pode ser pessoa, área,
 > cargo ou coletivo ("Todos"); apresentador é outro conceito
 > (`meeting_agenda_item_presenters`).
+
+### Aba Pautas — três modos (derivados de `meetings.status`)
+
+A mesma aba muda de comportamento conforme o estado da reunião. É só
+**apresentação**: o backend segue exigindo `PGCP.Assessoria` em toda mutação.
+
+| Modo | Quando | Foco |
+|---|---|---|
+| **Planejamento** | antes de `In Progress` | criar, vincular Biblioteca, editar, excluir, reordenar, revisar duração/responsável/Tema circular. Controles de execução ao vivo **não** aparecem |
+| **Execução** | `In Progress` | iniciar pauta, cronômetro, concluir/aprovar item, adiar, resetar, adicionar pauta extraordinária. Biblioteca e ações de planejamento **somem** |
+| **Resultado** | `Done`/`Closed` | leitura do desfecho (ordem, status final, adiadas/concluídas) |
+
+A escolha é do frontend (`getPautasMode(meeting)` em `lib/meeting-progress.ts`);
+nenhum status, tabela ou migration novo.
+
+**Pauta extraordinária** (`[EXTRA]` no título) só é oferecida no modo Execução —
+é ato de condução ao vivo. Continua sendo **apenas prefixo de título**, sem campo
+estruturado.
+
+**Notificar Teams:** HOJE é apenas *stub* (um toast; **não envia nada**). Na
+Rodada 2 o botão fica **escondido** — não oferecer ação que não funciona. A
+função permanece no código para um envio real futuro. Não tratar como integração
+de mensagens Teams implementada.
+
+> **Limitação conhecida:** "Apresentando" e o cronômetro são estado **local do
+> frontend** (`activeAgendaId`/`timeLeft`); um refresh pode perdê-los, e não há
+> sincronização multiusuário em tempo real para a execução. É limitação
+> conhecida desta rodada, não bloqueador — sem websocket/arquitetura nova.
 
 ---
 

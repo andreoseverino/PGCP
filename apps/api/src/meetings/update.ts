@@ -14,6 +14,7 @@ import {
   type ParticipantInput
 } from "./create.js";
 import { findMeeting, type MeetingDetail } from "./service.js";
+import { reabrirValidacaoSePreReuniao } from "./agenda-validation.js";
 
 /**
  * Mutacoes direcionadas do nucleo da reuniao.
@@ -483,6 +484,9 @@ export async function addAgendaItem(
       entityLabel: titulo,
       status: "success",
     });
+
+    // Alteracao ESTRUTURAL: reabre a validacao se ainda for planejamento.
+    await reabrirValidacaoSePreReuniao(client, meetingId, actor);
   });
 
   return findMeeting(meetingId);
@@ -679,6 +683,20 @@ export async function updateAgendaItem(
       entityLabel: titulo,
       status: "success",
     });
+
+    // So campos ESTRUTURAIS reabrem a validacao. Mudanca de execucao
+    // (executionStatus) ou de horario nao invalida o que o aprovador viu — e,
+    // de todo modo, execucao acontece com a reuniao ja em andamento (o gate na
+    // funcao de reabertura bloqueia).
+    const alterouEstrutura =
+      input.title !== undefined ||
+      input.durationMinutes !== undefined ||
+      input.responsibleLabel !== undefined ||
+      input.responsibleEntraObjectId !== undefined ||
+      input.isCircularTheme !== undefined;
+    if (alterouEstrutura) {
+      await reabrirValidacaoSePreReuniao(client, meetingId, actor);
+    }
   });
 
   return findMeeting(meetingId);
@@ -714,6 +732,9 @@ export async function removeAgendaItem(
       entityLabel: titulo,
       status: "success",
     });
+
+    // Alteracao ESTRUTURAL: reabre a validacao se ainda for planejamento.
+    await reabrirValidacaoSePreReuniao(client, meetingId, actor);
   });
 
   return findMeeting(meetingId);
@@ -842,6 +863,9 @@ export async function reorderAgendaItems(
       entityLabel: titulo,
       status: "success",
     });
+
+    // Alteracao ESTRUTURAL: reabre a validacao se ainda for planejamento.
+    await reabrirValidacaoSePreReuniao(client, meetingId, actor);
   });
 
   return findMeeting(meetingId);
