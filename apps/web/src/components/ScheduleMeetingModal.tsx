@@ -12,6 +12,11 @@ import {
   isAlreadyParticipant
 } from "../lib/participants";
 import {
+  formatMinutesAsTime,
+  parseDurationMinutes,
+  parseTimeToMinutes
+} from "../lib/agenda-time";
+import {
   DEFAULT_TIMEZONE,
   buildCreatePayload,
   createMeeting,
@@ -20,15 +25,17 @@ import {
 } from "../lib/meetings";
 
 /**
- * Minutos a partir do texto livre de duração ("30 mins", "45", "1h").
- * Sem número reconhecível devolve `null`: a API aceita pauta sem duração, e
- * chutar um valor inventaria informação.
+ * Minutos a partir do texto de duração ("00:30", "30 mins", "1h").
+ * Sem valor reconhecível devolve `null`: a API aceita pauta sem duração, e
+ * chutar um número inventaria informação.
+ *
+ * O parsing é o de `agenda-time` — fonte ÚNICA. A implementação local testava
+ * os dígitos antes do formato `HH:mm`, e por isso lia "01:00" como 1 minuto e
+ * "00:30" como 0.
  */
 function parseDuracaoEmMinutos(texto: string): number | null {
-  const horas = /^\s*(\d+)\s*h/i.exec(texto);
-  if (horas) return Number(horas[1]) * 60;
-  const minutos = /(\d+)/.exec(texto);
-  return minutos ? Number(minutos[1]) : null;
+  const minutos = parseDurationMinutes(texto, -1);
+  return minutos >= 0 ? minutos : null;
 }
 
 interface ScheduleMeetingModalProps {
@@ -140,49 +147,42 @@ export default function ScheduleMeetingModal({
   const [editingTopicAuthorAsParticipant, setEditingTopicAuthorAsParticipant] = useState(false);
 
 
-  const recalculateAgendaTimesInModal = (agendaArray: AgendaItem[], customStart?: string): AgendaItem[] => {
+  /**
+   * Horários das pautas em cascata: a primeira começa no início da reunião e
+   * cada seguinte começa quando a anterior termina.
+   *
+   * A interpretação de "HH:mm" e da duração vem de `agenda-time` — a versão
+   * local daqui lia "01:00" como 1 minuto e "00:30" como 0, e a cascata não
+   * saía do lugar.
+   */
+  const recalculateAgendaTimesInModal = (
+    agendaArray: AgendaItem[],
+    customStart?: string
+  ): AgendaItem[] => {
     if (agendaArray.length === 0) return [];
-    
-    let startStr = customStart || startTime || "10:00";
-    let hour = 10;
-    let minute = 0;
-    let ampm = "";
 
-    const cleanStr = startStr.trim().toUpperCase();
-    const ampmMatch = cleanStr.match(/(AM|PM)/);
-    if (ampmMatch) ampm = ampmMatch[0];
-
-    const digits = cleanStr.replace(/[^0-9:]/g, "").split(":");
-    if (digits.length >= 1) hour = parseInt(digits[0], 10) || 10;
-    if (digits.length >= 2) minute = parseInt(digits[1], 10) || 0;
-
-    if (ampm === "PM" && hour < 12) hour += 12;
-    else if (ampm === "AM" && hour === 12) hour = 0;
-
-    let currentMinutes = hour * 60 + minute;
+    let currentMinutes = parseTimeToMinutes(customStart || startTime);
 
     return agendaArray.map((item) => {
-      const h24 = Math.floor(currentMinutes / 60) % 24;
-      const m = currentMinutes % 60;
-
-      const formattedTime = `${String(h24).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-
-      let durationMinutes = 15;
-      const durationMatch = item.duration.match(/\d+/);
-      if (durationMatch) {
-         durationMinutes = parseInt(durationMatch[0], 10);
-      } else if (item.duration.includes(":")) {
-         const [dh, dm] = item.duration.split(":").map(Number);
-         durationMinutes = (dh * 60 || 0) + (dm || 0);
-      }
-
-      currentMinutes += durationMinutes;
-
-      return {
-        ...item,
-        time: formattedTime
-      };
+      const time = formatMinutesAsTime(currentMinutes);
+      currentMinutes += parseDurationMinutes(item.duration);
+      return { ...item, time };
     });
+  };
+
+  /**
+   * Escrita ÚNICA da lista de pautas: recalcula os horários a cada mudança.
+   *
+   * Incluir, remover ou reordenar desloca todas as pautas seguintes. Cada
+   * handler chamando `setAgenda` direto era o que fazia a pauta nova nascer
+   * com o "10:00" do literal, ignorando o horário de início da reunião.
+   */
+  const atualizarAgenda = (
+    proxima: AgendaItem[] | ((anterior: AgendaItem[]) => AgendaItem[])
+  ) => {
+    setAgenda((anterior) =>
+      recalculateAgendaTimesInModal(typeof proxima === "function" ? proxima(anterior) : proxima)
+    );
   };
 
   /*
@@ -243,8 +243,7 @@ export default function ScheduleMeetingModal({
     agendaList.splice(draggedIndex, 1);
     agendaList.splice(targetIndex, 0, draggedItem);
 
-    const updatedAgenda = recalculateAgendaTimesInModal(agendaList, startTime);
-    setAgenda(updatedAgenda);
+    atualizarAgenda(agendaList);
     setDraggedIndex(null);
   };
 
@@ -364,7 +363,7 @@ export default function ScheduleMeetingModal({
       incluirComoParticipante(autor, editingTopicAuthorOid, editingTopicAuthorEmail);
     }
 
-    setAgenda(recalculateAgendaTimesInModal(updatedAgenda, startTime));
+    atualizarAgenda(updatedAgenda);
     setEditingAgendaIndex(null);
   };
 
@@ -483,11 +482,12 @@ export default function ScheduleMeetingModal({
   const handleAddAgendaItem = () => {
     if (!newAgendaTitle.trim()) return;
     const authorVal = newAgendaAuthor.trim() || organizer || "Todos";
-    setAgenda([
+    atualizarAgenda([
       ...agenda,
       {
         id: newId(),
-        time: newAgendaTime.trim() || "10:00",
+        // Horário real vem da cascata em `atualizarAgenda`.
+        time: newAgendaTime.trim(),
         title: newAgendaTitle.trim(),
         duration: newAgendaDuration.trim() || "15 mins",
         author: authorVal
@@ -872,7 +872,7 @@ export default function ScheduleMeetingModal({
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setAgenda(agenda.filter((_, i) => i !== index));
+                                atualizarAgenda(agenda.filter((_, i) => i !== index));
                               }}
                               className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition shrink-0 cursor-pointer"
                               title={language === "en" ? "Delete agenda topic" : "Remover pauta"}
@@ -1069,7 +1069,8 @@ export default function ScheduleMeetingModal({
                       .filter(sa => selectedAgendaIds.includes(sa.id))
                       .map((sa) => ({
                         id: newId(),
-                        time: "10:00",
+                        // Horário real vem da cascata em `atualizarAgenda`.
+                        time: "",
                         title: sa.title,
                         duration: sa.duration,
                         author: sa.author,
@@ -1089,7 +1090,7 @@ export default function ScheduleMeetingModal({
                     // avoid duplicate imports by title matching
                     const currentTitles = agenda.map(a => a.title.toLowerCase());
                     const uniqueNewItems = newItems.filter(item => !currentTitles.includes(item.title.toLowerCase()));
-                    setAgenda([...agenda, ...uniqueNewItems]);
+                    atualizarAgenda([...agenda, ...uniqueNewItems]);
                     setIsSelectAgendasOpen(false);
                   }}
                   className="px-4 py-2 bg-[#00658d] text-white rounded-lg text-xs font-bold hover:bg-[#00aeef] transition disabled:opacity-50 cursor-pointer"
@@ -1341,9 +1342,10 @@ export default function ScheduleMeetingModal({
                     // Item da reunião VINCULADO ao tema recém-criado. O backend
                     // copia a ficha do tema (snapshot); aqui espelhamos para exibir
                     // já na lista antes do reload.
-                    setAgenda(prev => [...prev, {
+                    atualizarAgenda(prev => [...prev, {
                       id: newId(),
-                      time: "10:00",
+                      // Horário real vem da cascata em `atualizarAgenda`.
+                      time: "",
                       title: tempPautaTitle,
                       duration: tempPautaDuration,
                       author: tempPautaAuthor,
