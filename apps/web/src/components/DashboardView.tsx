@@ -29,6 +29,9 @@ import {
 } from "recharts";
 import { Meeting, ActionItem, GovernanceBody } from "../types";
 import { classificarPendencia, ordenarPendencias } from "../lib/action-items";
+import { calendarDayState } from "../lib/calendar-day-style";
+import { formatCurrentDateTime, millisecondsUntilNextMinute } from "../lib/current-datetime";
+import { DEFAULT_TIMEZONE, instantToLocal } from "../lib/meeting-adapters";
 
 /** Quantos itens a Visão Geral mostra. A gestão detalhada é na página de FUPs. */
 const LIMITE_PENDENCIAS_VISIVEIS = 4;
@@ -80,14 +83,49 @@ export default function DashboardView({
   triggerToast
 }: DashboardViewProps) {
   
-  // Choose default calendar month and year based on modern current date (always show standard current month first)
+  /**
+   * HOJE, no fuso das reuniões.
+   *
+   * Mesma regra de `meeting-adapters` (`instantToLocal` + `DEFAULT_TIMEZONE`)
+   * que converte `startAt` em data exibida. Usar o fuso da máquina — ou pior,
+   * `toISOString()` cru — faria o quadro marcar 29 enquanto a reunião das 23h
+   * do dia 28 aparece no dia 28.
+   */
+  const todayStr = useMemo(
+    () => instantToLocal(new Date().toISOString(), DEFAULT_TIMEZONE).date,
+    []
+  );
+
+  // Mês inicial do quadro: o mês corrente, derivado do MESMO "hoje".
   const latestDateInfo = useMemo(() => {
-    const today = new Date();
-    return {
-      year: today.getFullYear(),
-      month: today.getMonth() // 0-indexed month (e.g. 5 for June)
+    const [ano, mes] = todayStr.split("-").map(Number);
+    return { year: ano, month: mes - 1 }; // month é 0-indexed
+  }, [todayStr]);
+
+  /*
+   * RELÓGIO DO CABEÇALHO.
+   *
+   * O primeiro disparo é alinhado à virada do minuto; depois segue de minuto em
+   * minuto. Nada de intervalo de 1s para um texto que só muda a cada 60s.
+   * Timeout e interval são desarmados quando o componente sai de cena.
+   */
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    let intervalo: ReturnType<typeof setInterval> | undefined;
+
+    const timeout = setTimeout(() => {
+      setNow(new Date());
+      intervalo = setInterval(() => setNow(new Date()), 60_000);
+    }, millisecondsUntilNextMinute(new Date()));
+
+    return () => {
+      clearTimeout(timeout);
+      if (intervalo !== undefined) clearInterval(intervalo);
     };
   }, []);
+
+  const agoraExtenso = formatCurrentDateTime(now, language);
 
   // Calendar Navigation State
   const [currentMonth, setCurrentMonth] = useState<number>(latestDateInfo.month);
@@ -202,14 +240,6 @@ export default function DashboardView({
     const target = normalize(selectedBody.name);
     return meetings.filter((m) => normalize(m.category || "") === target);
   }, [meetings, selectedBody]);
-
-  /** Data de hoje em AAAA-MM-DD no fuso local (toISOString usaria UTC). */
-  const toDateStr = (date: Date) =>
-    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
-      date.getDate()
-    ).padStart(2, "0")}`;
-
-  const todayStr = toDateStr(new Date());
 
   /** FUPs concluídos nesta sessão — saem da lista antes do próximo recarregamento. */
   const [completedItems, setCompletedItems] = useState<Record<string, boolean>>({});
@@ -330,10 +360,9 @@ export default function DashboardView({
 
   /** Volta ao mês corrente e seleciona o dia de hoje. */
   const handleToday = () => {
-    const today = new Date();
-    setCurrentMonth(today.getMonth());
-    setCurrentYear(today.getFullYear());
-    setSelectedDayStr(toDateStr(today));
+    setCurrentMonth(latestDateInfo.month);
+    setCurrentYear(latestDateInfo.year);
+    setSelectedDayStr(todayStr);
   };
 
   // Generate real month matrix (Sun to Sat)
@@ -441,6 +470,14 @@ export default function DashboardView({
             </h1>
             <p className="text-xs text-slate-400 font-semibold mt-0.5">
               {t.dashboardSub}
+            </p>
+            {/*
+              Referência do "agora" — discreta, uma linha, no fuso das reuniões.
+              Atualiza sozinha a cada minuto; não exige recarregar a página.
+            */}
+            <p className="text-[11px] text-slate-500 font-semibold mt-1.5 flex items-center gap-1.5">
+              <Clock className="w-3 h-3 text-slate-400 shrink-0" aria-hidden="true" />
+              <time dateTime={now.toISOString()}>{agoraExtenso}</time>
             </p>
           </div>
         </div>
@@ -551,7 +588,7 @@ export default function DashboardView({
                   governança (PostgreSQL) e compromisso da caixa do usuário
                   (Outlook, leitura sob demanda). Nada é fundido nem adivinhado.
                 */}
-                <div className="flex items-center gap-3 mt-1.5">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
                   <span className="flex items-center gap-1 text-[9px] font-bold text-slate-400 uppercase tracking-wider">
                     <span className="w-2 h-2 rounded-sm bg-blue-500" />
                     {language === "en" ? "PGCP meetings" : "Reuniões do PGCP"}
@@ -564,6 +601,11 @@ export default function DashboardView({
                         {language === "en" ? " (unavailable)" : " (indisponível)"}
                       </span>
                     )}
+                  </span>
+                  {/* Hoje tem canal próprio — borda —, e por isso entra na legenda. */}
+                  <span className="flex items-center gap-1 text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+                    <span className="w-2 h-2 rounded-sm border-2 border-[#00658d]" />
+                    {t.todayBtn}
                   </span>
                 </div>
               </div>
@@ -621,39 +663,19 @@ export default function DashboardView({
               // Compromissos reais da caixa do usuário, além das reuniões do PGCP.
               const outlookOnDay = outlookByDayMap[cell.dateStr] || [];
               const hasOutlook = outlookOnDay.length > 0;
-              const isSelected = selectedDayStr === cell.dateStr;
-
-              // Distinct styles exactly matching screenshot request:
-              // - No shadows, flat style.
-              // - Days with meetings are colored in shades of blue.
-              // - Beginning with a light blue for 1, and darker blue for days with more meetings.
-              // - No black outlines.
-              let dayStyle = "text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-transparent";
-
-              if (hasMeeting) {
-                const count = meetingsOnDay.length;
-                if (count === 1) {
-                  dayStyle = "bg-blue-50 text-blue-700 hover:bg-blue-100/80 border border-transparent";
-                } else if (count === 2) {
-                  dayStyle = "bg-blue-100 text-blue-800 hover:bg-blue-200/80 border border-transparent";
-                } else if (count === 3) {
-                  dayStyle = "bg-blue-300 text-blue-950 font-extrabold hover:bg-blue-400/80 border border-transparent";
-                } else {
-                  dayStyle = "bg-blue-600 text-white font-extrabold hover:bg-blue-700 border border-transparent";
-                }
-
-                if (isSelected) {
-                  // Flat selection indicator: ring without shadow
-                  dayStyle += " ring-2 ring-blue-500 ring-offset-1 z-10";
-                }
-              } else {
-                if (isSelected) {
-                  // Flat selection for days without meeting
-                  dayStyle = "bg-slate-100 text-slate-900 font-bold ring-2 ring-slate-400 ring-offset-1 z-10 border border-transparent";
-                }
-              }
-
-              const isToday = cell.dateStr === todayStr;
+              /*
+                HOJE e SELECIONADO são canais visuais INDEPENDENTES — borda
+                institucional para hoje, anel para a seleção —, calculados em
+                `lib/calendar-day-style.ts`. Escolher outro dia não apaga a
+                marca do dia de hoje; o mapa de calor por volume de reuniões
+                continua sendo o fundo.
+              */
+              const { isToday, isSelected, className: dayStyle } = calendarDayState({
+                dateStr: cell.dateStr,
+                todayStr,
+                selectedDayStr,
+                meetingCount: meetingsOnDay.length
+              });
 
               return (
                 <button
@@ -662,8 +684,11 @@ export default function DashboardView({
                   onClick={() =>
                     setSelectedDayStr(isSelected && (hasMeeting || hasOutlook) ? null : cell.dateStr)
                   }
+                  aria-current={isToday ? "date" : undefined}
+                  aria-pressed={isSelected}
                   title={
                     [
+                      isToday ? t.todayBtn : "",
                       ...meetingsOnDay.map((m) => m.title),
                       ...outlookOnDay.map((e) => e.subject ?? "")
                     ]
@@ -672,12 +697,21 @@ export default function DashboardView({
                   }
                   className={`w-full min-h-[3.25rem] rounded-lg p-1 flex flex-col items-start gap-0.5 overflow-hidden relative cursor-pointer transition duration-150 ${dayStyle}`}
                 >
-                  <span
-                    className={`text-[10px] leading-none shrink-0 flex items-center gap-1 ${
-                      isToday ? "font-black underline underline-offset-2" : "font-bold"
-                    }`}
-                  >
-                    {cell.day}
+                  <span className="text-[10px] leading-none shrink-0 flex items-center gap-1 font-bold">
+                    {/*
+                      Pastilha sólida para hoje: contraste garantido sobre
+                      qualquer tom do mapa de calor, inclusive o azul cheio dos
+                      dias com 4+ reuniões, onde uma borda sozinha sumiria.
+                    */}
+                    <span
+                      className={
+                        isToday
+                          ? "w-4 h-4 rounded-full bg-[#00658d] text-white font-black flex items-center justify-center"
+                          : ""
+                      }
+                    >
+                      {cell.day}
+                    </span>
                     {/*
                       Marcador do Outlook, distinto do azul das reuniões do PGCP:
                       são fontes diferentes e a tela não as funde nem tenta

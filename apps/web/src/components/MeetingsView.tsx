@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   Calendar,
   Search,
@@ -21,6 +21,14 @@ import {
 } from "lucide-react";
 import { Meeting } from "../types";
 import { getAgendaProgress, readDoneTopicIdsFor, readPostponedTopicIdsFor } from "../lib/meeting-progress";
+import {
+  DEFAULT_PAGE_SIZE,
+  PAGE_SIZE_OPTIONS,
+  pageWindow,
+  paginate,
+  parsePageSize,
+  type PageSize
+} from "../lib/pagination";
 
 interface MeetingsViewProps {
   language: "en" | "pt";
@@ -59,6 +67,12 @@ export default function MeetingsView({
   const [selectedCategory, setSelectedCategory] = useState("Category");
   const [selectedMonth, setSelectedMonth] = useState("All Months");
   const [currentPage, setCurrentPage] = useState(1);
+  /*
+   * Quantidade por página. Client-side: `GET /meetings` não pagina — o contrato
+   * só aceita um teto (`limit`) e devolve a lista inteira. Trocar isto por
+   * paginação de servidor exigiria endpoint novo, e a tela não precisa.
+   */
+  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
 
   const t = {
     title: language === "en" ? "Meetings" : "Reuniões",
@@ -75,8 +89,12 @@ export default function MeetingsView({
     labelAgendaItems: language === "en" ? "Agenda Items" : "Itens de Pauta",
     btnViewDetails: language === "en" ? "View Details" : "Ver Detalhes",
     btnReviewNow: language === "en" ? "Review Now" : "Revisar Agora",
-    itemsPerPageLabel: language === "en" ? "Showing 1-4 of" : "Exibindo 1-4 de",
-    resultsText: language === "en" ? "meetings" : "reuniões encontradas",
+    showingLabel: language === "en" ? "Showing" : "Exibindo",
+    ofLabel: language === "en" ? "of" : "de",
+    resultsText: language === "en" ? "meetings" : "reuniões",
+    itemsPerPageLabel: language === "en" ? "Items per page:" : "Itens por página:",
+    previousPage: language === "en" ? "Previous page" : "Página anterior",
+    nextPage: language === "en" ? "Next page" : "Próxima página",
     missingPreRead: language === "en" ? "Missing pre-read board packet materials." : "Ausente: Materiais prévios recomendados para o conselho.",
     optAllMonths: language === "en" ? "All Months" : "Todos os Meses",
     
@@ -157,17 +175,22 @@ export default function MeetingsView({
     });
   }, [meetings, activeTab, searchQuery, selectedStatus, selectedCategory, selectedMonth, language]);
 
+  /** Rótulo do mês da reunião, no mesmo formato usado pelo filtro de mês. */
+  const monthLabelOf = (m: Meeting) => {
+    const d = new Date(m.date + "T10:00:00");
+    const monthLabel = d.toLocaleDateString(language === "en" ? "en-US" : "pt-BR", {
+      month: "long",
+      year: "numeric"
+    });
+    return monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
+  };
+
   // Group meetings by Month string
   const meetingsGroupedByMonth = useMemo(() => {
     const groups: { [key: string]: Meeting[] } = {};
     filteredMeetings.forEach((m) => {
       if (!m.date) return;
-      const d = new Date(m.date + "T10:00:00");
-      const monthLabel = d.toLocaleDateString(language === "en" ? "en-US" : "pt-BR", {
-        month: "long",
-        year: "numeric"
-      });
-      const capitalized = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
+      const capitalized = monthLabelOf(m);
       if (!groups[capitalized]) {
         groups[capitalized] = [];
       }
@@ -188,6 +211,46 @@ export default function MeetingsView({
       }
     });
   }, [meetingsGroupedByMonth, activeTab]);
+
+  /*
+   * PAGINAÇÃO.
+   *
+   * A tela já tem uma ordem de exibição: os grupos de mês na ordem de
+   * `sortedMonthKeys` e, dentro de cada grupo, a ordem que veio da API. A
+   * página é um CORTE dessa mesma sequência — nada é reordenado, só recortado.
+   * Por isso o achatamento sai dos grupos, e não de `filteredMeetings`.
+   */
+  const orderedMeetings = useMemo(
+    () => sortedMonthKeys.flatMap((key) => meetingsGroupedByMonth[key]),
+    [sortedMonthKeys, meetingsGroupedByMonth]
+  );
+
+  const pagina = useMemo(
+    () => paginate(orderedMeetings, currentPage, pageSize),
+    [orderedMeetings, currentPage, pageSize]
+  );
+
+  /*
+   * Filtro, busca ou troca de tamanho podem encolher o total e deixar
+   * `currentPage` apontando para uma página que não existe mais. `paginate` já
+   * devolve a página válida; aqui o ESTADO é trazido de volta para ela, para os
+   * controles não dizerem "página 7" enquanto mostram a 1.
+   */
+  useEffect(() => {
+    if (pagina.page !== currentPage) setCurrentPage(pagina.page);
+  }, [pagina.page, currentPage]);
+
+  /** Os mesmos grupos de mês, contendo só o que esta página mostra. */
+  const pageGroups = useMemo(() => {
+    const groups: { key: string; meetings: Meeting[] }[] = [];
+    pagina.items.forEach((m) => {
+      const key = monthLabelOf(m);
+      const ultimo = groups[groups.length - 1];
+      if (ultimo && ultimo.key === key) ultimo.meetings.push(m);
+      else groups.push({ key, meetings: [m] });
+    });
+    return groups;
+  }, [pagina.items, language]);
 
   const handleExportCSV = () => {
     const headers = "ID,Title,Date,Time,Category,Status,Organizer\n";
@@ -403,15 +466,15 @@ export default function MeetingsView({
                   </td>
                 </tr>
               ) : (
-                sortedMonthKeys.map((monthKey) => (
-                  <React.Fragment key={monthKey}>
+                pageGroups.map((grupo) => (
+                  <React.Fragment key={grupo.key}>
                     {/* Month Section Header Row */}
                     <tr className="bg-slate-55 bg-slate-50/90 border-y border-slate-200 select-none">
                       <td colSpan={7} className="py-2.5 px-5 font-bold font-sans text-[11px] text-[#00658d] uppercase tracking-wider">
-                        {monthKey}
+                        {grupo.key}
                       </td>
                     </tr>
-                    {meetingsGroupedByMonth[monthKey].map((meet) => {
+                    {grupo.meetings.map((meet) => {
                       const isNeedsApproval = meet.status === "Needs Approval";
                       const isDraft = meet.status === "Draft";
                       const isPast = meet.status === "Done" || meet.status === "Closed";
@@ -583,30 +646,80 @@ export default function MeetingsView({
           </table>
         </div>
       </section>
-      {/* Pagination View row block */}
-      {filteredMeetings.length > 0 && (
-        <div className="flex items-center justify-between border-t border-slate-200 pt-5 mt-4 select-none">
-          <span className="text-slate-400 text-xs font-medium">
-            {t.itemsPerPageLabel} {filteredMeetings.length} {t.resultsText}
-          </span>
-          <div className="flex gap-1">
-            <button className="p-1 px-2.5 rounded border border-slate-200 text-slate-450 hover:bg-slate-50 opacity-40 cursor-not-allowed">
+      {/*
+        Paginação. Os botões eram estáticos ("1 2 3", sem clique) e a tabela
+        renderizava TODAS as reuniões filtradas; agora eles operam sobre o
+        resultado já filtrado, e o intervalo exibido vem de `paginate`.
+      */}
+      {pagina.totalItems > 0 && (
+        <nav
+          aria-label={t.title}
+          className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-slate-200 pt-5 mt-4 select-none"
+        >
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <span className="text-slate-400 text-xs font-medium">
+              {t.showingLabel} {pagina.from}–{pagina.to} {t.ofLabel} {pagina.totalItems} {t.resultsText}
+            </span>
+
+            <label className="flex items-center gap-2 text-slate-400 text-xs font-medium">
+              {t.itemsPerPageLabel}
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  // Volta para a página 1: a página atual pode não existir no
+                  // novo tamanho, e recomeçar do topo é o que o usuário espera.
+                  setPageSize(parsePageSize(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="appearance-none bg-slate-50 hover:bg-slate-100/50 text-slate-600 font-semibold text-xs border border-slate-200 rounded-lg px-3 py-1.5 cursor-pointer focus:ring-1 focus:ring-[#00658d] focus:bg-white focus:outline-none transition-all"
+              >
+                {PAGE_SIZE_OPTIONS.map((opcao) => (
+                  <option key={opcao} value={opcao}>
+                    {opcao}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="flex items-center gap-1 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setCurrentPage(pagina.page - 1)}
+              disabled={!pagina.hasPrevious}
+              aria-label={t.previousPage}
+              className="p-1 px-2.5 rounded border border-slate-200 text-slate-500 hover:bg-slate-50 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+            >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <button className="w-7 h-7 rounded bg-[#00658d] text-white flex items-center justify-center font-bold text-xs">
-              1
-            </button>
-            <button className="w-7 h-7 rounded border border-slate-200 text-slate-500 hover:bg-slate-50 flex items-center justify-center font-bold text-xs transition">
-              2
-            </button>
-            <button className="w-7 h-7 rounded border border-slate-200 text-slate-500 hover:bg-slate-50 flex items-center justify-center font-bold text-xs transition">
-              3
-            </button>
-            <button className="p-1 px-2.5 rounded border border-slate-200 text-slate-550 hover:bg-slate-50 transition">
+
+            {pageWindow(pagina.page, pagina.totalPages).map((numero) => (
+              <button
+                key={numero}
+                type="button"
+                onClick={() => setCurrentPage(numero)}
+                aria-current={numero === pagina.page ? "page" : undefined}
+                className={
+                  numero === pagina.page
+                    ? "w-7 h-7 rounded bg-[#00658d] text-white flex items-center justify-center font-bold text-xs cursor-pointer"
+                    : "w-7 h-7 rounded border border-slate-200 text-slate-500 hover:bg-slate-50 flex items-center justify-center font-bold text-xs transition cursor-pointer"
+                }
+              >
+                {numero}
+              </button>
+            ))}
+
+            <button
+              type="button"
+              onClick={() => setCurrentPage(pagina.page + 1)}
+              disabled={!pagina.hasNext}
+              aria-label={t.nextPage}
+              className="p-1 px-2.5 rounded border border-slate-200 text-slate-500 hover:bg-slate-50 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+            >
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
-        </div>
+        </nav>
       )}
     </div>
   );
