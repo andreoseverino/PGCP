@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
 import { marcarComoDesatualizada } from "../calendar/service.js";
 import {
@@ -120,6 +121,8 @@ export async function excluirMeetingParticipant(
   actor: MeetingActor,
   titulo: string,
 ): Promise<number> {
+  await recusarRemocaoDeResponsavel(client, meetingId, participantId);
+
   const { rowCount } = await client.query(
     "DELETE FROM meeting_participants WHERE id = $1 AND meeting_id = $2",
     [participantId, meetingId],
@@ -194,5 +197,127 @@ export async function snapshotTopicParticipantsIntoItem(
     };
     const { id } = await findOrCreateMeetingParticipant(client, meetingId, input, actor, titulo);
     await vincularParticipanteNaPauta(client, agendaItemId, id);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// INVARIANTE: responsável de pauta que é PESSOA participa da reunião
+// -----------------------------------------------------------------------------
+
+/**
+ * Papel de quem o PGCP acrescenta à reunião por conta própria.
+ *
+ * É o MESMO rótulo que a tela já usava ao incluir alguém à mão — nenhum papel
+ * novo foi criado para este caminho, senão a lista passaria a ter duas classes
+ * de convidado que ninguém pediu.
+ */
+export const PAPEL_PADRAO_DO_PARTICIPANTE = "Convidado";
+
+/** O que `meeting_agenda_items` guarda sobre quem responde pela pauta. */
+export interface ResponsavelDePauta {
+  responsibleLabel?: string | null;
+  responsibleEntraObjectId?: string | null;
+}
+
+/**
+ * Converte o responsável da pauta no participante que ele deve ser — ou `null`
+ * quando não há pessoa a convidar.
+ *
+ * PESSOA IDENTIFICÁVEL é quem tem `oid` do Entra. `responsible_label` sozinho
+ * ("Todos", "Comitê de Auditoria", uma área, um texto livre) NÃO vira
+ * participante: não existe caixa para convidar, e casar o texto com o diretório
+ * por semelhança uniria homônimos e inventaria presença de quem ninguém
+ * escolheu. O rótulo acompanha a identidade porque é o que a tela exibe sem
+ * consultar o Graph — e o CHECK da migration 003 já o exige ao lado do `oid`.
+ *
+ * Função PURA: a regra de quem entra fica separada do INSERT que a executa.
+ */
+export function participanteDoResponsavel(
+  responsavel: ResponsavelDePauta,
+): ParticipantInput | null {
+  const entraObjectId = responsavel.responsibleEntraObjectId?.trim();
+  const displayName = responsavel.responsibleLabel?.trim();
+  if (!entraObjectId || !displayName) return null;
+
+  return {
+    entraObjectId,
+    displayName,
+    roleInMeeting: PAPEL_PADRAO_DO_PARTICIPANTE,
+    /*
+     * Presença NÃO é confirmada aqui. Quem monta a pauta decide quem responde
+     * por ela; dizer que a pessoa confirmou seria afirmar um fato dela que
+     * ninguém verificou.
+     */
+    isConfirmed: false,
+  };
+}
+
+/**
+ * Garante a invariável para UMA pauta: responsável pessoa está em
+ * `meeting_participants`.
+ *
+ * Idempotente — `findOrCreateMeetingParticipant` deduplica por identificador
+ * estável (`user_id` / `entra_object_id`), nunca por nome. Quem já é
+ * participante permanece como está: papel, presença e e-mail que a Assessoria
+ * tiver ajustado não são sobrescritos.
+ *
+ * Roda na transação de quem chama, que também é responsável por serializar o
+ * find-or-create com `SELECT ... FROM meetings WHERE id = $1 FOR UPDATE`.
+ *
+ * NÃO vincula à pauta (`meeting_agenda_item_participants`): responder por um
+ * assunto não é o mesmo que estar na lista daquele assunto, e o vínculo tem
+ * semântica de remoção própria (desvincular tira a pessoa da reunião inteira).
+ */
+export async function garantirResponsavelComoParticipante(
+  client: PoolClient,
+  meetingId: string,
+  responsavel: ResponsavelDePauta,
+  actor: MeetingActor,
+  titulo: string,
+): Promise<{ id: string; criado: boolean } | null> {
+  const input = participanteDoResponsavel(responsavel);
+  if (!input) return null;
+  return findOrCreateMeetingParticipant(client, meetingId, input, actor, titulo);
+}
+
+/**
+ * Recusa tirar da reunião quem ainda responde por alguma pauta dela.
+ *
+ * A barreira é AQUI e não na tela: desabilitar o botão é cortesia, e qualquer
+ * DELETE direto na API passaria por cima dela deixando a reunião com uma pauta
+ * cujo responsável não está presente — exatamente o estado que a regra proíbe.
+ *
+ * Fica dentro de `excluirMeetingParticipant` porque essa é a única remoção do
+ * sistema: vale para a aba Participantes e para o desvínculo pela pauta, e
+ * qualquer caminho futuro herda a checagem sem precisar lembrar dela.
+ *
+ * O casamento é por IDENTIDADE (par tenant+oid), nunca por nome: só pessoa
+ * identificável entra pela regra, então só ela pode ser retida por ela.
+ */
+async function recusarRemocaoDeResponsavel(
+  client: PoolClient,
+  meetingId: string,
+  participantId: string,
+): Promise<void> {
+  const { rows } = await client.query<{ title: string }>(
+    `SELECT ai.title
+       FROM meeting_participants mp
+       JOIN meeting_agenda_items ai
+         ON ai.meeting_id = mp.meeting_id
+        AND ai.responsible_entra_object_id = mp.entra_object_id
+        AND ai.responsible_entra_tenant_id = mp.entra_tenant_id
+      WHERE mp.id = $1
+        AND mp.meeting_id = $2
+        AND mp.entra_object_id IS NOT NULL
+      ORDER BY ai.position
+      LIMIT 1`,
+    [participantId, meetingId],
+  );
+
+  if (rows.length > 0) {
+    throw new HttpError(
+      409,
+      `Esta pessoa é responsável pela pauta "${rows[0]!.title}". Troque o responsável ou remova a pauta antes de tirá-la da reunião.`,
+    );
   }
 }

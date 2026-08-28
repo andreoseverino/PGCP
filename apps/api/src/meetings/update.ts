@@ -18,6 +18,7 @@ import { reabrirValidacaoSePreReuniao } from "./agenda-validation.js";
 import {
   excluirMeetingParticipant,
   findOrCreateMeetingParticipant,
+  garantirResponsavelComoParticipante,
   inserirMeetingParticipant,
   snapshotTopicParticipantsIntoItem,
   vincularParticipanteNaPauta,
@@ -86,6 +87,23 @@ function traduzirErro(error: unknown): unknown {
 async function exigirReuniao(client: PoolClient, meetingId: string): Promise<string> {
   const { rows } = await client.query<{ title: string }>(
     "SELECT title FROM meetings WHERE id = $1",
+    [meetingId],
+  );
+  if (rows.length === 0) throw new HttpError(404, "Reunião não encontrada.");
+  return rows[0]!.title;
+}
+
+/**
+ * Idem, TRAVANDO a reuniao ate o fim da transacao.
+ *
+ * Exigido por todo caminho que faz find-or-create de participante: nao ha
+ * exclusao mutua na aplicacao, e duas chamadas concorrentes a mesma reuniao
+ * chegariam juntas ao SELECT, nao achariam ninguem e inseririam a mesma pessoa
+ * duas vezes. O lock na linha da reuniao serializa isso.
+ */
+async function exigirReuniaoTravada(client: PoolClient, meetingId: string): Promise<string> {
+  const { rows } = await client.query<{ title: string }>(
+    "SELECT title FROM meetings WHERE id = $1 FOR UPDATE",
     [meetingId],
   );
   if (rows.length === 0) throw new HttpError(404, "Reunião não encontrada.");
@@ -394,7 +412,8 @@ export async function addAgendaItem(
   assertUuid(meetingId, "Identificador");
 
   await emTransacao(async (client) => {
-    const titulo = await exigirReuniao(client, meetingId);
+    // Travada: a pauta pode acrescentar o responsavel a lista de participantes.
+    const titulo = await exigirReuniaoTravada(client, meetingId);
 
     // Importar da Biblioteca preserva a IDENTIDADE da pauta: o vinculo e o
     // UUID, nunca o titulo. Nenhuma agenda_topic nova e criada aqui.
@@ -470,6 +489,10 @@ export async function addAgendaItem(
         titulo,
       );
     }
+
+    // INVARIANTE: responsável pessoa participa da reunião. Mesma transação da
+    // pauta — ou as duas coisas existem, ou nenhuma.
+    await garantirResponsavelComoParticipante(client, meetingId, input, actor, titulo);
 
     // Alteracao ESTRUTURAL: reabre a validacao se ainda for planejamento.
     await reabrirValidacaoSePreReuniao(client, meetingId, actor);
@@ -644,7 +667,7 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
   }
 
   // Identidade sem rotulo nao entra — mesma regra da criacao.
-  if (saida.responsibleEntraObjectId && saida.responsibleLabel === null) {
+  if (saida.responsibleEntraObjectId && !saida.responsibleLabel) {
     throw new HttpError(400, "Informe 'responsibleLabel' junto de 'responsibleEntraObjectId'.");
   }
 
@@ -672,7 +695,8 @@ export async function updateAgendaItem(
   assertUuid(agendaItemId, "Identificador da pauta");
 
   await emTransacao(async (client) => {
-    const titulo = await exigirReuniao(client, meetingId);
+    // Travada: trocar o responsavel pode acrescenta-lo aos participantes.
+    const titulo = await exigirReuniaoTravada(client, meetingId);
 
     // UPDATE parcial, nunca DELETE + INSERT: o `id` sobrevive a edicao.
     const atribuicoes: string[] = [];
@@ -718,6 +742,18 @@ export async function updateAgendaItem(
       entityLabel: titulo,
       status: "success",
     });
+
+    /*
+     * INVARIANTE: o novo responsável, se for pessoa, entra na reunião.
+     *
+     * O ANTERIOR permanece participante — trocar quem responde por um assunto
+     * não é dizer que a pessoa saiu da reunião, e desconvidá-la por conta
+     * própria apagaria uma decisão que a Assessoria pode ter tomado por outro
+     * motivo. Limpar o responsável (null) também não remove ninguém.
+     */
+    if (input.responsibleEntraObjectId !== undefined || input.responsibleLabel !== undefined) {
+      await garantirResponsavelComoParticipante(client, meetingId, input, actor, titulo);
+    }
 
     // So campos ESTRUTURAIS reabrem a validacao. Mudanca de execucao
     // (executionStatus) ou de horario nao invalida o que o aprovador viu — e,
@@ -815,12 +851,7 @@ export async function addAgendaItemParticipant(
 
   await emTransacao(async (client) => {
     // Lock da reunião: serializa o find-or-create do participante.
-    const { rows: reuniao } = await client.query<{ title: string }>(
-      "SELECT title FROM meetings WHERE id = $1 FOR UPDATE",
-      [meetingId],
-    );
-    if (reuniao.length === 0) throw new HttpError(404, "Reunião não encontrada.");
-    const titulo = reuniao[0]!.title;
+    const titulo = await exigirReuniaoTravada(client, meetingId);
 
     await exigirPautaNaReuniao(client, meetingId, agendaItemId);
 

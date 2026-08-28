@@ -9,7 +9,10 @@ import {
   addParticipantOnce,
   canOfferAsParticipant,
   enderecoDoDiretorio,
-  isAlreadyParticipant
+  isAlreadyParticipant,
+  papelPadraoDoParticipante,
+  participanteDoResponsavel,
+  pautasSobResponsabilidade
 } from "../lib/participants";
 import {
   formatMinutesAsTime,
@@ -143,8 +146,6 @@ export default function ScheduleMeetingModal({
   const [editingTopicAuthorOid, setEditingTopicAuthorOid] = useState<string | undefined>(undefined);
   /** Endereço do responsável escolhido no diretório, para o convite. */
   const [editingTopicAuthorEmail, setEditingTopicAuthorEmail] = useState<string | undefined>(undefined);
-  /** Opção explícita de incluir o responsável entre os participantes. */
-  const [editingTopicAuthorAsParticipant, setEditingTopicAuthorAsParticipant] = useState(false);
 
 
   /**
@@ -252,18 +253,18 @@ export default function ScheduleMeetingModal({
 
   /**
    * Inclui o responsável entre os participantes — só quando a opção ao lado do
-   * campo foi marcada.
+   * campo tem uma pessoa do diretório.
    *
    * Papel neutro, o mesmo do cadastro manual: participar de uma reunião não
    * implica apresentar nada. E entra sem presença confirmada, porque quem
-   * marcou a opção foi quem monta a pauta, não a pessoa convidada.
+   * montou a pauta não responde pela agenda de quem foi convidado.
    */
   const incluirComoParticipante = (nome: string, entraObjectId?: string, email?: string) => {
     if (!nome.trim()) return;
     setParticipants((prev) =>
       addParticipantOnce(prev, {
         name: nome.trim(),
-        role: language === "en" ? "Participant" : "Convidado",
+        role: papelPadraoDoParticipante(language),
         confirmed: false,
         entraObjectId,
         // Capturado no momento da escolha no diretório: depois da reunião
@@ -275,45 +276,65 @@ export default function ScheduleMeetingModal({
   };
 
   /**
-   * Opção explícita ao lado do campo de responsável.
+   * Aviso ao lado do campo de responsável.
    *
-   * Só aparece quando há uma pessoa do diretório escolhida: área, órgão e
-   * coletivo ("Todos", "Comitê de Auditoria") não são convidáveis, e texto
-   * livre não traz identidade para deduplicar.
+   * Deixou de ser opção: responsável de pauta É participante da reunião. Só
+   * aparece para quem veio do diretório — área, órgão e coletivo ("Todos",
+   * "Comitê de Auditoria") não são convidáveis e continuam de fora.
    */
-  const renderOpcaoParticipante = (
-    nome: string,
-    entraObjectId: string | undefined,
-    marcado: boolean,
-    aoMarcar: (valor: boolean) => void
-  ) => {
+  const renderAvisoResponsavelParticipante = (nome: string, entraObjectId?: string) => {
     if (!canOfferAsParticipant(entraObjectId)) return null;
 
-    if (jaEParticipante(nome, entraObjectId)) {
-      return (
-        <p className="flex items-center gap-1.5 mt-1.5 text-[10px] font-bold text-emerald-600">
-          <CheckCircle className="w-3 h-3 shrink-0" />
-          {language === "en" ? "Already a participant of this meeting" : "Já é participante desta reunião"}
-        </p>
-      );
-    }
+    const jaEsta = jaEParticipante(nome, entraObjectId);
 
     return (
-      <label className="flex items-start gap-2 mt-1.5 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={marcado}
-          onChange={(e) => aoMarcar(e.target.checked)}
-          className="mt-0.5 rounded border-slate-300 text-[#00658d] focus:ring-[#00658d] cursor-pointer"
-        />
-        <span className="text-[10px] font-semibold text-slate-500 leading-snug">
-          {language === "en"
-            ? `Also add ${nome} as a participant of this meeting`
-            : `Adicionar ${nome} também como participante da reunião`}
-        </span>
-      </label>
+      <p className="flex items-center gap-1.5 mt-1.5 text-[10px] font-bold text-emerald-600">
+        <CheckCircle className="w-3 h-3 shrink-0" />
+        {jaEsta
+          ? language === "en"
+            ? "Already a participant of this meeting"
+            : "Já é participante desta reunião"
+          : language === "en"
+            ? "Will be added to the meeting participants"
+            : "Entra como participante da reunião"}
+      </p>
     );
   };
+
+  /**
+   * Responsável de pauta É participante da reunião.
+   *
+   * Regra do produto, não escolha de quem agenda: quem responde por uma pauta
+   * precisa estar na sala. A GARANTIA é do backend, que aplica a mesma regra em
+   * toda criação e edição de pauta (inclusive numa chamada direta à API). Aqui
+   * é só o reflexo imediato: nesta tela a reunião ainda não existe, e não há
+   * resposta do servidor para absorver.
+   *
+   * Fica no efeito sobre `agenda` para valer em TODOS os caminhos da tela —
+   * drawer, importação da Biblioteca, troca de responsável — em vez de depender
+   * de cada handler lembrar de incluir. Quem decide quem entra é
+   * `participanteDoResponsavel`, a mesma regra que o backend espelha: só quem
+   * tem identidade no diretório (área, órgão e coletivo como "Todos" não são
+   * pessoas — não há a quem convidar nem como deduplicar).
+   *
+   * NUNCA remove: tirar a pauta, ou trocar o responsável, não desconvida
+   * ninguém — a pessoa pode estar na reunião por outro motivo, e desconvidar
+   * por conta própria seria destruir o que a usuária montou à mão.
+   */
+  useEffect(() => {
+    setParticipants((anterior) => {
+      let proxima = anterior;
+
+      for (const item of agenda) {
+        const responsavel = participanteDoResponsavel(item, language);
+        if (responsavel) proxima = addParticipantOnce(proxima, responsavel);
+      }
+
+      // `addParticipantOnce` sempre devolve array novo; comparar o tamanho evita
+      // um setState por render e o laço infinito que ele traria.
+      return proxima.length === anterior.length ? anterior : proxima;
+    });
+  }, [agenda, language]);
 
   const handleEditAgendaItem = (index: number) => {
     const item = agenda[index];
@@ -344,7 +365,6 @@ export default function ScheduleMeetingModal({
           }
         : null
     );
-    setEditingTopicAuthorAsParticipant(false);
   };
 
   const handleSaveEditedAgendaItem = () => {
@@ -359,7 +379,7 @@ export default function ScheduleMeetingModal({
       authorEntraObjectId: editingTopicAuthorOid
     };
 
-    if (editingTopicAuthorAsParticipant && editingTopicAuthorOid) {
+    if (editingTopicAuthorOid) {
       incluirComoParticipante(autor, editingTopicAuthorOid, editingTopicAuthorEmail);
     }
 
@@ -372,8 +392,6 @@ export default function ScheduleMeetingModal({
   const [tempPautaDuration, setTempPautaDuration] = useState("30 mins");
   /** Responsável escolhido no diretório. `null` = pauta sem pessoa definida. */
   const [tempPautaAuthorUser, setTempPautaAuthorUser] = useState<DirectoryUser | null>(null);
-  /** Opção explícita de incluir o responsável entre os participantes. */
-  const [tempPautaAuthorAsParticipant, setTempPautaAuthorAsParticipant] = useState(false);
   const [tempPautaDescription, setTempPautaDescription] = useState("");
   // Tema circular da nova pauta. Default Não. Só REGISTRA o fato: sem automação.
   const [tempPautaCircular, setTempPautaCircular] = useState(false);
@@ -909,12 +927,25 @@ export default function ScheduleMeetingModal({
               {/* List scrollbar */}
               <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
                 {participants.map((p, index) => {
-                  const linkedTopics = agenda.filter(item => 
-                    item.author && p.name && (
-                      item.author.toLowerCase().includes(p.name.toLowerCase()) || 
-                      p.name.toLowerCase().includes(item.author.toLowerCase())
-                    )
-                  );
+                  /*
+                   * Pautas sob responsabilidade desta pessoa.
+                   *
+                   * Compara IDENTIDADE (`isSameParticipant`), não substring de
+                   * nome: o casamento por texto colava "Ana" em toda pauta cujo
+                   * responsável contivesse "Ana", e nenhum dos dois lados sabia
+                   * de quem estava falando.
+                   */
+                  const linkedTopics = pautasSobResponsabilidade(agenda, {
+                    name: p.name,
+                    entraObjectId: p.entraObjectId
+                  });
+                  /*
+                   * Responsável de pauta não sai da lista: a regra é que ele
+                   * PARTICIPA. Remover aqui só devolveria a mesma pessoa na
+                   * próxima mudança da agenda. Para tirá-lo, tira-se a pauta ou
+                   * troca-se o responsável — a decisão volta a ser da pauta.
+                   */
+                  const ehResponsavelDePauta = linkedTopics.length > 0;
 
                   return (
                     <div
@@ -954,9 +985,18 @@ export default function ScheduleMeetingModal({
                       {/* Right Action: Delete icon button */}
                       <button
                         type="button"
+                        disabled={ehResponsavelDePauta}
                         onClick={() => setParticipants(participants.filter((_, i) => i !== index))}
-                        className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 p-1.5 rounded-lg transition shrink-0 ml-2"
-                        title={language === "en" ? "Remove participant" : "Remover convidado"}
+                        className="text-rose-500 hover:text-rose-700 hover:bg-rose-50 p-1.5 rounded-lg transition shrink-0 ml-2 disabled:text-slate-300 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                        title={
+                          ehResponsavelDePauta
+                            ? language === "en"
+                              ? "Responsible for an agenda item — remove the item or change its owner first"
+                              : "Responsável por pauta — remova a pauta ou troque o responsável"
+                            : language === "en"
+                              ? "Remove participant"
+                              : "Remover convidado"
+                        }
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -1162,26 +1202,15 @@ export default function ScheduleMeetingModal({
                       <DirectoryUserPicker
                         language={language}
                         selected={tempPautaAuthorUser}
-                        onSelect={(u) => {
-                          setTempPautaAuthorUser(u);
-                          setTempPautaAuthorAsParticipant(false);
-                        }}
-                        onClear={() => {
-                          setTempPautaAuthorUser(null);
-                          setTempPautaAuthorAsParticipant(false);
-                        }}
+                        onSelect={(u) => setTempPautaAuthorUser(u)}
+                        onClear={() => setTempPautaAuthorUser(null)}
                       />
                       {!tempPautaAuthorUser && (
                         <p className="text-[10px] text-slate-400 font-semibold">
                           {language === "en" ? "No one chosen: All Board Members." : "Sem escolha: Todos os Membros."}
                         </p>
                       )}
-                      {renderOpcaoParticipante(
-                        tempPautaAuthor,
-                        tempPautaAuthorUser?.id,
-                        tempPautaAuthorAsParticipant,
-                        setTempPautaAuthorAsParticipant
-                      )}
+                      {renderAvisoResponsavelParticipante(tempPautaAuthor, tempPautaAuthorUser?.id)}
                     </div>
                   </div>
 
@@ -1360,7 +1389,7 @@ export default function ScheduleMeetingModal({
                       generatesActionItem: tempPautaFup
                     }]);
 
-                    if (tempPautaAuthorAsParticipant && tempPautaAuthorUser) {
+                    if (tempPautaAuthorUser) {
                       incluirComoParticipante(
                         tempPautaAuthor,
                         tempPautaAuthorUser.id,
@@ -1372,7 +1401,6 @@ export default function ScheduleMeetingModal({
                     setTempPautaTitle("");
                     setTempPautaDuration("30 mins");
                     setTempPautaAuthorUser(null);
-                    setTempPautaAuthorAsParticipant(false);
                     setTempPautaDescription("");
                     setTempPautaCircular(false);
                     setTempPautaFup(false);
@@ -1448,14 +1476,12 @@ export default function ScheduleMeetingModal({
                         setEditingTopicAuthor(u.displayName?.trim() || "");
                         setEditingTopicAuthorOid(u.id);
                         setEditingTopicAuthorEmail(enderecoDoDiretorio(u));
-                        setEditingTopicAuthorAsParticipant(false);
                       }}
                       onClear={() => {
                         setEditingTopicAuthorUser(null);
                         setEditingTopicAuthor("");
                         setEditingTopicAuthorOid(undefined);
                         setEditingTopicAuthorEmail(undefined);
-                        setEditingTopicAuthorAsParticipant(false);
                       }}
                     />
                     {!editingTopicAuthor.trim() && (
@@ -1463,12 +1489,7 @@ export default function ScheduleMeetingModal({
                         {language === "en" ? "No one chosen: All Board Members." : "Sem escolha: Todos os Membros."}
                       </p>
                     )}
-                    {renderOpcaoParticipante(
-                      editingTopicAuthor,
-                      editingTopicAuthorOid,
-                      editingTopicAuthorAsParticipant,
-                      setEditingTopicAuthorAsParticipant
-                    )}
+                    {renderAvisoResponsavelParticipante(editingTopicAuthor, editingTopicAuthorOid)}
                   </div>
                 </div>
               </div>

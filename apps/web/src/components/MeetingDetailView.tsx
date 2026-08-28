@@ -44,7 +44,7 @@ import {
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import { Meeting, ActionItem, StandaloneAgenda, Participant, AgendaItem, SessionUser } from "../types";
 import { newId } from "../lib/id";
-import { ehEmailValido } from "../lib/participants";
+import { ehEmailValido, pautasSobResponsabilidade } from "../lib/participants";
 import {
   CalendarPreconditionError,
   calendarVisualState,
@@ -3929,12 +3929,22 @@ export default function MeetingDetailView({
 
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                 {(meeting.participants || []).map((p, idx) => {
-                  const linkedPautas = (meeting.agenda || []).filter(item => 
-                    item.author && p.name && (
-                      item.author.toLowerCase().includes(p.name.toLowerCase()) ||
-                      p.name.toLowerCase().includes(item.author.toLowerCase())
-                    )
-                  );
+                  /*
+                   * Pautas sob responsabilidade desta pessoa.
+                   *
+                   * IDENTIDADE (`entra_object_id`) decide; nome só desempata
+                   * quando nenhum dos dois lados tem identidade — dado legado.
+                   * O casamento por substring que existia aqui pendurava a
+                   * mesma pauta em "Ana" e em "Ana Paula Souza", e separava
+                   * homônimos que o diretório sabe distinguir.
+                   *
+                   * Mesma função da tela de agendamento: a regra de quem
+                   * responde pelo quê é uma só no produto.
+                   */
+                  const linkedPautas = pautasSobResponsabilidade(meeting.agenda || [], {
+                    name: p.name,
+                    entraObjectId: p.entraObjectId
+                  });
 
                   return (
                     <div key={idx} className="flex flex-col p-3.5 rounded-2xl border border-slate-100 bg-slate-50/50 space-y-2">

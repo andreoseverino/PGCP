@@ -68,6 +68,78 @@ export function enderecoDoDiretorio(pessoa: {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidato) ? candidato : undefined;
 }
 
+// -----------------------------------------------------------------------------
+// INVARIANTE: responsável de pauta que é PESSOA participa da reunião
+// -----------------------------------------------------------------------------
+//
+// A garantia REAL é do backend (`meetings/agenda-item-participants.ts`), que
+// aplica a mesma regra em toda criação e edição de pauta — inclusive numa
+// chamada direta à API, sem tela. O que existe aqui é o reflexo IMEDIATO na
+// tela de agendamento, onde a reunião ainda não foi gravada e não há resposta
+// do servidor para absorver.
+
+/** O que uma pauta guarda sobre quem responde por ela. */
+export interface PautaComResponsavel {
+  author?: string;
+  authorEntraObjectId?: string;
+}
+
+/**
+ * Papel de quem o PGCP acrescenta à lista por conta própria — o MESMO rótulo do
+ * cadastro manual. Nenhum papel novo: a lista não deve ter duas classes de
+ * convidado.
+ */
+export function papelPadraoDoParticipante(language: "en" | "pt"): string {
+  return language === "en" ? "Participant" : "Convidado";
+}
+
+/**
+ * O participante que este responsável deve ser — ou `null` quando não há pessoa
+ * a convidar.
+ *
+ * Espelha `participanteDoResponsavel` do backend: só entra quem tem identidade
+ * no diretório. Área, órgão e coletivo ("Todos", "Comitê de Auditoria") e texto
+ * livre ficam de fora — não há a quem convidar nem como deduplicar, e casar o
+ * texto com o diretório por semelhança uniria homônimos.
+ *
+ * Presença NUNCA nasce confirmada: quem montou a pauta não responde pela agenda
+ * de quem foi convidado.
+ */
+export function participanteDoResponsavel(
+  pauta: PautaComResponsavel,
+  language: "en" | "pt",
+): { name: string; role: string; confirmed: boolean; entraObjectId: string } | null {
+  const entraObjectId = pauta.authorEntraObjectId?.trim();
+  const name = pauta.author?.trim();
+  if (!canOfferAsParticipant(entraObjectId) || !name) return null;
+
+  return {
+    name,
+    role: papelPadraoDoParticipante(language),
+    confirmed: false,
+    entraObjectId: entraObjectId as string,
+  };
+}
+
+/**
+ * Pautas cujo responsável é esta pessoa.
+ *
+ * Base de duas coisas na tela: as etiquetas de pauta ao lado do participante e
+ * o bloqueio da remoção de quem ainda responde por alguma. Compara IDENTIDADE
+ * (`isSameParticipant`) — o casamento por substring de nome que existia antes
+ * colava "Ana" em toda pauta cujo responsável contivesse "Ana".
+ */
+export function pautasSobResponsabilidade<T extends PautaComResponsavel>(
+  pautas: readonly T[],
+  pessoa: ParticipantRef,
+): T[] {
+  return pautas.filter((pauta) =>
+    pauta.author?.trim()
+      ? isSameParticipant({ name: pauta.author, entraObjectId: pauta.authorEntraObjectId }, pessoa)
+      : false,
+  );
+}
+
 /** Formato mínimo de e-mail, para validar o que a pessoa digitou. */
 export function ehEmailValido(valor: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(valor.trim());
