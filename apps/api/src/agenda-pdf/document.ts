@@ -55,7 +55,6 @@ export interface ReuniaoDoDocumento {
   fimEm: string;
   /** IANA, ex.: America/Sao_Paulo. */
   fuso: string;
-  local: string | null;
   participantes: string[];
   pautas: PautaDoDocumento[];
 }
@@ -326,7 +325,6 @@ function desenharInformacoesGerais(doc: Doc, reuniao: ReuniaoDoDocumento): void 
 
   campo(doc, "Órgão", reuniao.orgao, 120);
   campo(doc, "Organização", reuniao.organizador, 120);
-  campo(doc, "Local", reuniao.local, 160);
 
   const total = reuniao.pautas.reduce((soma, pauta) => soma + (pauta.duracaoMinutos ?? 0), 0);
   if (total > 0) campo(doc, "Tempo previsto de pauta", `${total} minuto(s)`);

@@ -1,0 +1,28 @@
+-- =============================================================================
+-- 021_drop_meeting_location.sql
+--
+-- Retira o LOCAL FÍSICO da reunião do modelo.
+--
+-- O campo saiu do produto: o PGCP não solicita, não exibe, não persiste e não
+-- transmite endereço/sala da reunião. A reunião nasce online no próprio evento
+-- do calendário (`online_meeting_provider = 'teamsForBusiness'`, migration 014);
+-- onde as pessoas entram é o `joinUrl` provisionado pelo Graph, não um texto
+-- digitado.
+--
+-- FORWARD-ONLY e DESTRUTIVA por natureza: `DROP COLUMN` descarta o texto das
+-- reuniões já cadastradas. Não há backfill possível na volta — o dado não é
+-- derivável de nenhuma outra coluna. Foi verificado antes de escrever esta
+-- migration que a coluna:
+--   * não participa de índice, view, trigger, constraint ou FK;
+--   * não é referenciada por nenhuma outra tabela;
+--   * não tem privilégio de coluna concedido (os GRANTs de 015/016/020 são de
+--     tabela inteira, então nada precisa ser reconcedido).
+--
+-- O que já foi para o Outlook NÃO é alterado por aqui. Eventos criados antes
+-- desta mudança seguem com o `location` que o Graph gravou: a sincronização
+-- deixou de ENVIAR a propriedade, e um PATCH que a omite não a apaga do lado de
+-- lá. Limpar o campo no calendário seria uma escrita nova, não uma remoção, e
+-- não é o que esta mudança faz.
+-- =============================================================================
+
+ALTER TABLE meetings DROP COLUMN IF EXISTS location;

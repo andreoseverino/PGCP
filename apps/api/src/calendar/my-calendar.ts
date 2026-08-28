@@ -116,7 +116,6 @@ export interface MyCalendarEvent {
   start: string | null;
   end: string | null;
   timezone: string | null;
-  location: string | null;
   /** Nome de exibicao do organizador. Snapshot, nunca identidade. */
   organizer: string | null;
   isOnlineMeeting: boolean;
@@ -136,7 +135,6 @@ interface GraphEvent {
   subject?: string | null;
   start?: { dateTime?: string; timeZone?: string } | null;
   end?: { dateTime?: string; timeZone?: string } | null;
-  location?: { displayName?: string | null } | null;
   organizer?: { emailAddress?: { name?: string | null } | null } | null;
   isOnlineMeeting?: boolean | null;
   onlineMeeting?: { joinUrl?: string | null } | null;
@@ -151,7 +149,7 @@ interface GraphEvent {
  * que atravessar. Pedir menos e a forma mais simples de nao vazar demais.
  */
 const EVENT_SELECT =
-  "id,subject,start,end,location,organizer,isOnlineMeeting,onlineMeeting,webLink";
+  "id,subject,start,end,organizer,isOnlineMeeting,onlineMeeting,webLink";
 
 function montar(evento: GraphEvent): MyCalendarEvent {
   return {
@@ -160,7 +158,6 @@ function montar(evento: GraphEvent): MyCalendarEvent {
     start: evento.start?.dateTime ?? null,
     end: evento.end?.dateTime ?? null,
     timezone: evento.start?.timeZone ?? null,
-    location: evento.location?.displayName ?? null,
     organizer: evento.organizer?.emailAddress?.name ?? null,
     isOnlineMeeting: evento.isOnlineMeeting === true,
     /*

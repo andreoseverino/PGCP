@@ -210,7 +210,6 @@ export interface Meeting {
   startTime: string; // e.g. "10:05"
   endTime: string; // e.g. "14:00"
   timeZone: string; // e.g. "EST"
-  location: string;
   category: string;
   /**
    * Situação formal da reunião. NÃO representa a aba aberta nem a etapa do

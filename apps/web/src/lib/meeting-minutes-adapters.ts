@@ -97,7 +97,6 @@ export function buildMinutesTemplate(meeting: Meeting, language: "pt" | "en"): s
     `${en ? "DATE" : "DATA"}: ${formatarData(meeting.date, language)} | ${
       en ? "TIME" : "HORÁRIO"
     }: ${meeting.startTime} - ${meeting.endTime} ${meeting.timeZone}`,
-    `${en ? "LOCATION" : "LOCALIZAÇÃO"}: ${meeting.location}`,
     `${en ? "GOVERNANCE BODY" : "ÓRGÃO COLEGIADO"}: ${meeting.category}`,
   ];
 

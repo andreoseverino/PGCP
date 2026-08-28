@@ -253,8 +253,8 @@ O projeto executará um smoke test controlado:
 1. reunião criada exclusivamente para homologação, cadastrada por um usuário
    com `PGCP.Assessoria` e com **organizador `<MAILBOX-HOMOLOG>`** — provando,
    na mesma operação, que ator e organizador podem ser pessoas diferentes
-2. sincronização, verificando evento, *organizer* Microsoft, horário, fuso,
-   local e convidados
+2. sincronização, verificando evento, *organizer* Microsoft, horário, fuso e
+   convidados
 3. alteração de um campo e ressincronização, provando que o **mesmo** evento é
    atualizado e que **não** nasce um segundo
 

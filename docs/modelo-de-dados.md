@@ -418,7 +418,6 @@ São editáveis pelo usuário em Administração → tabela, não enum.
 | `start_at` | timestamptz | sim | instante absoluto |
 | `end_at` | timestamptz | sim | `CHECK (end_at > start_at)` |
 | `timezone` | text | sim | **IANA**, default `'America/Sao_Paulo'` |
-| `location` | text | não | |
 | `meeting_link` | text | não | link digitado à mão (Webex, Meet, sala virtual de terceiro) |
 | `online_meeting_provider` | text | não | 014. Reunião nova nasce sempre `'teamsForBusiness'`, por regra de domínio (não vem do corpo). NULO só em reunião legada; o contrato não aceita `null` de volta |
 | `status` | text | sim | ver abaixo |
@@ -426,6 +425,11 @@ São editáveis pelo usuário em Administração → tabela, não enum.
 | `recurrence` | text | não | rótulo (`"Mensal"`) — recurso ainda não implementado |
 | `pending_requirements` | text | não | ← `missingRequirementText` |
 | `created_at` / `updated_at` | timestamptz | sim | |
+
+**Sem local físico.** A coluna `location` existiu até a migration `021`, que a
+removeu: o PGCP não solicita, não exibe, não persiste nem envia ao Graph o
+endereço/sala da reunião. Onde se entra é o `joinUrl` do Teams, provisionado no
+próprio evento (`online_meeting_provider`).
 
 **Status:** `draft`, `scheduled`, `needs_approval`, `in_progress`, `done`, `approved`,
 `closed` — os 7 valores atuais, normalizados.

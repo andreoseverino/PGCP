@@ -48,7 +48,6 @@ export interface ApiMeetingSummary {
   startAt: string;
   endAt: string;
   timezone: string;
-  location: string | null;
   meetingLink: string | null;
   onlineMeetingProvider: "teamsForBusiness" | null;
   status: ApiMeetingStatus;
@@ -319,7 +318,6 @@ export function meetingFromApi(api: ApiMeetingSummary | ApiMeetingDetail): Meeti
     startTime: inicio.time,
     endTime: fim.time,
     timeZone: api.timezone,
-    location: api.location ?? "",
     // Exibição do órgão. A identidade continua sendo `governanceBody.id`;
     // este campo textual não resolve nada no servidor.
     category: api.governanceBody.name,
@@ -404,7 +402,6 @@ export interface CreateMeetingPayload {
   startAt: string;
   endAt: string;
   timezone: string;
-  location?: string;
   meetingLink?: string;
   recurrence?: string;
   pendingRequirements?: string;
@@ -453,7 +450,6 @@ export interface BuildPayloadInput {
   startTime: string;
   endTime: string;
   timezone: string;
-  location?: string;
   meetingLink?: string;
   recurrence?: string;
   participants: Array<
@@ -553,7 +549,6 @@ export function buildCreatePayload(input: BuildPayloadInput): CreateMeetingPaylo
     startAt: localToInstant(input.date, input.startTime, input.timezone),
     endAt: localToInstant(input.date, input.endTime, input.timezone),
     timezone: input.timezone,
-    location: opcional(input.location),
     meetingLink: opcional(input.meetingLink),
     recurrence: opcional(input.recurrence),
     participants,

@@ -180,14 +180,13 @@ async function carregarDados(executor: Executor, meetingId: string): Promise<Dad
     start_at: Date;
     end_at: Date;
     timezone: string;
-    location: string | null;
     meeting_link: string | null;
     organizer_entra_object_id: string | null;
     organizer_name: string | null;
     online_meeting_provider: "teamsForBusiness" | null;
   }>(
     `SELECT m.id, m.title, m.description, m.start_at, m.end_at, m.timezone,
-            m.location, m.meeting_link, m.online_meeting_provider,
+            m.meeting_link, m.online_meeting_provider,
             m.organizer_entra_object_id, m.organizer_name
        FROM meetings m
       WHERE m.id = $1`,
@@ -246,7 +245,6 @@ async function carregarDados(executor: Executor, meetingId: string): Promise<Dad
       startAt: row.start_at,
       endAt: row.end_at,
       timezone: row.timezone,
-      location: row.location,
       meetingLink: row.meeting_link,
       onlineMeetingProvider: row.online_meeting_provider,
     },

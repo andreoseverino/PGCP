@@ -157,7 +157,6 @@ export interface ReuniaoParaCalendario {
   startAt: Date;
   endAt: Date;
   timezone: string;
-  location: string | null;
   meetingLink: string | null;
   /**
    * Provider da reuniao online, ou `null` quando nao ha.
@@ -173,7 +172,6 @@ export interface EventoGraph {
   body: { contentType: "text"; content: string };
   start: { dateTime: string; timeZone: string };
   end: { dateTime: string; timeZone: string };
-  location?: { displayName: string };
   attendees: AttendeeGraph[];
   transactionId?: string;
   isOnlineMeeting?: boolean;
@@ -218,9 +216,6 @@ export function montarEvento(
     attendees,
   };
 
-  if (reuniao.location?.trim()) {
-    evento.location = { displayName: reuniao.location.trim() };
-  }
   if (opcoes.idempotencyKey) {
     evento.transactionId = opcoes.idempotencyKey;
   }
@@ -250,7 +245,6 @@ export const CAMPOS_QUE_DESATUALIZAM = [
   "startAt",
   "endAt",
   "timezone",
-  "location",
   "meetingLink",
   // Habilitar a reuniao online muda o evento: o Graph precisa provisiona-la.
   "onlineMeetingProvider",

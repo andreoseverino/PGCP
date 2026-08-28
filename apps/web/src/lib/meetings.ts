@@ -107,7 +107,6 @@ export interface UpdateMeetingPayload {
   startAt?: string;
   endAt?: string;
   timezone?: string;
-  location?: string | null;
   meetingLink?: string | null;
   recurrence?: string | null;
   pendingRequirements?: string | null;

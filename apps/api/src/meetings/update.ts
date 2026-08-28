@@ -103,7 +103,6 @@ export interface UpdateMeetingInput {
   startAt?: string;
   endAt?: string;
   timezone?: string;
-  location?: string | null;
   meetingLink?: string | null;
   recurrence?: string | null;
   pendingRequirements?: string | null;
@@ -134,7 +133,7 @@ export function parseUpdateInput(body: unknown): UpdateMeetingInput {
   const dados = body as Record<string, unknown>;
   const permitidos = new Set([
     "title", "description", "governanceBodyId", "startAt", "endAt", "timezone",
-    "location", "meetingLink", "recurrence", "pendingRequirements", "status",
+    "meetingLink", "recurrence", "pendingRequirements", "status",
     // Habilitar a reuniao online. O gatilho da 014 impede desligar depois que o
     // Graph provisionou — desmarcar aqui nao desfaria nada do outro lado.
     "onlineMeetingProvider",
@@ -166,7 +165,7 @@ export function parseUpdateInput(body: unknown): UpdateMeetingInput {
   if (titulo !== undefined) saida.title = titulo as string;
 
   for (const [chave, max] of [
-    ["description", 5000], ["location", 300],
+    ["description", 5000],
     ["recurrence", 100], ["pendingRequirements", 2000],
   ] as const) {
     const valor = texto(chave, max);
@@ -246,7 +245,6 @@ const COLUNA_DE: Record<keyof UpdateMeetingInput, string> = {
   startAt: "start_at",
   endAt: "end_at",
   timezone: "timezone",
-  location: "location",
   meetingLink: "meeting_link",
   recurrence: "recurrence",
   pendingRequirements: "pending_requirements",

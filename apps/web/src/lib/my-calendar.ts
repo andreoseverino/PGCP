@@ -17,7 +17,6 @@ export interface MyCalendarEvent {
   start: string | null;
   end: string | null;
   timezone: string | null;
-  location: string | null;
   /** Nome de exibição de quem organiza. Snapshot, nunca identidade. */
   organizer: string | null;
   isOnlineMeeting: boolean;

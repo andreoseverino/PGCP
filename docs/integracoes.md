@@ -522,8 +522,12 @@ Sincronização bidirecional só com requisito funcional explícito.
 
 ### Outlook — campos que sincronizam
 
-`title`, `description`, `start_at`, `end_at`, `timezone`, `location`,
-`meeting_link` e o conjunto de participantes.
+`title`, `description`, `start_at`, `end_at`, `timezone`, `meeting_link` e o
+conjunto de participantes.
+
+**Local físico não existe mais** no PGCP (migration 021): o payload do Graph não
+carrega `location`, e eventos criados antes disso mantêm no Outlook o valor que
+já estava lá — omitir a propriedade num PATCH não a apaga.
 
 **Não** sincronizam: pautas, estado de execução, FUP, Anotações, Ata, processo de
 assinatura, Biblioteca. São conteúdo de governança, não do compromisso.

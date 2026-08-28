@@ -25,7 +25,6 @@ import {
   List,
   ListOrdered,
   Lock,
-  MapPin,
   MessageSquare,
   NotebookPen,
   Pencil,
@@ -219,7 +218,6 @@ export default function MeetingDetailView({
   const [editedDate, setEditedDate] = useState(meeting.date);
   const [editedStartTime, setEditedStartTime] = useState(meeting.startTime);
   const [editedEndTime, setEditedEndTime] = useState(meeting.endTime);
-  const [editedLocation, setEditedLocation] = useState(meeting.location);
   const [editedMeetingLink, setEditedMeetingLink] = useState(meeting.meetingLink || "");
 
   // ---------------------------------------------------------------------------
@@ -868,7 +866,6 @@ export default function MeetingDetailView({
         `<ul>` +
         `<li>${esc(dataPorExtenso())} — ${esc(meeting.startTime)} às ${esc(meeting.endTime)}</li>` +
         `<li>Órgão: ${esc(meeting.category || "-")}</li>` +
-        `<li>Local: ${esc(meeting.location || "-")}</li>` +
         `<li>Organização: ${esc(meeting.organizer || "-")}</li>` +
         `</ul>`
     );
@@ -1445,7 +1442,6 @@ export default function MeetingDetailView({
     back: language === "en" ? "Back to Meetings" : "Voltar para Reuniões",
     btnEdit: language === "en" ? "Edit Details" : "Editar Detalhes",
     btnJoin: language === "en" ? "Join Meeting" : "Entrar na Reunião",
-    locationLabel: language === "en" ? "Location" : "Localização",
     organizerLabel: language === "en" ? "Organizer" : "Organizador",
     objectiveTitle: language === "en" ? "Objective" : "Objetivo",
     agendaTitle: language === "en" ? "Agenda Summary" : "Resumo da Pauta",
@@ -1787,7 +1783,6 @@ export default function MeetingDetailView({
                     setEditedDate(meeting.date || "");
                     setEditedStartTime(meeting.startTime || "");
                     setEditedEndTime(meeting.endTime || "");
-                    setEditedLocation(meeting.location || "");
                     setEditedMeetingLink(meeting.meetingLink || "");
                     setIsEditingMeeting(true);
                   }}
@@ -2101,21 +2096,6 @@ export default function MeetingDetailView({
                         </p>
                         <p className="text-sm font-bold text-slate-800 mt-0.5">
                           {meeting.category || t.notInformed}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-start gap-4">
-                      <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-[#00658d] shrink-0 border border-slate-200/40">
-                        <MapPin className="w-5 h-5" />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
-                          {t.locationLabel}
-                        </p>
-                        {/* Sem link aqui: entrar na reunião é o botão do cabeçalho. */}
-                        <p className="text-sm font-bold text-slate-800 mt-0.5">
-                          {meeting.location || t.notInformed}
                         </p>
                       </div>
                     </div>
@@ -4091,20 +4071,8 @@ export default function MeetingDetailView({
                 </div>
               </div>
 
-              {/* Location & Organizer Row */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                    {language === "en" ? "Location" : "Localização"}
-                  </label>
-                  <input 
-                    type="text"
-                    value={editedLocation}
-                    onChange={(e) => setEditedLocation(e.target.value)}
-                    className="w-full text-sm font-bold text-slate-800 placeholder-slate-400 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-2.5 outline-none focus:bg-white transition-all focus:ring-2 focus:ring-[#00658d]/10"
-                    placeholder="e.g. Boardroom A"
-                  />
-                </div>
+              {/* Organizer Row */}
+              <div className="grid grid-cols-1 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
                     {language === "en" ? "Organizer" : "Organizador"}
@@ -4169,7 +4137,6 @@ export default function MeetingDetailView({
                         description: editedDescription,
                         startAt: localToInstant(editedDate, editedStartTime, meeting.timeZone),
                         endAt: localToInstant(editedDate, editedEndTime, meeting.timeZone),
-                        location: editedLocation || null,
                         meetingLink: editedMeetingLink || null
                       }),
                     language === "en" ? "Meeting updated successfully" : "Dados da reunião atualizados com sucesso"

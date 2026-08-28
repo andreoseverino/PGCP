@@ -26,7 +26,6 @@ const BASE: ReuniaoDoDocumento = {
   inicioEm: "2026-03-12T17:00:00.000Z",
   fimEm: "2026-03-12T19:00:00.000Z",
   fuso: "America/Sao_Paulo",
-  local: "Sala do Conselho",
   participantes: ["Ana Souza", "Bruno Lima"],
   pautas: [],
 };
@@ -216,7 +215,6 @@ test("o documento carrega os dados reais da reuniao", async () => {
 
   assert.ok(texto.includes("Reunião do Comitê Executivo"), "titulo");
   assert.ok(texto.includes("COMITÊ EXECUTIVO"), "orgao no rotulo");
-  assert.ok(texto.includes("Sala do Conselho"), "local");
   assert.ok(texto.includes("Secretaria de Governança"), "organizador");
   assert.ok(texto.includes("Avaliar o plano de investimentos"), "objetivo");
   assert.ok(texto.includes("Ana Souza"), "participante");
@@ -246,11 +244,10 @@ test("campo ausente no dominio nao vira linha no documento", async () => {
   assert.ok(texto.includes("Duração:"), "duracao existe e aparece");
 });
 
-test("reuniao sem descricao, local nem organizador nao inventa texto", async () => {
+test("reuniao sem descricao nem organizador nao inventa texto", async () => {
   const magra: ReuniaoDoDocumento = {
     ...BASE,
     descricao: null,
-    local: null,
     organizador: null,
     participantes: [],
     pautas: [pauta(1)],
@@ -259,7 +256,6 @@ test("reuniao sem descricao, local nem organizador nao inventa texto", async () 
   assert.deepEqual(validarEstrutura(pdf), []);
 
   const texto = extrairTexto(pdf);
-  assert.ok(!texto.includes("Local:"), "sem local, sem a linha");
   assert.ok(!texto.includes("Organização:"), "sem organizador, sem a linha");
   assert.ok(!texto.includes("Objetivo"), "sem descricao, sem a secao");
 });

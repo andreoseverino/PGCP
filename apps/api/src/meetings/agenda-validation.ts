@@ -92,7 +92,6 @@ interface ReuniaoRow {
   start_at: Date;
   end_at: Date;
   timezone: string;
-  location: string | null;
   governance_body: string;
   organizer_name: string | null;
   agenda_validation_status: AgendaValidationStatus;
@@ -108,7 +107,7 @@ interface ReuniaoRow {
  */
 async function carregarReuniao(meetingId: string) {
   const { rows } = await pool.query<ReuniaoRow>(
-    `SELECT m.id, m.title, m.description, m.start_at, m.end_at, m.timezone, m.location,
+    `SELECT m.id, m.title, m.description, m.start_at, m.end_at, m.timezone,
             gb.name AS governance_body,
             u.name  AS organizer_name,
             m.agenda_validation_status
@@ -270,7 +269,6 @@ export async function enviarPautasParaValidacao(
     inicioEm: reuniao.start_at.toISOString(),
     fimEm: reuniao.end_at.toISOString(),
     fuso: reuniao.timezone,
-    local: reuniao.location,
     participantes,
     pautas,
   });

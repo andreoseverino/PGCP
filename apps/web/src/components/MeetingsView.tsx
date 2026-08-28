@@ -6,7 +6,6 @@ import {
   Download,
   Plus,
   Clock,
-  MapPin,
   Users,
   Layers,
   ArrowRight,
@@ -84,7 +83,6 @@ export default function MeetingsView({
     // Header labels for the list/table view
     colDate: language === "en" ? "Date & Time" : "Data e Horário",
     colMeeting: language === "en" ? "Meeting & Category" : "Reunião e Segmento",
-    colLocation: language === "en" ? "Location / Platform" : "Local / Canal",
     colExpected: language === "en" ? "Participants" : "Participantes",
     colStatus: language === "en" ? "Status" : "Status",
     colActions: language === "en" ? "Actions" : "Ações"
@@ -133,9 +131,8 @@ export default function MeetingsView({
       if (searchQuery.trim() !== "") {
         const query = searchQuery.toLowerCase();
         const matchesTitle = m.title.toLowerCase().includes(query);
-        const matchesLocation = m.location.toLowerCase().includes(query);
         const matchesOrg = m.organizer.toLowerCase().includes(query);
-        if (!matchesTitle && !matchesLocation && !matchesOrg) return false;
+        if (!matchesTitle && !matchesOrg) return false;
       }
 
       // 3. Status check:
@@ -193,9 +190,9 @@ export default function MeetingsView({
   }, [meetingsGroupedByMonth, activeTab]);
 
   const handleExportCSV = () => {
-    const headers = "ID,Title,Date,Time,Location,Category,Status,Organizer\n";
+    const headers = "ID,Title,Date,Time,Category,Status,Organizer\n";
     const dataRows = filteredMeetings.map(m => 
-      `"${m.id}","${m.title}","${m.date}","${m.startTime} - ${m.endTime}","${m.location}","${m.category}","${m.status}","${m.organizer}"`
+      `"${m.id}","${m.title}","${m.date}","${m.startTime} - ${m.endTime}","${m.category}","${m.status}","${m.organizer}"`
     ).join("\n");
     const csvContent = "data:text/csv;charset=utf-8," + headers + dataRows;
     const encodedUri = encodeURI(csvContent);
@@ -335,14 +332,24 @@ export default function MeetingsView({
             {/* Table Headers */}
             <thead>
               <tr className="bg-slate-50/75 border-b border-slate-200 text-slate-450 text-[10px] uppercase tracking-wider select-none">
-                <th className="py-4 px-5 font-bold">{t.colDate}</th>
-                <th className="py-4 px-5 font-bold text-center">{t.colMeeting}</th>
-                <th className="py-4 px-5 font-bold">{t.colLocation}</th>
-                <th className="py-4 px-5 font-bold text-center">{t.labelAgendaItems}</th>
-                <th className="py-4 px-5 font-bold text-center">{t.colExpected}</th>
-                <th className="py-4 px-5 font-bold text-center">{t.colStatus}</th>
-                <th className="py-4 px-5 font-bold text-center">% Concluído</th>
-                <th className="py-4 px-5 font-bold text-right">{t.colActions}</th>
+                {/*
+                  Largura das colunas declarada SO aqui, em porcentagem, e nunca
+                  repetida nas celulas: com `table-layout: auto` o cabecalho e
+                  quem dimensiona a coluna inteira.
+
+                  "Reunião e Segmento" leva `w-full` — o idioma de tabela para
+                  "fique com a sobra". As outras seis somam 64%, entao o titulo
+                  absorve o restante em vez de deixar folga onde ficava a antiga
+                  coluna de Local. Porcentagem, e nao pixel, para o conjunto
+                  continuar acompanhando a largura disponivel.
+                */}
+                <th className="py-4 px-5 font-bold w-[13%]">{t.colDate}</th>
+                <th className="py-4 px-5 font-bold w-full">{t.colMeeting}</th>
+                <th className="py-4 px-5 font-bold text-center w-[8%]">{t.labelAgendaItems}</th>
+                <th className="py-4 px-5 font-bold text-center w-[10%]">{t.colExpected}</th>
+                <th className="py-4 px-5 font-bold text-center w-[15%]">{t.colStatus}</th>
+                <th className="py-4 px-5 font-bold text-center w-[10%]">% Concluído</th>
+                <th className="py-4 px-5 font-bold text-right w-[8%]">{t.colActions}</th>
               </tr>
             </thead>
 
@@ -356,14 +363,14 @@ export default function MeetingsView({
               */}
               {meetingsLoading ? (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center text-slate-400 font-semibold text-xs">
+                  <td colSpan={7} className="py-16 text-center text-slate-400 font-semibold text-xs">
                     <span className="inline-block w-6 h-6 border-2 border-slate-200 border-t-[#00658d] rounded-full animate-spin mb-3" />
                     <div>{language === "en" ? "Loading meetings..." : "Carregando reuniões..."}</div>
                   </td>
                 </tr>
               ) : meetingsError ? (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center">
+                  <td colSpan={7} className="py-16 text-center">
                     <div className="inline-flex flex-col items-center gap-3 max-w-md">
                       <AlertCircle className="w-9 h-9 text-rose-400" />
                       <p className="text-xs font-semibold text-rose-700 leading-relaxed">{meetingsError}</p>
@@ -381,7 +388,7 @@ export default function MeetingsView({
                 </tr>
               ) : meetings.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center text-slate-400 font-semibold text-xs leading-relaxed">
+                  <td colSpan={7} className="py-16 text-center text-slate-400 font-semibold text-xs leading-relaxed">
                     <Calendar className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                     {language === "en"
                       ? "No meetings registered yet. Schedule the first one."
@@ -390,7 +397,7 @@ export default function MeetingsView({
                 </tr>
               ) : sortedMonthKeys.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center text-slate-400 font-semibold text-xs leading-relaxed">
+                  <td colSpan={7} className="py-16 text-center text-slate-400 font-semibold text-xs leading-relaxed">
                     <Calendar className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                     {language === "en" ? "No meetings match your current filters." : "Nenhuma reunião corresponde aos filtros aplicados."}
                   </td>
@@ -400,7 +407,7 @@ export default function MeetingsView({
                   <React.Fragment key={monthKey}>
                     {/* Month Section Header Row */}
                     <tr className="bg-slate-55 bg-slate-50/90 border-y border-slate-200 select-none">
-                      <td colSpan={8} className="py-2.5 px-5 font-bold font-sans text-[11px] text-[#00658d] uppercase tracking-wider">
+                      <td colSpan={7} className="py-2.5 px-5 font-bold font-sans text-[11px] text-[#00658d] uppercase tracking-wider">
                         {monthKey}
                       </td>
                     </tr>
@@ -445,7 +452,7 @@ export default function MeetingsView({
                           >
                             
                             {/* COLUMN 1: DATE & TIME */}
-                            <td className="py-4 px-5 align-middle w-[150px]">
+                            <td className="py-4 px-5 align-middle whitespace-nowrap">
                               <div className="flex items-center gap-3">
                                 {/* Colorful Date box widget */}
                                 <div className="flex flex-col items-center justify-center w-11 h-11 rounded-lg bg-[#f1f5f9] group-hover:bg-[#e2e8f0] select-none shrink-0 leading-none transition-colors">
@@ -463,7 +470,7 @@ export default function MeetingsView({
                             
                             {/* COLUMN 2: MEETING & CATEGORY */}
                             <td className="py-4 px-5 align-middle">
-                              <div className="max-w-md">
+                              <div className="min-w-0">
                                 <span className="px-2 py-0.5 rounded text-[9.5px] font-bold uppercase bg-slate-100 text-slate-500 border border-slate-200 inline-flex items-center gap-1 mb-1.5 leading-none">
                                   <Layers className="w-2.5 h-2.5" />
                                   {meet.category || "Governance"}
@@ -471,38 +478,30 @@ export default function MeetingsView({
                                 <div className="text-xs font-bold text-slate-900 group-hover:text-[#00658d] transition-colors leading-snug line-clamp-1">
                                   {meet.title}
                                 </div>
-                                <div className="text-[10.5px] text-slate-400 font-semibold mt-0.5 truncate max-w-sm">
+                                <div className="text-[10.5px] text-slate-400 font-semibold mt-0.5 truncate">
                                   {meet.description || "Nenhuma introdução adicional."}
                                 </div>
                               </div>
                             </td>
 
-                            {/* COLUMN 3: LOCATION */}
-                            <td className="py-4 px-5 align-middle">
-                              <div className="flex items-center gap-2 text-slate-600 max-w-xs">
-                                <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                                <span className="truncate text-[11px] font-semibold">{meet.location}</span>
-                              </div>
-                            </td>
-                            
-                            {/* COLUMN 4: AGENDA ITEMS */}
+                            {/* COLUMN 3: AGENDA ITEMS */}
                             <td className="py-4 px-5 align-middle text-center">
                                 <span className="text-xs font-bold text-[#00658d] bg-[#00658d]/10 px-2.5 py-1 rounded-lg">
                                     {meet.agenda ? meet.agenda.length : (meet.agendaItemsCount ?? 0)}
                                 </span>
                             </td>
                             
-                            {/* COLUMN 5: PARTICIPANTS */}
+                            {/* COLUMN 4: PARTICIPANTS */}
                             <td className="py-4 px-5 align-middle text-center">
                                 <span className="text-xs font-bold text-slate-700 bg-slate-100 px-2.5 py-1 rounded-lg">
                                     {meet.participants ? meet.participants.length : (meet.expectedParticipantsCount ?? 0)}
                                 </span>
                             </td>
 
-                            {/* COLUMN 6: STATUS BADGE */}
+                            {/* COLUMN 5: STATUS BADGE */}
                             <td className="py-4 px-5 align-middle text-center">
                               <span
-                                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider ${
+                                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider whitespace-nowrap ${
                                   meet.status === "Needs Approval"
                                     ? "bg-rose-50 text-rose-600"
                                     : meet.status === "Draft"
@@ -553,7 +552,7 @@ export default function MeetingsView({
                                 </span>
                             </td>
 
-                            {/* COLUMN 7: ACTIONS */}
+                            {/* COLUMN 6: ACTIONS */}
                             <td className="py-4 px-5 align-middle text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-2">
                                 <button
@@ -578,7 +577,7 @@ export default function MeetingsView({
             </tbody>
             <tfoot className="border-t border-slate-100">
                 <tr>
-                    <td colSpan={8} className="py-4"></td>
+                    <td colSpan={7} className="py-4"></td>
                 </tr>
             </tfoot>
           </table>

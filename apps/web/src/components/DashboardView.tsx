@@ -782,9 +782,6 @@ export default function DashboardView({
                         {evento.end ? ` – ${evento.end.slice(11, 16)}` : ""}
                         {evento.organizer ? ` · ${evento.organizer}` : ""}
                       </p>
-                      {evento.location && (
-                        <p className="text-[10px] text-slate-400 font-medium truncate">{evento.location}</p>
-                      )}
                     </div>
 
                     {/*

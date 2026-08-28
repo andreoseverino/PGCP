@@ -37,7 +37,6 @@ export default function QuickSearchView({
     // Scan Meetings & Agenda items
     const matchedMeetings = meetings.filter(m => 
       m.title.toLowerCase().includes(lc) || 
-      m.location.toLowerCase().includes(lc) ||
       m.description.toLowerCase().includes(lc) ||
       m.organizer.toLowerCase().includes(lc) ||
       m.agenda?.some(a => a.title.toLowerCase().includes(lc) || a.author.toLowerCase().includes(lc))

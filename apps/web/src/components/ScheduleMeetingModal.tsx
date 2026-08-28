@@ -542,8 +542,6 @@ export default function ScheduleMeetingModal({
         startTime,
         endTime,
         timezone: timeZone,
-        // `location` saiu do formulário de Novo Evento; a reunião nasce sem local
-        // (coluna nullable, preservada para reuniões antigas e edição no detalhe).
         recurrence,
         participants,
         agendaItems: agenda

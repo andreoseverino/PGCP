@@ -128,7 +128,6 @@ export interface CreateMeetingInput {
   endAt: string;
   /** Identificador IANA. Abreviacoes como EST e BRT sao recusadas. */
   timezone: string;
-  location?: string;
   meetingLink?: string;
   recurrence?: string;
   pendingRequirements?: string;
@@ -501,7 +500,6 @@ export function parseCreateInput(body: unknown): CreateMeetingInput {
     startAt: startAt.toISOString(),
     endAt: endAt.toISOString(),
     timezone: fusoHorario(dados.timezone),
-    location: textoOpcional(dados.location, "location", 300),
     meetingLink: urlHttpOpcional(dados.meetingLink, "meetingLink", 2000),
     recurrence: textoOpcional(dados.recurrence, "recurrence", 100),
     pendingRequirements: textoOpcional(dados.pendingRequirements, "pendingRequirements", 2000),
@@ -783,10 +781,10 @@ export async function createMeeting(
                organizer_user_id, organizer_entra_tenant_id, organizer_entra_object_id,
                organizer_name, organizer_email,
                title, description,
-               start_at, end_at, timezone, location, meeting_link,
+               start_at, end_at, timezone, meeting_link,
                online_meeting_provider,
                status, recurrence, pending_requirements)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
          RETURNING id`,
       [
         input.governanceBodyId,
@@ -801,7 +799,6 @@ export async function createMeeting(
         input.startAt,
         input.endAt,
         input.timezone,
-        input.location ?? null,
         input.meetingLink ?? null,
         // Regra de dominio, nao entrada: o corpo nao tem como pedir reuniao sem
         // Teams porque essa reuniao nao existe no PGCP.

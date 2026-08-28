@@ -69,7 +69,6 @@ export interface MeetingSummary {
   endAt: string;
   /** Identificador IANA, ex.: America/Sao_Paulo. Nunca abreviacao como BRT. */
   timezone: string;
-  location: string | null;
   /** Link digitado a mao (sala de terceiro). NAO e o link do Teams. */
   meetingLink: string | null;
   /**
@@ -211,7 +210,6 @@ interface MeetingRow {
   start_at: Date;
   end_at: Date;
   timezone: string;
-  location: string | null;
   meeting_link: string | null;
   online_meeting_provider: "teamsForBusiness" | null;
   status: MeetingStatus;
@@ -280,7 +278,6 @@ function toSummary(row: MeetingRow): MeetingSummary {
     startAt: row.start_at.toISOString(),
     endAt: row.end_at.toISOString(),
     timezone: row.timezone,
-    location: row.location,
     meetingLink: row.meeting_link,
     onlineMeetingProvider: row.online_meeting_provider,
     status: row.status,
@@ -363,7 +360,6 @@ const SUMMARY_SELECT = `
          m.start_at,
          m.end_at,
          m.timezone,
-         m.location,
          m.meeting_link,
          m.online_meeting_provider,
          m.status,

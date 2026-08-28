@@ -365,7 +365,7 @@ de outro ambiente.
 ### PGCP
 
 - [ ] Smoke test de **criação**: evento aparece na caixa do organizador, com
-      organizer, título, data, fuso e local corretos
+      organizer, título, data e fuso corretos
 - [ ] Smoke test de **atualização**: alteração marca `stale`; ressincronizar faz
       PATCH no **mesmo** evento, sem duplicata
 - [ ] Convite chega ao participante pelo próprio evento do calendário —
