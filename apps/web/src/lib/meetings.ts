@@ -168,6 +168,93 @@ export const addAgendaItemParticipant = (meetingId: string, itemId: string, payl
 export const removeAgendaItemParticipant = (meetingId: string, itemId: string, participantId: string) =>
   mutar(`/meetings/${meetingId}/agenda-items/${itemId}/participants/${participantId}`, "DELETE");
 
+// -----------------------------------------------------------------------------
+// Mensagem Teams por pauta
+// -----------------------------------------------------------------------------
+
+export const TEAMS_MESSAGE_MAX_LENGTH = 4000;
+
+export interface TeamsDeliveryResult {
+  participantId: string;
+  participantName: string;
+  status: "sent" | "failed";
+  code?: string;
+  retryAfterSeconds?: number;
+}
+
+export interface TeamsMessageResponse {
+  meetingId: string;
+  agendaItemId: string;
+  total: number;
+  sent: number;
+  failed: number;
+  results: TeamsDeliveryResult[];
+  retryAfterSeconds?: number;
+}
+
+/** Envia somente texto; os destinatarios sao resolvidos pela API a partir da pauta. */
+export const sendAgendaItemTeamsMessage = (
+  meetingId: string,
+  itemId: string,
+  message: string
+) => apiRequest<TeamsMessageResponse>(
+  `/meetings/${meetingId}/agenda-items/${itemId}/teams-message`,
+  {
+    auth: true,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message })
+  }
+);
+
+/** Chamada automatica: texto e destinatarios sao determinados integralmente pela API. */
+export const callAgendaItemParticipants = (
+  meetingId: string,
+  itemId: string
+) => apiRequest<TeamsMessageResponse>(
+  `/meetings/${meetingId}/agenda-items/${itemId}/teams-call`,
+  { auth: true, method: "POST" }
+);
+
+export function describeTeamsMessageError(error: unknown, language: "en" | "pt"): string {
+  const pt = language === "pt";
+  const status = (error as { status?: number } | null)?.status;
+  const message = (error as { message?: string } | null)?.message;
+
+  if (status === 400) return message ?? (pt ? "Mensagem inválida." : "Invalid message.");
+  if (status === 401) return pt ? "Sua sessão expirou. Entre novamente." : "Your session expired. Sign in again.";
+  if (status === 403) {
+    return pt
+      ? "Não foi possível enviar em nome da sua conta. Entre novamente; se persistir, procure a Secretaria de Governança."
+      : "The message could not be sent as your account. Sign in again; if it persists, contact Governance.";
+  }
+  if (status === 404) {
+    return pt
+      ? "A pauta não foi encontrada nesta reunião. Recarregue a página."
+      : "The agenda item was not found in this meeting. Reload the page.";
+  }
+  if (status === 422) {
+    return message ?? (
+      pt
+        ? "A reunião ainda não possui os dados necessários para realizar a chamada."
+        : "The meeting does not yet have the information required for this call."
+    );
+  }
+  if (status === 429) {
+    return pt
+      ? "O Teams está limitando os envios. Aguarde o tempo indicado e tente novamente."
+      : "Teams is throttling messages. Wait for the indicated time and try again.";
+  }
+  if (status === 0) {
+    return pt
+      ? "Não foi possível falar com o servidor. Verifique sua conexão."
+      : "Could not reach the server. Check your connection.";
+  }
+  return pt
+    ? "Não foi possível enviar a mensagem no Teams. Tente novamente."
+    : "The Teams message could not be sent. Try again.";
+}
+
 /**
  * Reordena enviando a lista COMPLETA de ids na ordem desejada.
  *

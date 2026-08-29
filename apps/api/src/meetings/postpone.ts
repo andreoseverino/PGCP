@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
+import { garantirResponsavelNaBiblioteca } from "../agenda-topics/write.js";
 import type { MeetingActor } from "./create.js";
 import { findMeeting, type MeetingDetail } from "./service.js";
 
@@ -127,6 +128,19 @@ export async function postponeAgendaItem(
         agendaItemId,
       ],
     );
+
+    const { rows: copia } = await client.query<{ id: string }>(
+      `SELECT id
+         FROM agenda_topics
+        WHERE source_meeting_id = $1
+          AND source_agenda_item_id = $2`,
+      [meetingId, agendaItemId],
+    );
+    await garantirResponsavelNaBiblioteca(client, copia[0]!.id, {
+      label: item.responsible_label,
+      entraTenantId: item.responsible_entra_tenant_id,
+      entraObjectId: item.responsible_entra_object_id,
+    });
 
     // UMA entrada de dominio, nao uma por INSERT: quem le a trilha precisa ver
     // o ato ("postergou"), nao a mecanica interna.

@@ -556,7 +556,8 @@ retroage; editar a pauta não altera o mestre). Editar é **UPDATE parcial por U
 **Participantes POR PAUTA (Opção A, 020).** `meeting_agenda_item_participants` liga a
 pauta a **`meeting_participants`** (não ao diretório) — conceito distinto de
 `meeting_agenda_item_presenters` (apresentador). Regra: *todo participante de uma
-pauta é também participante da reunião*. **Adicionar** alguém reutiliza o participante
+pauta é também participante da reunião* e, para pessoa identificada no Entra,
+*todo responsável é participante da própria pauta*. **Adicionar** alguém reutiliza o participante
 se já existe (dedup por `entra_object_id`/`user_id`, nunca por nome; sem `UNIQUE` novo)
 ou o **adiciona à reunião** pelo mesmo fluxo da aba Participantes (calendário fica
 `stale`, auditoria). **Remover** da pauta **remove da reunião** — apaga o
@@ -564,6 +565,10 @@ ou o **adiciona à reunião** pelo mesmo fluxo da aba Participantes (calendário
 pautas. Ao vincular da Biblioteca, os `agenda_topic_participants` viram
 `meeting_participants` + vínculos (snapshot; depois independente). Vincular/desvincular
 é estrutural → reabre a validação antes da reunião (016).
+
+Na Biblioteca, `participants` é persistido e reconciliado apenas quando o campo vem no
+PATCH; `participants: []` remove opcionais, mas preserva o responsável. A migration 022
+completa de forma aditiva os vínculos legados de responsáveis identificáveis.
 
 `execution_status`: `pending` · `presenting` · `completed` · `postponed`.
 Postergar/retomar são rotas próprias, com procedência **estrutural** — o backend
@@ -716,7 +721,8 @@ a quem está autenticado.
 | Outlook — escrita (evento) | **homologado** | evento real criado e atualizado na mailbox de homologação |
 | Exchange RBAC + Resource Scope | **homologado** | testes `InScope = True` (autorizada) e `False` (controle) |
 | Microsoft Teams | **homologado** | `isOnlineMeeting` no próprio evento; `joinUrl` real; ingresso validado |
-| PostgreSQL | **funcional** | migrations 001–014 aplicadas; `/health` conectado |
+| Teams — mensagem e Chamar | **homologado** | OBO delegado; mensagem manual e Chamar entregues; hyperlink e HTML do Chamar validados visualmente |
+| PostgreSQL | **funcional** | migrations 001–022 versionadas e cobertas pela validação local; `/health` conectado |
 | Auditoria | **homologada** | `GET /audit-logs` restrito a `PGCP.Admin`, lendo a trilha real |
 | `Mail.Send` **Delegated** | ✅ **concedida e validada no tenant real** | envia as pautas para validação (PDF) pela caixa do usuário, via OBO. A versão **Aplicação** não é usada |
 | DocuSign | **futuro** | domínio modelado; sem credenciais e sem rota |
@@ -923,7 +929,7 @@ Exchange
 
 Banco
 [ ] PostgreSQL gerenciado, TLS obrigatório
-[ ] aplicar migrations 001–014
+[ ] aplicar migrations 001–022
 [ ] usuário de aplicação com privilégio mínimo
 
 Validação
@@ -981,7 +987,7 @@ Lacunas reais — nenhuma é bug:
 | DocuSign | domínio pronto, **sem** provedor, credenciais ou rota |
 | Reunião confidencial/restrita | **não existe** no modelo |
 | Experiência pública | futura; hoje o usuário sem role já tem leitura corporativa |
-| Cobertura de testes | runner existe (`node --test`, `npm test` na raiz, 16 testes verdes); cobre production-guard, rate limit e validação de entrada. **Sem** teste para `validateClaims` e sem testes no frontend |
+| Cobertura de testes | `npm test` na raiz executa API e frontend: 263 testes verdes nesta entrega, incluindo autenticação/claims, RBAC, rate limit, participantes, calendário/Graph e Teams |
 | `packages/contracts` | pasta reservada: só um README, **sem `package.json`** e portanto **fora dos `workspaces`**. O contrato segue **duplicado** — a API declara os tipos por módulo e o frontend os redeclara nos adaptadores de `apps/web/src/lib/*-adapters.ts` |
 | Status `approved`/`closed` da Ata | previstos no CHECK, sem fluxo que os produza |
 | Ata e Anotações sem papel próprio | escrita é de `PGCP.Assessoria`; não há papel de Secretaria distinto |

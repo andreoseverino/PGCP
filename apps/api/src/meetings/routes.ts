@@ -11,6 +11,15 @@ import {
   syncMeetingCalendar,
 } from "../calendar/service.js";
 import { GraphError } from "../graph/client.js";
+import { teamsMessageRateLimit } from "../security/limiters.js";
+import {
+  assertEmptyTeamsCallInput,
+  parseTeamsMessageInput,
+  sendAgendaItemTeamsCall,
+  sendAgendaItemTeamsMessage,
+  type TeamsMessageActor,
+  type TeamsMessageResponse,
+} from "../teams/messages.js";
 import {
   aprovarPautas,
   enviarPautasParaValidacao,
@@ -237,6 +246,47 @@ function mutacao(
   };
 }
 
+/** Contrato HTTP compartilhado pelos dois envios delegados ao Teams. */
+function teamsOperation(
+  context: string,
+  execute: (
+    req: Request,
+    actor: TeamsMessageActor,
+    token: string,
+  ) => Promise<TeamsMessageResponse>,
+) {
+  return async (req: Request, res: Response): Promise<void> => {
+    const baseActor = atorDa(req);
+    const principal = req.principal;
+    const token = req.entraAccessToken;
+    if (!baseActor || !principal || !token) {
+      res.status(500).json({ error: "Erro interno ao resolver a credencial da sessão." });
+      return;
+    }
+
+    try {
+      const result = await execute(
+        req,
+        { ...baseActor, entraObjectId: principal.entraObjectId },
+        token,
+      );
+      if (result.retryAfterSeconds !== undefined) {
+        res.setHeader("Retry-After", String(result.retryAfterSeconds));
+      }
+      res.json(result);
+    } catch (error) {
+      if (error instanceof GraphError) {
+        if (error.retryAfterSeconds !== undefined) {
+          res.setHeader("Retry-After", String(error.retryAfterSeconds));
+        }
+        res.status(error.status ?? 502).json({ error: error.message, code: error.code });
+        return;
+      }
+      sendError(res, error, context);
+    }
+  };
+}
+
 /**
  * PATCH /meetings/:id — cabecalho e status formal.
  *
@@ -289,6 +339,48 @@ meetingsRouter.post("/:id/agenda-items/:agendaItemId/participants", requirePgcpA
 meetingsRouter.delete("/:id/agenda-items/:agendaItemId/participants/:participantId", requirePgcpAssessoria, mutacao("desvincular participante da pauta", (req, ator) =>
   removeAgendaItemParticipant(req.params.id as string, req.params.agendaItemId as string, req.params.participantId as string, ator),
 ));
+
+/**
+ * Mensagem individual no Teams para os participantes reais da pauta.
+ *
+ * O corpo leva somente o texto. Reuniao, pauta, destinatarios e identidade do
+ * remetente sao resolvidos no servidor; o token recebido pela API e trocado por
+ * um token Graph delegado via OBO e nunca sai desta requisicao.
+ */
+meetingsRouter.post(
+  "/:id/agenda-items/:agendaItemId/teams-message",
+  requirePgcpAssessoria,
+  teamsMessageRateLimit,
+  teamsOperation("enviar mensagem no Teams", (req, actor, token) =>
+    sendAgendaItemTeamsMessage(
+      req.params.id as string,
+      req.params.agendaItemId as string,
+      parseTeamsMessageInput(req.body),
+      actor,
+      token,
+    ),
+  ),
+);
+
+/**
+ * Chamada operacional da pauta. O navegador nao informa texto nem pessoas: a
+ * API monta a mensagem e resolve os participantes pela mesma relacao do envio
+ * manual, preservando IDOR, OBO, sucesso parcial, auditoria e rate limiting.
+ */
+meetingsRouter.post(
+  "/:id/agenda-items/:agendaItemId/teams-call",
+  requirePgcpAssessoria,
+  teamsMessageRateLimit,
+  teamsOperation("chamar participantes no Teams", (req, actor, token) => {
+    assertEmptyTeamsCallInput(req.body);
+    return sendAgendaItemTeamsCall(
+      req.params.id as string,
+      req.params.agendaItemId as string,
+      actor,
+      token,
+    );
+  }),
+);
 
 /**
  * Reordenacao em UMA transacao, com a lista completa de ids.

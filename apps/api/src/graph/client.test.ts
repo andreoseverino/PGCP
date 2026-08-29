@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { GraphError, graphRequest } from "./client.js";
+import { GraphError, getDirectoryAddressesByObjectIds, graphRequest } from "./client.js";
 
 /**
  * Testes do cliente do Microsoft Graph — foco nas RESPOSTAS DE SUCESSO.
@@ -142,4 +142,60 @@ test("erro sem corpo JSON continua sendo erro, não sucesso vazio", async () => 
   // Corpo vazio em resposta de ERRO não pode cair no caminho de "sucesso sem
   // corpo": o status é quem decide.
   await assert.rejects(() => chamar(400, ""), GraphError);
+});
+
+// --- resolução corporativa por OID ------------------------------------------
+
+test("endereços por OID usam batches de no máximo 20 e eliminam duplicados", async () => {
+  const objectIds = Array.from({ length: 22 }, (_, indice) => `oid-${indice + 1}`);
+  const tamanhos: number[] = [];
+
+  const resultado = await getDirectoryAddressesByObjectIds(
+    config("https://graph.microsoft.com/v1.0"),
+    [...objectIds, "OID-1"],
+    async (_config, requests) => {
+      tamanhos.push(requests.length);
+      return {
+        responses: requests.map((request) => {
+          const id = decodeURIComponent(request.url.match(/\/users\/([^?]+)/)?.[1] ?? "");
+          assert.match(request.url, /\?\$select=id,mail,userPrincipalName$/);
+          return {
+            id: request.id,
+            status: 200,
+            body: { id, mail: `${id}@empresa.com`, userPrincipalName: `${id}@tenant.local` },
+          };
+        }),
+      };
+    },
+  );
+
+  assert.deepEqual(tamanhos, [20, 2]);
+  assert.equal(resultado.size, 22);
+  assert.equal(resultado.get("oid-1")?.mail, "oid-1@empresa.com");
+});
+
+test("404 individual não inventa endereço e falha de batch é sanitizada", async () => {
+  const graphConfig = config("https://graph.microsoft.com/v1.0");
+  const ausente = await getDirectoryAddressesByObjectIds(
+    graphConfig,
+    ["oid-ausente"],
+    async (_config, requests) => ({ responses: [{ id: requests[0]!.id, status: 404 }] }),
+  );
+  assert.equal(ausente.size, 0);
+
+  await assert.rejects(
+    () =>
+      getDirectoryAddressesByObjectIds(
+        graphConfig,
+        ["oid-protegido"],
+        async (_config, requests) => ({ responses: [{ id: requests[0]!.id, status: 403 }] }),
+      ),
+    (erro: unknown) => {
+      assert.ok(erro instanceof GraphError);
+      assert.equal(erro.code, "directory_batch_failed");
+      assert.equal(erro.status, 403);
+      assert.doesNotMatch(erro.message, /oid-protegido/);
+      return true;
+    },
+  );
 });

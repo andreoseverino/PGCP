@@ -20,6 +20,10 @@ import { createRateLimiter } from "./rate-limit.js";
  *                    rede (banco, OIDC, Graph, DocuSign). Caro e externo. 10/60s
  *                    por admin permite conferir as integracoes sem virar
  *                    ferramenta de varredura contra hosts externos.
+ *
+ *  teams-message     POST de mensagem por pauta. Cada destinatario implica
+ *                    criar/localizar um chat e enviar uma mensagem; 10/min por
+ *                    pessoa cobre uso humano e protege a cota compartilhada.
  */
 
 export const directorySearchRateLimit = createRateLimiter({
@@ -36,6 +40,12 @@ export const ownCalendarRateLimit = createRateLimiter({
 
 export const integrationTestRateLimit = createRateLimiter({
   name: "integration-test",
+  windowMs: 60_000,
+  max: 10,
+});
+
+export const teamsMessageRateLimit = createRateLimiter({
+  name: "teams-message",
   windowMs: 60_000,
   max: 10,
 });

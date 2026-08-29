@@ -25,10 +25,13 @@ Auditoria de código              ✅ concluída
 Hardening PostgreSQL             ✅ concluído
 Hardening de produção no código  ✅ concluído
 npm audit                        ✅ 0 vulnerabilidades
-Build / typecheck / testes       ✅ verdes (117 testes)
+Build / typecheck / testes       ✅ verdes (263 testes)
 Pré-go-live local                ✅ concluído
 Mail.Send Delegated / OBO        ✅ validado no tenant real (envio e recebimento)
 Validação de pautas — pós-envio  ⚠️ revalidar após a correção do 202 (ver §9)
+Teams Chat — código/testes        ✅ implementado e validado localmente
+Teams Chat — permissões Entra    ✅ Chat.Create + ChatMessage.Send Delegated concedidas
+Teams Chat — entrega real        ✅ mensagem manual e Chamar validados no tenant real
 Pré-go-live corporativo          ⚠️ pendente (ver docs/go-live.md)
 ```
 
@@ -254,6 +257,7 @@ Chave = `oid` do principal → **isolamento por usuário**.
 | --- | --- | --- |
 | `GET /directory/users` | **40 / 10 s** | Busca no **Microsoft Graph** — cota de throttling é do **tenant**; um usuário não pode degradar o Graph para todos. Typeahead com debounce; 40/10 s dá folga e corta enumeração roteirizada. |
 | `GET /calendar/me` | **30 / 10 s** | Agenda própria via Graph (OBO); cobre recargas sem martelar o Graph. |
+| `POST /meetings/:id/agenda-items/:agendaItemId/teams-message` e `…/teams-call` | **10 / 60 s** compartilhado | Cada uso faz até duas chamadas Graph por participante (chat 1:1 + mensagem); limita abuso e protege a cota do tenant. |
 | `POST /integrations/:id/test` | **10 / 60 s** | Admin; dispara probe de rede (banco, OIDC, Graph, DocuSign) — evita virar scanner contra hosts externos. |
 
 Ao estourar: **HTTP 429** `{code:"rate_limited"}` + `Retry-After` + cabeçalhos
@@ -416,6 +420,7 @@ e `apps/api/src/graph/client.ts`.
 | Meu calendário | Delegated (OBO) | `Calendars.Read` | `GET /me/calendarView` | App Registration da API (Entra) |
 | Sincronizar reunião / Teams / Outlook | Application | `Calendars.ReadWrite` | `POST/PATCH /users/{id}/events` (com `isOnlineMeeting`) | **Exchange Online RBAC for Applications** (Resource Scope de mailbox) |
 | Enviar pautas para validação | **Delegated (OBO)** | `Mail.Send` | `POST /me/sendMail` | App Registration da API (Entra) — ✅ **concedida e validada** |
+| Mensagem individual ou chamada por pauta | **Delegated (OBO)** | `Chat.Create` + `ChatMessage.Send` | `POST /chats` + `POST /chats/{id}/messages` | App Registration da API (Entra) — ✅ **concedidas e validadas no tenant real** |
 | SPA (navegador) | — | **nenhuma** | — | zero permissão de Graph |
 
 Pontos-chave:
@@ -426,7 +431,8 @@ Pontos-chave:
 - **Exchange RBAC com Resource Scope** limita **quais mailboxes** a aplicação
   alcança. **Não** conceder `Calendars.ReadWrite` (Application) **tenant-wide no
   Entra** — passaria por cima do escopo do Exchange.
-- Teams-messages: **adiado**, sem permissão concedida — nada a reduzir.
+- Teams-messages usa exclusivamente as permissões **delegadas** já concedidas;
+  não existe fallback app-only, bot ou conta técnica.
 
 ### `Mail.Send` — Delegated com OBO, nunca Application
 
@@ -514,12 +520,53 @@ O envio acontece antes de qualquer escrita no banco. Se a falha ocorrer **depois
 de o Graph aceitar, a API devolve mensagem explícita dizendo que o e-mail **foi
 enviado** e que não se deve reenviar, e registra o descompasso na trilha.
 
-### Como validar (⚠️ pendente externo)
+### Mensagens do Teams — Delegated com OBO, nunca Application
+
+Fluxo implementado em `apps/api/src/teams/messages.ts`:
+
+```
+usuário autenticado → SPA (token da API) → API PGCP → OBO
+→ Microsoft Graph → chat 1:1 → participante da pauta
+```
+
+| Estado | Evidência |
+| --- | --- |
+| **IMPLEMENTADO NO CÓDIGO** | endpoints de mensagem manual e chamada automática protegidos por `PGCP.Assessoria`; destinatários consultados em `meeting_agenda_item_participants`; identidade por `entra_tenant_id + entra_object_id`; `POST /chats` one-on-one e `POST /chats/{id}/messages`; resultado individual e sucesso parcial; rate limit compartilhado por `oid` |
+| **VALIDADO POR TESTE AUTOMATIZADO** | payload Graph, OBO com `.default` e verificação dos scopes concedidos; Chamar com cronograma/link oficiais; um/vários destinatários; sucesso parcial; pauta vazia; link ausente; timezone; IDOR; RBAC; 401/403/429; identidade ausente; limites de mensagem; auditoria distinta e sem conteúdo |
+| **CONFIGURADO NO ENTRA** | `Chat.Create` — Delegated — concedida; `ChatMessage.Send` — Delegated — concedida |
+| **VALIDADO MANUALMENTE NO TENANT CORPORATIVO** | troca OBO com `.default` e scopes exigidos aceita; mensagem manual e Chamar entregues pelo usuário autenticado; hyperlink clicável e apresentação HTML do Chamar confirmados visualmente |
+
+O navegador continua pedindo somente `access_as_user` para a API PGCP. A API
+valida `aud` como o client id da própria API, conserva a assertion somente na
+requisição e pede ao Entra um token Graph delegado com
+`https://graph.microsoft.com/.default`. Antes de usar o token, a API exige que
+o resultado validado pelo MSAL contenha `Chat.Create` e `ChatMessage.Send`.
+Nenhum access token ou refresh token é persistido, devolvido ao frontend ou
+escrito em log.
+
+Os destinatários não vêm do corpo: a API valida o par reunião/pauta e consulta a
+relação persistida da pauta. Participante sem o par Microsoft inequívoco falha
+individualmente; não há busca aproximada por nome ou e-mail. Cada destinatário
+gera auditoria de sucesso/falha com ator, pauta e nome exibido, mas nunca com o
+texto da mensagem. Em `teams-call`, a própria API acrescenta o título da reunião,
+o título e o horário persistido da pauta, a duração e o link de acesso real
+(`calendar.joinUrl`, com `meetingLink` válido como fallback legado); nenhum desses
+campos vem do navegador.
+
+### Validação no ambiente corporativo
+
+Realizado nesta entrega: convite Outlook recebido pelo participante; mensagem
+manual e Chamar entregues no Teams; hyperlink e apresentação HTML do Chamar
+confirmados visualmente.
+
+Checklist geral do ambiente, com itens independentes desta entrega:
 - `POST /integrations/graph/test` (Admin) → `connected`;
 - busca real em `GET /directory/users`;
 - agendar reunião → **evento no Outlook** do organizador + reunião **Teams** com
   `joinUrl`;
 - `GET /calendar/me` retorna agenda;
+- enviar mensagem na aba Anotações e confirmar, em contas distintas, remetente
+  igual ao usuário autenticado, recebimento individual e resultado parcial;
 - mailbox **dentro** do Resource Scope → sucesso;
 - mailbox **fora** do escopo → `ErrorAccessDenied`.
 
@@ -696,6 +743,9 @@ Build / typecheck / testes       ✅ verdes
 Pré-go-live local                ✅ concluído
 Mail.Send Delegated / OBO        ✅ validado no tenant real
 Validação de pautas — pós-envio  ⚠️ revalidar após a correção do 202
+Teams Chat — código/testes        ✅ implementado e validado localmente
+Teams Chat — permissões Entra    ✅ Chat.Create + ChatMessage.Send Delegated concedidas
+Teams Chat — entrega real        ✅ mensagem manual e Chamar validados no tenant real
 Pré-go-live corporativo          ⚠️ pendente
 ```
 

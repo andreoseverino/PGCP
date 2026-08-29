@@ -117,6 +117,50 @@ export interface AgendaTopicPayload {
   participants?: TopicParticipantPayload[];
 }
 
+/** Hidrata o formulário de edição a partir do detalhe canônico da API. */
+export function topicParticipantsToPayload(
+  participants: readonly TopicParticipant[],
+): TopicParticipantPayload[] {
+  return participants.map((participant) => ({
+    ...(participant.userId ? { userId: participant.userId } : {}),
+    ...(participant.entraObjectId ? { entraObjectId: participant.entraObjectId } : {}),
+    ...(participant.displayName ?? participant.userName
+      ? { displayName: participant.displayName ?? participant.userName ?? undefined }
+      : {}),
+    ...(participant.email ? { email: participant.email } : {}),
+  }));
+}
+
+/**
+ * Reflexo imediato da invariante na Biblioteca. A API repete a garantia dentro
+ * da transação; aqui apenas evitamos que o formulário mostre um estado que o
+ * backend nunca aceitaria persistir.
+ */
+export function ensureResponsibleTopicParticipant(
+  participants: readonly TopicParticipantPayload[],
+  responsibleLabel: string | null | undefined,
+  responsibleEntraObjectId: string | null | undefined,
+): TopicParticipantPayload[] {
+  const displayName = responsibleLabel?.trim();
+  const entraObjectId = responsibleEntraObjectId?.trim();
+  if (!displayName || !entraObjectId) return [...participants];
+
+  const normalized = entraObjectId.toLowerCase();
+  if (participants.some((participant) => participant.entraObjectId?.toLowerCase() === normalized)) {
+    return [...participants];
+  }
+  return [...participants, { entraObjectId, displayName }];
+}
+
+export function isResponsibleTopicParticipant(
+  participant: TopicParticipantPayload,
+  responsibleEntraObjectId: string | null | undefined,
+): boolean {
+  const participantOid = participant.entraObjectId?.trim().toLowerCase();
+  const responsibleOid = responsibleEntraObjectId?.trim().toLowerCase();
+  return Boolean(participantOid && responsibleOid && participantOid === responsibleOid);
+}
+
 // -----------------------------------------------------------------------------
 // Adaptação para o view model das telas
 // -----------------------------------------------------------------------------

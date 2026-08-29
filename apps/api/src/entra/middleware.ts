@@ -16,7 +16,7 @@ declare global {
     interface Request {
       principal?: AuthenticatedPrincipal;
       /**
-       * Token de acesso recebido, exclusivamente para troca On-Behalf-Of.
+       * Token de acesso recebido, exclusivamente para trocas On-Behalf-Of.
        * NUNCA logar, devolver ou persistir.
        */
       entraAccessToken?: string;
@@ -91,8 +91,8 @@ export async function requireEntraAuth(req: Request, res: Response, next: NextFu
 
   req.principal = result.principal;
   /*
-   * Token BRUTO guardado apenas na requisicao, para o fluxo On-Behalf-Of do
-   * calendario proprio — e o unico lugar que precisa dele.
+   * Token BRUTO guardado apenas na requisicao para os fluxos On-Behalf-Of
+   * (calendario proprio, e-mail e mensagens Teams).
    *
    * Nunca vai para log, nunca para resposta, nunca para o banco. Morre com a
    * requisicao.

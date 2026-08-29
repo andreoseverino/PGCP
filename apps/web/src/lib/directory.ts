@@ -12,6 +12,7 @@
  */
 
 import { ApiError, apiRequest } from "./api";
+import { enderecoDoDiretorio } from "./corporate-email";
 
 /** Tamanho mínimo do termo. Espelha a validação da API; evita ida inútil. */
 export const DIRECTORY_MIN_QUERY = 3;
@@ -55,7 +56,7 @@ export function searchDirectoryUsers(
 
 /** E-mail exibível. O UPN cobre contas sem `mail` preenchido no diretório. */
 export function directoryEmail(user: DirectoryUser): string | null {
-  return user.mail ?? user.userPrincipalName ?? null;
+  return enderecoDoDiretorio(user) ?? null;
 }
 
 /**

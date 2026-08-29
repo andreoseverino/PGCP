@@ -164,6 +164,10 @@ test("meetings: as rotas de maior risco estao individualmente protegidas", () =>
     ["POST", "/:id/agenda-items"],
     ["PATCH", "/:id/agenda-items/:agendaItemId"],
     ["DELETE", "/:id/agenda-items/:agendaItemId"],
+    // Envia em nome de quem esta na sessao e nunca aceita destinatarios do cliente.
+    ["POST", "/:id/agenda-items/:agendaItemId/teams-message"],
+    // Chamada automatica usa o mesmo OBO e resolve texto/destinatarios no servidor.
+    ["POST", "/:id/agenda-items/:agendaItemId/teams-call"],
     ["PUT", "/:id/agenda-items/order"],
     ["POST", "/:id/agenda-items/:agendaItemId/postpone"],
     ["POST", "/:id/agenda-items/:agendaItemId/resume"],

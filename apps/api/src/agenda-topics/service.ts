@@ -246,7 +246,8 @@ export async function listTopicParticipants(topicId: string): Promise<TopicParti
     entra_object_id: string | null;
   }>(
     `SELECT p.id, p.user_id, u.name AS user_name, p.display_name, p.email,
-            p.entra_tenant_id, p.entra_object_id
+            coalesce(p.entra_tenant_id, u.entra_tenant_id) AS entra_tenant_id,
+            coalesce(p.entra_object_id, u.entra_object_id) AS entra_object_id
        FROM agenda_topic_participants p
        LEFT JOIN users u ON u.id = p.user_id
       WHERE p.agenda_topic_id = $1

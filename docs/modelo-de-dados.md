@@ -28,7 +28,7 @@ arquitetura genérica. Cada afirmação aponta para o código que a sustenta.
 | B | Ciclos de reunião e de ata são independentes | Dois `status` separados; `approved_by_secretariat` **removido** |
 | C | Apresentador pessoa só via N:N | `presenter_participant_id` **removido**; sobra `presenter_label` para coletivos |
 | D | Seed adiado | Nenhuma massa de dados definida nesta etapa |
-| E | Biblioteca não tem convidado externo | `agenda_topic_participants` referencia só `users` |
+| E | Biblioteca aceita as três naturezas de participante desde a migration 004 | `agenda_topic_participants` admite `users`, identidade Entra ou convidado por e-mail |
 
 | # | Decisão | Efeito no modelo |
 |---|---|---|
@@ -507,20 +507,26 @@ sem vínculo nasce `false`.
 
 ### 5.7 `agenda_topic_participants`
 
-Forma normalizada de `StandaloneAgenda.participants[]` (hoje lista de nomes).
-Aponta **só para `users`** porque a seleção vem do cadastro (`UnlinkedAgendasView`).
+Forma normalizada de `StandaloneAgenda.participants[]`. Aceita usuário interno,
+identidade Entra ou convidado identificado por e-mail, conforme a evolução da migration 004.
 
 | Campo | Tipo |
 |---|---|
-| `agenda_topic_id` | uuid FK → `agenda_topics`, PK composta, `CASCADE` |
-| `user_id` | uuid FK → `users`, PK composta, `RESTRICT` |
-| `created_at` | timestamptz |
+| `id` | uuid PK |
+| `agenda_topic_id` | uuid FK → `agenda_topics`, `CASCADE` |
+| `user_id` | uuid FK → `users`, opcional, `RESTRICT` |
+| `entra_tenant_id` / `entra_object_id` | uuid, identidade Entra opcional e pareada |
+| `display_name` / `email` | text, snapshots opcionais conforme a identidade |
+| `created_at` / `updated_at` | timestamptz |
 
-**Convidado externo não entra aqui** (Decisão E). A biblioteca é um catálogo sem
-contexto de reunião, e participante externo pertence a uma sessão específica. Quando a
-pauta for adicionada a uma reunião, o externo é vinculado ao `meeting_agenda_item`
-correspondente, via `meeting_agenda_item_presenters` → `meeting_participants`.
-Nunca se cria usuário fictício para permitir vínculo na biblioteca.
+Índices únicos parciais deduplicam, por pauta, `user_id`, o par Entra e e-mail de
+convidado. Não se cria usuário fictício para permitir vínculo na Biblioteca.
+
+**Invariante.** Quando o responsável é uma pessoa identificada pelo par Entra, ele
+também pertence a `agenda_topic_participants`. A criação e a edição garantem o vínculo;
+o PATCH sem `participants` preserva a coleção, enquanto `participants: []` remove apenas
+os opcionais e mantém o responsável. A migration 022 repara vínculos legados ausentes
+sem remover participantes existentes e sem correspondência por nome.
 
 ### 5.8 `meeting_agenda_items` — pauta **dentro** de uma reunião
 
@@ -623,6 +629,12 @@ reunião, elimina o vínculo.
 
 **Regra de negócio (aprovada).** *Todo participante de uma pauta é também participante da
 reunião.*
+
+Além disso, quando o responsável é uma pessoa identificada no Entra, ele é
+obrigatoriamente participante da própria pauta. A aplicação garante sua existência em
+`meeting_participants` e o vínculo nesta tabela na mesma transação. Trocar o responsável
+inclui o novo sem remover automaticamente o anterior. A migration 022 completa vínculos
+legados já identificáveis, sem remover dados existentes.
 
 - **Adicionar** alguém a uma pauta: se já é participante da reunião, **reutiliza** o
   `meeting_participant` (deduplicação pela lógica da aplicação — por `entra_object_id`/`user_id`,

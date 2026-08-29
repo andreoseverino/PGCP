@@ -891,7 +891,7 @@ export async function createMeeting(
       }
 
       /*
-       * INVARIANTE: responsável pessoa participa da reunião.
+       * INVARIANTE: responsável pessoa participa da reunião e desta pauta.
        *
        * Depois do laço de participantes de propósito: quem o corpo já enviou
        * como participante está gravado, então o find-or-create reconhece a
@@ -899,7 +899,14 @@ export async function createMeeting(
        * aqui é a garantia de que a regra vale mesmo para um POST vindo direto
        * da API, sem tela nenhuma.
        */
-      await garantirResponsavelComoParticipante(client, meetingId, item, actor, input.title);
+      await garantirResponsavelComoParticipante(
+        client,
+        meetingId,
+        itemRows[0]!.id,
+        item,
+        actor,
+        input.title,
+      );
     }
 
     // Na MESMA transacao: ou o ato e a trilha existem juntos, ou nenhum dos

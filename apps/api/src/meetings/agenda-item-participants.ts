@@ -201,7 +201,7 @@ export async function snapshotTopicParticipantsIntoItem(
 }
 
 // -----------------------------------------------------------------------------
-// INVARIANTE: responsável de pauta que é PESSOA participa da reunião
+// INVARIANTE: responsável de pauta que é PESSOA participa da reunião E da pauta
 // -----------------------------------------------------------------------------
 
 /**
@@ -254,7 +254,7 @@ export function participanteDoResponsavel(
 
 /**
  * Garante a invariável para UMA pauta: responsável pessoa está em
- * `meeting_participants`.
+ * `meeting_participants` e em `meeting_agenda_item_participants`.
  *
  * Idempotente — `findOrCreateMeetingParticipant` deduplica por identificador
  * estável (`user_id` / `entra_object_id`), nunca por nome. Quem já é
@@ -264,20 +264,28 @@ export function participanteDoResponsavel(
  * Roda na transação de quem chama, que também é responsável por serializar o
  * find-or-create com `SELECT ... FROM meetings WHERE id = $1 FOR UPDATE`.
  *
- * NÃO vincula à pauta (`meeting_agenda_item_participants`): responder por um
- * assunto não é o mesmo que estar na lista daquele assunto, e o vínculo tem
- * semântica de remoção própria (desvincular tira a pessoa da reunião inteira).
+ * A PK composta torna o vínculo idempotente. Assim criação, importação e troca
+ * de responsável podem repetir a garantia sem duplicar uma seleção existente.
  */
 export async function garantirResponsavelComoParticipante(
   client: PoolClient,
   meetingId: string,
+  agendaItemId: string,
   responsavel: ResponsavelDePauta,
   actor: MeetingActor,
   titulo: string,
 ): Promise<{ id: string; criado: boolean } | null> {
   const input = participanteDoResponsavel(responsavel);
   if (!input) return null;
-  return findOrCreateMeetingParticipant(client, meetingId, input, actor, titulo);
+  const participante = await findOrCreateMeetingParticipant(
+    client,
+    meetingId,
+    input,
+    actor,
+    titulo,
+  );
+  await vincularParticipanteNaPauta(client, agendaItemId, participante.id);
+  return participante;
 }
 
 /**

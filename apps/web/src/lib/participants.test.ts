@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   addParticipantOnce,
+  enderecoDoDiretorio,
   papelPadraoDoParticipante,
   participanteDoResponsavel,
   pautasSobResponsabilidade
@@ -22,6 +23,24 @@ import {
 
 const OID_THIAGO = "22222222-2222-4222-8222-222222222222";
 const OID_MURILO = "33333333-3333-4333-8333-333333333333";
+
+// --- endereço corporativo ---------------------------------------------------
+
+test("diretório prioriza mail válido e usa UPN como fallback", () => {
+  assert.equal(
+    enderecoDoDiretorio({ mail: "caixa@empresa.com", userPrincipalName: "login@empresa.com" }),
+    "caixa@empresa.com"
+  );
+  assert.equal(
+    enderecoDoDiretorio({ mail: null, userPrincipalName: "login@empresa.com" }),
+    "login@empresa.com"
+  );
+  assert.equal(
+    enderecoDoDiretorio({ mail: "inválido", userPrincipalName: "login@empresa.com" }),
+    "login@empresa.com"
+  );
+  assert.equal(enderecoDoDiretorio({ mail: "inválido", userPrincipalName: null }), undefined);
+});
 
 // --- quem vira participante --------------------------------------------------
 

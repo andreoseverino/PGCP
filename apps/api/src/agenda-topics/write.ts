@@ -91,7 +91,8 @@ async function inserirParticipante(
   topicId: string,
   input: TopicParticipantInput,
   tenantId: string,
-): Promise<string> {
+  ignorarDuplicidade = false,
+): Promise<string | null> {
   if (input.userId) {
     const { rows } = await client.query("SELECT id FROM users WHERE id = $1", [input.userId]);
     if (rows.length === 0) {
@@ -105,6 +106,7 @@ async function inserirParticipante(
     `INSERT INTO agenda_topic_participants
             (agenda_topic_id, user_id, display_name, email, entra_tenant_id, entra_object_id)
           VALUES ($1, $2, $3, $4, $5, $6)
+       ${ignorarDuplicidade ? "ON CONFLICT DO NOTHING" : ""}
        RETURNING id`,
     [
       topicId,
@@ -117,7 +119,90 @@ async function inserirParticipante(
     ],
   );
 
-  return rows[0]!.id;
+  return rows[0]?.id ?? null;
+}
+
+interface ResponsavelDaBiblioteca {
+  label: string | null | undefined;
+  entraTenantId: string | null | undefined;
+  entraObjectId: string | null | undefined;
+}
+
+/**
+ * Garante o responsavel-pessoa na lista da pauta da Biblioteca.
+ *
+ * Identidade e sempre o par Entra tenant+oid. O rotulo sozinho pode ser area,
+ * orgao ou coletivo e nunca e usado para tentar reconhecer uma pessoa.
+ */
+export async function garantirResponsavelNaBiblioteca(
+  client: PoolClient,
+  topicId: string,
+  responsavel: ResponsavelDaBiblioteca,
+): Promise<void> {
+  const displayName = responsavel.label?.trim();
+  const tenantId = responsavel.entraTenantId?.trim();
+  const entraObjectId = responsavel.entraObjectId?.trim();
+  if (!displayName || !tenantId || !entraObjectId) return;
+
+  await inserirParticipante(
+    client,
+    topicId,
+    { displayName, entraObjectId },
+    tenantId,
+    true,
+  );
+}
+
+/**
+ * `participants` presente no PATCH representa a lista opcional completa.
+ *
+ * A reconciliacao roda na mesma transacao do UPDATE. A lista e substituida
+ * somente quando o campo foi enviado; em seguida o responsavel e reinserido de
+ * forma idempotente. Falha em qualquer INSERT desfaz tambem o DELETE e o PATCH.
+ * Nenhuma correspondencia usa displayName.
+ */
+export async function reconciliarParticipantesDaBiblioteca(
+  client: PoolClient,
+  topicId: string,
+  participants: readonly TopicParticipantInput[],
+  participantTenantId: string,
+  responsavel: ResponsavelDaBiblioteca,
+): Promise<void> {
+  await client.query(
+    "DELETE FROM agenda_topic_participants WHERE agenda_topic_id = $1",
+    [topicId],
+  );
+
+  const seen = new Set<string>();
+  const stableKey = (participant: TopicParticipantInput): string | null => {
+    if (participant.userId) return `user:${participant.userId.toLowerCase()}`;
+    if (participant.entraObjectId) {
+      return `entra:${participantTenantId.toLowerCase()}:${participant.entraObjectId.toLowerCase()}`;
+    }
+    if (participant.email) return `email:${participant.email.toLowerCase()}`;
+    // Nome não é identidade. Duas entradas apenas textuais podem ser homônimas.
+    return null;
+  };
+
+  for (const participant of participants) {
+    const key = stableKey(participant);
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    await inserirParticipante(
+      client,
+      topicId,
+      participant,
+      participantTenantId,
+      true,
+    );
+  }
+
+  const responsibleKey = responsavel.entraTenantId && responsavel.entraObjectId
+    ? `entra:${responsavel.entraTenantId.toLowerCase()}:${responsavel.entraObjectId.toLowerCase()}`
+    : null;
+  if (!responsibleKey || !seen.has(responsibleKey)) {
+    await garantirResponsavelNaBiblioteca(client, topicId, responsavel);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -315,9 +400,17 @@ export async function createAgendaTopic(
 
     const topicId = rows[0]!.id;
 
-    for (const p of input.participants ?? []) {
-      await inserirParticipante(client, topicId, p, actor.entraTenantId);
-    }
+    await reconciliarParticipantesDaBiblioteca(
+      client,
+      topicId,
+      input.participants ?? [],
+      actor.entraTenantId,
+      {
+        label: input.responsibleLabel,
+        entraTenantId: input.responsibleEntraObjectId ? actor.entraTenantId : null,
+        entraObjectId: input.responsibleEntraObjectId,
+      },
+    );
 
     await recordAuditIn(client, {
       actorUserId: actor.userId,
@@ -389,6 +482,38 @@ export async function updateAgendaTopic(
       );
     }
 
+    const atual = await client.query<{
+      responsible_label: string | null;
+      responsible_entra_tenant_id: string | null;
+      responsible_entra_object_id: string | null;
+    }>(
+      `SELECT responsible_label,
+              responsible_entra_tenant_id,
+              responsible_entra_object_id
+         FROM agenda_topics
+        WHERE id = $1`,
+      [id],
+    );
+    const responsavel = {
+      label: atual.rows[0]!.responsible_label,
+      entraTenantId: atual.rows[0]!.responsible_entra_tenant_id,
+      entraObjectId: atual.rows[0]!.responsible_entra_object_id,
+    };
+
+    if (input.participants !== undefined) {
+      await reconciliarParticipantesDaBiblioteca(
+        client,
+        id,
+        input.participants,
+        actor.entraTenantId,
+        responsavel,
+      );
+    } else {
+      // PATCH sem `participants` preserva a colecao. A unica inclusao possivel
+      // e o novo responsavel, necessaria para manter a invariante.
+      await garantirResponsavelNaBiblioteca(client, id, responsavel);
+    }
+
     await recordAuditIn(client, {
       actorUserId: actor.userId,
       actorName: actor.name,
@@ -433,6 +558,38 @@ export async function addTopicParticipant(
   return findAgendaTopic(topicId);
 }
 
+/** Barreira final: o participante que representa o responsavel nao sai. */
+export async function exigirParticipanteRemovivelDaBiblioteca(
+  client: PoolClient,
+  topicId: string,
+  participantId: string,
+): Promise<string> {
+  const { rows } = await client.query<{ title: string; is_responsible: boolean }>(
+    `SELECT t.title,
+            EXISTS (
+              SELECT 1
+                FROM agenda_topic_participants p
+                LEFT JOIN users u ON u.id = p.user_id
+               WHERE p.id = $2
+                 AND p.agenda_topic_id = t.id
+                 AND t.responsible_entra_object_id IS NOT NULL
+                 AND coalesce(p.entra_tenant_id, u.entra_tenant_id) = t.responsible_entra_tenant_id
+                 AND coalesce(p.entra_object_id, u.entra_object_id) = t.responsible_entra_object_id
+            ) AS is_responsible
+       FROM agenda_topics t
+      WHERE t.id = $1`,
+    [topicId, participantId],
+  );
+  if (rows.length === 0) throw new HttpError(404, "Pauta não encontrada na biblioteca.");
+  if (rows[0]!.is_responsible) {
+    throw new HttpError(
+      409,
+      "O responsável atual deve permanecer participante da pauta. Troque o responsável antes de removê-lo.",
+    );
+  }
+  return rows[0]!.title;
+}
+
 export async function removeTopicParticipant(
   topicId: string,
   participantId: string,
@@ -442,11 +599,11 @@ export async function removeTopicParticipant(
   assertValidId(participantId, "Identificador do participante");
 
   await emTransacao(async (client) => {
-    const { rows } = await client.query<{ title: string }>(
-      "SELECT title FROM agenda_topics WHERE id = $1",
-      [topicId],
+    const title = await exigirParticipanteRemovivelDaBiblioteca(
+      client,
+      topicId,
+      participantId,
     );
-    if (rows.length === 0) throw new HttpError(404, "Pauta não encontrada na biblioteca.");
 
     // `agenda_topic_id` no WHERE: sem ele, o id de um participante de outra
     // pauta apagaria a linha errada.
@@ -462,7 +619,7 @@ export async function removeTopicParticipant(
       action: "Participante removido da pauta",
       entityType: "agenda_topic_participant",
       entityId: participantId,
-      entityLabel: rows[0]!.title,
+      entityLabel: title,
       status: "success",
     });
   });

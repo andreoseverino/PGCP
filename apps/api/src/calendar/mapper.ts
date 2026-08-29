@@ -72,13 +72,16 @@ export function instanteParaHoraLocal(instante: Date, timezone: string): string 
 // Participantes -> attendees
 // -----------------------------------------------------------------------------
 
-/** Participante como o banco o entrega, ja com o e-mail do usuario resolvido. */
+/** Participante como o banco/Graph o entrega para resolução do convite. */
 export interface ParticipanteParaConvite {
   participantId: string;
   displayName: string | null;
-  /** `users.email` quando ha conta no PGCP; senao o e-mail do proprio registro. */
+  /** `mail` local/Graph ou snapshot equivalente. */
   email: string | null;
+  /** UPN local/Graph; só é usado quando `email` não é utilizável. */
+  userPrincipalName: string | null;
   userId: string | null;
+  entraTenantId: string | null;
   entraObjectId: string | null;
 }
 
@@ -104,6 +107,21 @@ export function enderecoUtilizavel(email: string | null | undefined): boolean {
 }
 
 /**
+ * Regra corporativa única: `mail` válido, depois UPN válido, senão falha.
+ * Nunca constrói endereço a partir de nome ou domínio presumido.
+ */
+export function resolverEnderecoCorporativo(
+  mail: string | null | undefined,
+  userPrincipalName: string | null | undefined,
+): string | null {
+  const enderecoMail = mail?.trim();
+  if (enderecoUtilizavel(enderecoMail)) return enderecoMail!;
+
+  const enderecoUpn = userPrincipalName?.trim();
+  return enderecoUtilizavel(enderecoUpn) ? enderecoUpn! : null;
+}
+
+/**
  * Converte participantes em attendees.
  *
  * NUNCA deriva endereco de nome. Quem nao tem e-mail utilizavel sai na lista
@@ -116,9 +134,9 @@ export function montarAttendees(participantes: ParticipanteParaConvite[]): Resul
   const vistos = new Set<string>();
 
   for (const p of participantes) {
-    const email = p.email?.trim();
+    const email = resolverEnderecoCorporativo(p.email, p.userPrincipalName);
 
-    if (!enderecoUtilizavel(email)) {
+    if (!email) {
       semEndereco.push({
         participantId: p.participantId,
         displayName: p.displayName?.trim() || "(sem nome)",
@@ -127,13 +145,13 @@ export function montarAttendees(participantes: ParticipanteParaConvite[]): Resul
     }
 
     // O mesmo endereco convidado duas vezes e um convite so.
-    const chave = email!.toLowerCase();
+    const chave = email.toLowerCase();
     if (vistos.has(chave)) continue;
     vistos.add(chave);
 
     attendees.push({
       emailAddress: {
-        address: email!,
+        address: email,
         ...(p.displayName?.trim() ? { name: p.displayName.trim() } : {}),
       },
       // Todos como `required`: o PGCP nao modela participante opcional, e

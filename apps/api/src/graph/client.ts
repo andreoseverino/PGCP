@@ -453,6 +453,109 @@ export interface DirectoryUser {
   accountEnabled: boolean | null;
 }
 
+/** Somente os campos necessários para resolver um endereço corporativo. */
+export type DirectoryAddress = Pick<DirectoryUser, "id" | "mail" | "userPrincipalName">;
+
+interface GraphBatchRequest {
+  id: string;
+  method: "GET";
+  url: string;
+}
+
+interface GraphBatchResponseItem {
+  id: string;
+  status: number;
+  body?: Partial<DirectoryAddress>;
+}
+
+interface GraphBatchResponse {
+  responses?: GraphBatchResponseItem[];
+}
+
+type DirectoryBatchRequester = (
+  config: GraphConfig,
+  requests: GraphBatchRequest[],
+) => Promise<GraphBatchResponse>;
+
+const requestDirectoryBatch: DirectoryBatchRequester = (config, requests) =>
+  graphRequest<GraphBatchResponse>(config, "/$batch", {
+    method: "POST",
+    body: { requests },
+  });
+
+/** Limite documentado pelo Graph para requisições dentro de um JSON batch. */
+const GRAPH_BATCH_LIMIT = 20;
+
+/**
+ * Recupera mail/UPN por identidade forte, sem busca por nome e sem N+1.
+ *
+ * O mapa é indexado pelo OID normalizado em minúsculas. O corpo do batch, que
+ * contém os OIDs, fica encapsulado em `graphRequest` e nunca é registrado.
+ * `requester` existe para que os testes não acessem o Graph real.
+ */
+export async function getDirectoryAddressesByObjectIds(
+  config: GraphConfig,
+  objectIds: readonly string[],
+  requester: DirectoryBatchRequester = requestDirectoryBatch,
+): Promise<Map<string, DirectoryAddress>> {
+  const unicos = new Map<string, string>();
+  for (const raw of objectIds) {
+    const objectId = raw.trim();
+    const chave = objectId.toLowerCase();
+    if (objectId && !unicos.has(chave)) unicos.set(chave, objectId);
+  }
+
+  const entradas = [...unicos.entries()];
+  const encontrados = new Map<string, DirectoryAddress>();
+
+  for (let inicio = 0; inicio < entradas.length; inicio += GRAPH_BATCH_LIMIT) {
+    const lote = entradas.slice(inicio, inicio + GRAPH_BATCH_LIMIT);
+    const requests: GraphBatchRequest[] = lote.map(([, objectId], indice) => ({
+      id: String(indice),
+      method: "GET",
+      url: `/users/${encodeURIComponent(objectId)}?$select=id,mail,userPrincipalName`,
+    }));
+    const resposta = await requester(config, requests);
+    const porId = new Map((resposta.responses ?? []).map((item) => [item.id, item]));
+
+    for (let indice = 0; indice < lote.length; indice += 1) {
+      const [chave] = lote[indice]!;
+      const item = porId.get(String(indice));
+      if (!item) {
+        throw new GraphError(
+          "O Microsoft Graph devolveu uma resposta incompleta ao resolver endereços corporativos.",
+          "directory_batch_incomplete",
+        );
+      }
+      if (item.status === 404) continue;
+      if (item.status !== 200) {
+        throw new GraphError(
+          "O Microsoft Graph não conseguiu resolver os endereços corporativos.",
+          "directory_batch_failed",
+          item.status,
+        );
+      }
+
+      const id = typeof item.body?.id === "string" ? item.body.id.trim() : "";
+      if (!id || id.toLowerCase() !== chave) {
+        throw new GraphError(
+          "O Microsoft Graph devolveu uma identidade inesperada ao resolver endereços corporativos.",
+          "directory_identity_mismatch",
+        );
+      }
+
+      encontrados.set(chave, {
+        id,
+        mail: typeof item.body?.mail === "string" ? item.body.mail : null,
+        userPrincipalName:
+          typeof item.body?.userPrincipalName === "string" ? item.body.userPrincipalName : null,
+      });
+    }
+  }
+
+  return encontrados;
+}
+
 export type SearchTermError = "too_short" | "too_long" | "invalid_characters";
 
 export type SearchTermValidation =

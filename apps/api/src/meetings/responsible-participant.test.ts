@@ -9,9 +9,11 @@ import {
   garantirResponsavelComoParticipante,
   participanteDoResponsavel,
 } from "./agenda-item-participants.js";
+import { parseAgendaItemParticipantInput } from "./update.js";
 
 /**
- * INVARIANTE DE NEGOCIO: responsavel de pauta que e PESSOA participa da reuniao.
+ * INVARIANTE DE NEGOCIO: responsavel de pauta que e PESSOA participa da reuniao
+ * e da propria pauta.
  *
  * Os testes rodam SEM banco. As funcoes que tocam SQL recebem o `PoolClient` por
  * parametro, entao um cliente falso responde as consultas e guarda o que foi
@@ -30,6 +32,7 @@ const ATOR = {
   entraTenantId: "00000000-0000-4000-8000-0000000000ff",
 };
 const REUNIAO = "11111111-1111-4111-8111-111111111111";
+const PAUTA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OID = "22222222-2222-4222-8222-222222222222";
 
 interface Consulta {
@@ -106,7 +109,7 @@ test("identidade sem rotulo, e rotulo em branco, nao viram participante", () => 
 
 // --- efeito no banco ---------------------------------------------------------
 
-test("responsavel pessoa e ADICIONADO quando ainda nao esta na reuniao", async () => {
+test("responsavel pessoa e ADICIONADO na reuniao e vinculado a pauta", async () => {
   const { client, consultas } = clienteFalso((sql) => {
     if (sql.includes("FROM users")) return { rows: [] };
     if (sql.includes("SELECT id FROM meeting_participants")) return { rows: [] };
@@ -117,6 +120,7 @@ test("responsavel pessoa e ADICIONADO quando ainda nao esta na reuniao", async (
   const resultado = await garantirResponsavelComoParticipante(
     client,
     REUNIAO,
+    PAUTA,
     { responsibleLabel: "Thiago Rufino", responsibleEntraObjectId: OID },
     ATOR,
     "Reunião de Diretoria",
@@ -134,6 +138,11 @@ test("responsavel pessoa e ADICIONADO quando ainda nao esta na reuniao", async (
   // bastaria olhar a posição do parâmetro, e isso amarraria o teste ao formato
   // do INSERT em vez de ao comportamento.
   assert.equal(insert.params.includes(true), false, "nada entra marcado como confirmado");
+
+  const vinculo = consultas.find((c) => c.sql.includes("INSERT INTO meeting_agenda_item_participants"));
+  assert.ok(vinculo, "deveria vincular o responsável à pauta");
+  assert.deepEqual(vinculo.params, [PAUTA, "novo-participante"]);
+  assert.match(vinculo.sql, /ON CONFLICT DO NOTHING/);
 });
 
 test("responsavel que JA e participante nao duplica", async () => {
@@ -146,6 +155,7 @@ test("responsavel que JA e participante nao duplica", async () => {
   const resultado = await garantirResponsavelComoParticipante(
     client,
     REUNIAO,
+    PAUTA,
     { responsibleLabel: "Thiago Rufino", responsibleEntraObjectId: OID },
     ATOR,
     "Reunião de Diretoria",
@@ -153,6 +163,8 @@ test("responsavel que JA e participante nao duplica", async () => {
 
   assert.deepEqual(resultado, { id: "ja-existe", criado: false });
   assert.equal(executou(consultas, "INSERT INTO meeting_participants"), false);
+  const vinculo = consultas.find((c) => c.sql.includes("INSERT INTO meeting_agenda_item_participants"));
+  assert.deepEqual(vinculo?.params, [PAUTA, "ja-existe"]);
 });
 
 test("responsavel coletivo nao gera consulta nenhuma", async () => {
@@ -161,6 +173,7 @@ test("responsavel coletivo nao gera consulta nenhuma", async () => {
   const resultado = await garantirResponsavelComoParticipante(
     client,
     REUNIAO,
+    PAUTA,
     { responsibleLabel: "Todos" },
     ATOR,
     "Reunião de Diretoria",
@@ -180,6 +193,7 @@ test("deduplicacao consulta identificador estavel, nunca nome", async () => {
   await garantirResponsavelComoParticipante(
     client,
     REUNIAO,
+    PAUTA,
     { responsibleLabel: "Thiago Rufino", responsibleEntraObjectId: OID },
     ATOR,
     "Reunião",
@@ -274,6 +288,43 @@ test("criar reuniao, adicionar pauta e trocar responsavel aplicam a garantia", (
       `${assinatura} precisa garantir o responsável como participante`,
     );
   }
+});
+
+test("a garantia cria o vinculo consumido pelos destinatarios Teams", () => {
+  const garantia = corpoDaFuncao(
+    fonteDe("./agenda-item-participants.ts"),
+    "export async function garantirResponsavelComoParticipante(",
+  );
+  assert.match(garantia, /vincularParticipanteNaPauta\(client, agendaItemId, participante\.id\)/);
+
+  const teams = fonteDe("../teams/messages.ts");
+  assert.match(teams, /meeting_agenda_item_participants/);
+  assert.match(teams, /aip\.meeting_agenda_item_id = ai\.id/);
+});
+
+test("Biblioteca vira participantes da reuniao e da pauta pelo snapshot existente", () => {
+  const snapshot = corpoDaFuncao(
+    fonteDe("./agenda-item-participants.ts"),
+    "export async function snapshotTopicParticipantsIntoItem(",
+  );
+  assert.match(snapshot, /FROM agenda_topic_participants WHERE agenda_topic_id = \$1/);
+  assert.match(snapshot, /findOrCreateMeetingParticipant\(client, meetingId/);
+  assert.match(snapshot, /vincularParticipanteNaPauta\(client, agendaItemId, id\)/);
+});
+
+test("API de vinculo nao aceita meeting_participant escolhido pelo cliente", () => {
+  const parsed = parseAgendaItemParticipantInput({
+    meetingParticipantId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    entraObjectId: OID,
+    displayName: "Thiago Rufino",
+  });
+  assert.equal("meetingParticipantId" in parsed, false);
+
+  const update = fonteDe("./update.ts");
+  const add = corpoDaFuncao(update, "export async function addAgendaItemParticipant(");
+  assert.match(add, /exigirPautaNaReuniao\(client, meetingId, agendaItemId\)/);
+  assert.match(add, /findOrCreateMeetingParticipant\(client, meetingId/);
+  assert.doesNotMatch(add, /input\.meetingParticipantId/);
 });
 
 test("os caminhos que criam participante travam a reuniao", () => {

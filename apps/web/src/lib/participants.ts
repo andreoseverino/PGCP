@@ -1,4 +1,5 @@
 import type { Participant } from "../types";
+export { enderecoDoDiretorio } from "./corporate-email";
 
 /**
  * O mínimo necessário para dizer se duas entradas são a mesma pessoa.
@@ -49,27 +50,8 @@ export function addParticipantOnce<T extends ParticipantRef>(lista: readonly T[]
   return isAlreadyParticipant(lista, novo) ? [...lista] : [...lista, novo];
 }
 
-/**
- * Endereço utilizável de uma pessoa do diretório.
- *
- * `mail` é o endereço de correio propriamente dito. Quando vem nulo — conta sem
- * caixa publicada — o UPN costuma ser um endereço roteável e é o único
- * substituto legítimo; mas só se PARECER um endereço, porque UPN não é
- * obrigatoriamente um e-mail.
- *
- * Nunca construir endereço a partir do nome.
- */
-export function enderecoDoDiretorio(pessoa: {
-  mail?: string | null;
-  userPrincipalName?: string | null;
-}): string | undefined {
-  const candidato = pessoa.mail?.trim() || pessoa.userPrincipalName?.trim();
-  if (!candidato) return undefined;
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidato) ? candidato : undefined;
-}
-
 // -----------------------------------------------------------------------------
-// INVARIANTE: responsável de pauta que é PESSOA participa da reunião
+// INVARIANTE: responsável de pauta que é PESSOA participa da reunião E da pauta
 // -----------------------------------------------------------------------------
 //
 // A garantia REAL é do backend (`meetings/agenda-item-participants.ts`), que

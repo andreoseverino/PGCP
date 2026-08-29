@@ -420,16 +420,10 @@ export default function ScheduleMeetingModal({
   const [newAgendaAuthor, setNewAgendaAuthor] = useState("");
 
   /*
-   * REMOVIDO: o efeito que transformava todo `author` da agenda em
-   * participante, com papel "Apresentador" e presença confirmada.
-   *
-   * Escapava apenas o literal "Todos", então áreas e coletivos —
-   * "Finance Committee", "Everyone", "Audit Committee" — entravam na lista
-   * como se fossem pessoas e contavam para o quórum.
-   *
-   * Responsável pela pauta e participante da reunião passaram a ser decisões
-   * separadas: escolher o responsável não mexe em participantes, e incluir a
-   * pessoa exige marcar a opção explícita ao lado do campo.
+   * O efeito acima inclui somente responsável com identidade inequívoca do
+   * diretório. Áreas e coletivos — "Finance Committee", "Everyone", "Audit
+   * Committee" — continuam fora: não são pessoas e não podem contar para o
+   * quórum. A presença também nunca nasce confirmada.
    */
 
   const t = {

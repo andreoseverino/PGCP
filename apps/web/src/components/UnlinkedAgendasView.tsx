@@ -1,8 +1,13 @@
 import React, { useState, useEffect } from "react";
-import type {
-  BibliotecaFormInput,
-  TaxonomyItem,
-  TopicParticipantPayload
+import {
+  describeTopicError,
+  ensureResponsibleTopicParticipant,
+  getAgendaTopic,
+  isResponsibleTopicParticipant,
+  topicParticipantsToPayload,
+  type BibliotecaFormInput,
+  type TaxonomyItem,
+  type TopicParticipantPayload,
 } from "../lib/agenda-topics";
 import { 
   ListTodo, 
@@ -60,6 +65,8 @@ export default function UnlinkedAgendasView({
 }: UnlinkedAgendasViewProps) {
   // Editing state
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [loadingEditId, setLoadingEditId] = useState<string | null>(null);
+  const [editLoadError, setEditLoadError] = useState<string | null>(null);
 
   // Form states matching standard inputs
   const [title, setTitle] = useState("");
@@ -199,6 +206,11 @@ export default function UnlinkedAgendasView({
      */
     const totalMinutos = Number(durationHours) * 60 + Number(durationMinutes);
 
+    const participantesComResponsavel = ensureResponsibleTopicParticipant(
+      participants,
+      author,
+      authorEntraObjectId,
+    );
     const input = {
       title: title.trim(),
       description: description.trim(),
@@ -209,7 +221,7 @@ export default function UnlinkedAgendasView({
       natureId: pautaNatureId || undefined,
       generatesActionItem: isFupForm,
       isCircularTheme: isCircular,
-      participants
+      participants: participantesComResponsavel
     };
 
     if (editingId) {
@@ -236,33 +248,48 @@ export default function UnlinkedAgendasView({
     setSelectedParticipantToAdd("");
   };
 
-  const handleStartEdit = (agenda: StandaloneAgenda) => {
-    setEditingId(agenda.id);
-    setTitle(agenda.title);
-    setAuthor(agenda.author);
-    /*
-     * Registro legado (`author` textual, sem vínculo) continua renderizando: o
-     * picker exibe o valor existente como chip e só o substitui se a pessoa
-     * escolher alguém do diretório. Nenhuma migração automática.
-     */
-    setAuthorFromDirectory(null);
-    setAuthorEntraObjectId(agenda.authorEntraObjectId || "");
-    setDescription(agenda.description || "");
-    setParticipants([]);
-    setIsFupForm(agenda.isFUP || false);
-    // Identidade do cadastro, não o nome — e cai no primeiro quando a pauta
-    // ainda não tem tipo/natureza definidos.
-    setPautaTypeId(agenda.pautaTypeId || pautaTypes[0]?.id || "");
-    setPautaNatureId(agenda.pautaNatureId || pautaNatures[0]?.id || "");
-    setIsCircular(agenda.isCircularTheme === true);
+  const handleStartEdit = async (agenda: StandaloneAgenda) => {
+    if (loadingEditId) return;
+    setLoadingEditId(agenda.id);
+    setEditLoadError(null);
+    try {
+      // GET de detalhe: a listagem tem apenas o contador, nunca a coleção.
+      const detail = await getAgendaTopic(agenda.id);
+      const hydrated = ensureResponsibleTopicParticipant(
+        topicParticipantsToPayload(detail.participants),
+        detail.responsible?.label,
+        detail.responsible?.entraObjectId,
+      );
 
-    const parsed = parseDurationString(agenda.duration);
-    setDurationHours(parsed.hours);
-    setDurationMinutes(parsed.minutes);
+      setEditingId(agenda.id);
+      setTitle(agenda.title);
+      setAuthor(agenda.author);
+      /*
+       * Registro legado (`author` textual, sem vínculo) continua renderizando:
+       * o picker só substitui a identidade após escolha explícita.
+       */
+      setAuthorFromDirectory(null);
+      setAuthorEntraObjectId(agenda.authorEntraObjectId || "");
+      setDescription(agenda.description || "");
+      setParticipants(hydrated);
+      setIsFupForm(agenda.isFUP || false);
+      setPautaTypeId(agenda.pautaTypeId || pautaTypes[0]?.id || "");
+      setPautaNatureId(agenda.pautaNatureId || pautaNatures[0]?.id || "");
+      setIsCircular(agenda.isCircularTheme === true);
+
+      const parsed = parseDurationString(agenda.duration);
+      setDurationHours(parsed.hours);
+      setDurationMinutes(parsed.minutes);
+    } catch (error) {
+      setEditLoadError(describeTopicError(error, language));
+    } finally {
+      setLoadingEditId(null);
+    }
   };
 
   const handleCancelEdit = () => {
     setEditingId(null);
+    setEditLoadError(null);
     setTitle("");
     setAuthor("");
     setAuthorFromDirectory(null);
@@ -327,6 +354,12 @@ export default function UnlinkedAgendasView({
             )}
           </div>
 
+          {editLoadError && (
+            <p className="mb-3 rounded-xl bg-red-50 border border-red-100 px-3 py-2 text-[10px] font-bold text-red-700" role="alert">
+              {editLoadError}
+            </p>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-3.5 font-semibold text-xs text-slate-750">
             
             {/*
@@ -366,9 +399,13 @@ export default function UnlinkedAgendasView({
                   // `author` continua sendo o nome de exibição: é o que as
                   // telas já leem hoje. O id do diretório vai num campo
                   // próprio, sem sobrescrever o `authorId` legado.
-                  setAuthor(user.displayName ?? directoryEmail(user) ?? "");
+                  const displayName = user.displayName ?? directoryEmail(user) ?? "";
+                  setAuthor(displayName);
                   setAuthorFromDirectory(user);
                   setAuthorEntraObjectId(user.id);
+                  setParticipants((current) =>
+                    ensureResponsibleTopicParticipant(current, displayName, user.id)
+                  );
                 }}
                 onClear={() => {
                   setAuthor("");
@@ -523,10 +560,7 @@ export default function UnlinkedAgendasView({
               <div className="mt-1 space-y-1 max-h-36 overflow-y-auto p-1 bg-slate-50/30 rounded-xl border border-slate-100">
                 {participants.length > 0 ? (
                   participants.map((p, index) => {
-                    /* Participante é guardado como NOME. Sem lista local não
-                       há de onde derivar e-mail — e inventar um seria pior
-                       que omitir. O vínculo com o diretório virá quando
-                       participantes forem remodelados. */
+                    const isResponsible = isResponsibleTopicParticipant(p, authorEntraObjectId);
                     return (
                       <div 
                         key={p.entraObjectId ?? p.email ?? `${p.displayName}-${index}`} 
@@ -534,12 +568,20 @@ export default function UnlinkedAgendasView({
                       >
                         <div className="flex flex-col truncate min-w-0 pr-2 text-left">
                           <span className="font-bold text-slate-800 text-[10.5px] truncate">{p.displayName ?? p.email ?? ""}</span>
+                          {isResponsible && (
+                            <span className="text-[8.5px] font-extrabold text-[#00658d] uppercase">
+                              {language === "en" ? "Responsible" : "Responsável"}
+                            </span>
+                          )}
                         </div>
                         <button
                           type="button"
+                          disabled={isResponsible}
                           onClick={() => handleRemoveParticipant(index)}
-                          className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-0.5 rounded-lg transition"
-                          title={language === "en" ? "Delete participant" : "Remover participante"}
+                          className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-0.5 rounded-lg transition disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-slate-400 disabled:hover:bg-transparent"
+                          title={isResponsible
+                            ? (language === "en" ? "Change the responsible person before removing." : "Troque o responsável antes de remover.")
+                            : (language === "en" ? "Delete participant" : "Remover participante")}
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
@@ -666,9 +708,12 @@ export default function UnlinkedAgendasView({
                       {/* Edit Button */}
                       <button
                         type="button"
-                        onClick={() => handleStartEdit(agenda)}
-                        className="text-slate-400 hover:text-[#00658d] hover:bg-slate-50 p-1.5 rounded-md border border-slate-100 bg-white transition-colors cursor-pointer"
-                        title={language === "en" ? "Edit agenda" : "Editar pauta"}
+                        disabled={loadingEditId !== null}
+                        onClick={() => void handleStartEdit(agenda)}
+                        className="text-slate-400 hover:text-[#00658d] hover:bg-slate-50 p-1.5 rounded-md border border-slate-100 bg-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                        title={loadingEditId === agenda.id
+                          ? (language === "en" ? "Loading participants..." : "Carregando participantes...")
+                          : (language === "en" ? "Edit agenda" : "Editar pauta")}
                       >
                         <Pencil className="w-3 h-3" />
                       </button>
@@ -813,7 +858,9 @@ export default function UnlinkedAgendasView({
                   <DirectoryUserPicker
                     language={language}
                     keepOpenOnSelect
-                    alreadyChosenIds={[]}
+                    alreadyChosenIds={participants
+                      .map((participant) => participant.entraObjectId)
+                      .filter((id): id is string => Boolean(id))}
                     placeholder={language === "en" ? "Search directory by name or e-mail..." : "Buscar no diretório por nome ou e-mail..."}
                     onSelect={(user) => {
                       /*
@@ -843,21 +890,35 @@ export default function UnlinkedAgendasView({
                       {language === "en" ? "No one linked yet." : "Ninguém vinculado ainda."}
                     </p>
                   ) : (
-                    participants.map((p, idx) => (
-                      <div
-                        key={p.entraObjectId ?? p.email ?? `${p.displayName}-${idx}`}
-                        className="p-3 rounded-2xl border bg-[#00658d]/5 border-[#00658d]/35 flex items-center justify-between gap-3"
-                      >
-                        <span className="font-extrabold text-slate-950 text-xs truncate min-w-0">{p.displayName ?? p.email ?? ""}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveParticipant(idx)}
-                          className="px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider bg-rose-500 text-white hover:bg-rose-600 transition cursor-pointer shrink-0"
+                    participants.map((p, idx) => {
+                      const isResponsible = isResponsibleTopicParticipant(p, authorEntraObjectId);
+                      return (
+                        <div
+                          key={p.entraObjectId ?? p.email ?? `${p.displayName}-${idx}`}
+                          className="p-3 rounded-2xl border bg-[#00658d]/5 border-[#00658d]/35 flex items-center justify-between gap-3"
                         >
-                          {language === "en" ? "Remove" : "Remover"}
-                        </button>
-                      </div>
-                    ))
+                          <span className="font-extrabold text-slate-950 text-xs truncate min-w-0">
+                            {p.displayName ?? p.email ?? ""}
+                            {isResponsible && (
+                              <span className="ml-1.5 text-[8.5px] text-[#00658d] uppercase">
+                                {language === "en" ? "Responsible" : "Responsável"}
+                              </span>
+                            )}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={isResponsible}
+                            onClick={() => handleRemoveParticipant(idx)}
+                            className="px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider bg-rose-500 text-white hover:bg-rose-600 transition cursor-pointer shrink-0 disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-rose-500"
+                            title={isResponsible
+                              ? (language === "en" ? "Change the responsible person before removing." : "Troque o responsável antes de remover.")
+                              : undefined}
+                          >
+                            {language === "en" ? "Remove" : "Remover"}
+                          </button>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>

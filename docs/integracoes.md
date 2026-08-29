@@ -979,7 +979,7 @@ Princípio de menor privilégio: pedir na etapa em que a funcionalidade entra.
 | `Application Calendars.ReadWrite` | — **Exchange Online RBAC**, não o App Registration | Application | n/a — atribuição no Exchange | 5 | criar/editar o evento na caixa do organizador, sem depender da sessão dele, com Resource Scope limitando as caixas |
 | `OnlineMeetings.ReadWrite` | API | Delegated (OBO) | não | 5 | criar reunião Teams e obter join URL |
 | `Mail.Send` | API | **Delegated (OBO)** | admin consent | **5.5 — ✅ concedida** | enviar as pautas para validação (PDF) pela caixa do próprio usuário. A versão **Application** NÃO é usada |
-| `Chat.Create` + `ChatMessage.Send` | API | Delegated (OBO) | não | 7 | ações "Chamar" e "Mensagem" |
+| `Chat.Create` + `ChatMessage.Send` | API | **Delegated (OBO)** | **concedido** | **implementado** | mensagem manual e chamada automática 1:1 aos participantes da pauta, enviadas como o usuário autenticado |
 
 **Não** solicitar `ProfilePhoto.Read.All` enquanto `User.Read.All` estiver em uso:
 `User.Read.All` já cobre a foto, e manter as duas seria privilégio redundante.
@@ -1099,8 +1099,12 @@ caminho de provisionamento.
   no estado do navegador. Fotos continuam fora do escopo.
 - **Reuniões no banco.** `meetings` e quase todo o resto vivem em `localStorage`.
   Apenas `governance_bodies` usa API + PostgreSQL.
-- **Calendário, Teams, e-mail.** "Chamar", "Mensagem" e o botão de notificar
-  Teams são `triggerToast` — nada sai da aplicação.
+- **Teams — mensagem e chamada por pauta.** "Mensagem" e "Chamar" na aba
+  Anotações usam a API PGCP, OBO e Graph delegado para chats 1:1; destinatários
+  vêm da relação persistida da pauta e o retorno suporta sucesso parcial. Em
+  "Chamar", texto, cronograma e link são resolvidos no backend. Validado por
+  testes automatizados e manualmente em contas Teams corporativas reais; a
+  mensagem manual, a chamada, o hyperlink e a apresentação HTML foram confirmados.
 - **DocuSign.** Catálogo e painel prontos; falta escolher o grant (JWT Grant é o
   candidato) e o cliente eSignature. Não ligado à Ata.
 - **Observabilidade.** Falta o exportador OpenTelemetry na API. Sem ele nada é

@@ -175,7 +175,7 @@ export const INTEGRATIONS: IntegrationSpec[] = [
     probe: "live",
     pending:
       "Busca sob demanda pronta (client credentials + User.Read.All Application), e o mock de diretorio no localStorage foi removido. " +
-      "Falta persistir a escolha: responsavel de pauta e participante guardam o entra_object_id so no estado do navegador, nada e gravado no PostgreSQL. Faltam tambem as fotos.",
+      "Responsaveis e participantes de pauta persistem a identidade Entra no PostgreSQL. Faltam as fotos.",
     roadmapStage: "Etapa 3",
   },
   {
@@ -219,13 +219,14 @@ export const INTEGRATIONS: IntegrationSpec[] = [
   {
     id: "teams-messages",
     name: "Teams — Mensagens",
-    description: 'Acoes "Chamar" e "Mensagem" da aba Anotacoes. Hoje ambas sao simuladas.',
+    description:
+      'Acoes "Chamar" e "Mensagem" da aba Anotacoes, com envio real 1:1 como o usuario autenticado.',
     category: "Microsoft 365",
     env: [],
     probe: "none",
     pending:
-      "Requer token, permissao de chat e definicao do destino (chat 1:1 ou canal). " +
-      "Envio real so apos autenticacao e consentimento — nao simular.",
+      "Implementado com token delegado OBO e destinatarios da pauta. " +
+      "Chat.Create e ChatMessage.Send ja foram consentidas; mensagem manual e chamada foram validadas em contas Teams corporativas reais.",
     roadmapStage: "Etapa 7",
   },
   {

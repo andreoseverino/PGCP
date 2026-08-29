@@ -23,6 +23,7 @@ import {
   snapshotTopicParticipantsIntoItem,
   vincularParticipanteNaPauta,
 } from "./agenda-item-participants.js";
+import { startMeetingWhenAgendaItemCompletes } from "./meeting-start.js";
 
 /**
  * Mutacoes direcionadas do nucleo da reuniao.
@@ -490,9 +491,16 @@ export async function addAgendaItem(
       );
     }
 
-    // INVARIANTE: responsável pessoa participa da reunião. Mesma transação da
-    // pauta — ou as duas coisas existem, ou nenhuma.
-    await garantirResponsavelComoParticipante(client, meetingId, input, actor, titulo);
+    // INVARIANTE: responsável pessoa participa da reunião e desta pauta. Mesma
+    // transação — ou item, participante e vínculo existem, ou nenhum.
+    await garantirResponsavelComoParticipante(
+      client,
+      meetingId,
+      rows[0]!.id,
+      input,
+      actor,
+      titulo,
+    );
 
     // Alteracao ESTRUTURAL: reabre a validacao se ainda for planejamento.
     await reabrirValidacaoSePreReuniao(client, meetingId, actor);
@@ -744,7 +752,18 @@ export async function updateAgendaItem(
     });
 
     /*
-     * INVARIANTE: o novo responsável, se for pessoa, entra na reunião.
+     * Concluir qualquer pauta e evidencia de que a reuniao comecou. A pauta e
+     * a transicao da reuniao ficam na MESMA transacao; reabrir (`pending`) nao
+     * desfaz esse fato historico, e estados posteriores sao preservados pelo
+     * UPDATE condicional do helper.
+     */
+    if (input.executionStatus === "completed") {
+      await startMeetingWhenAgendaItemCompletes(client, meetingId, titulo, actor);
+    }
+
+    /*
+     * INVARIANTE: o novo responsável, se for pessoa, entra na reunião e na
+     * lista de participantes desta pauta.
      *
      * O ANTERIOR permanece participante — trocar quem responde por um assunto
      * não é dizer que a pessoa saiu da reunião, e desconvidá-la por conta
@@ -752,7 +771,14 @@ export async function updateAgendaItem(
      * motivo. Limpar o responsável (null) também não remove ninguém.
      */
     if (input.responsibleEntraObjectId !== undefined || input.responsibleLabel !== undefined) {
-      await garantirResponsavelComoParticipante(client, meetingId, input, actor, titulo);
+      await garantirResponsavelComoParticipante(
+        client,
+        meetingId,
+        agendaItemId,
+        input,
+        actor,
+        titulo,
+      );
     }
 
     // So campos ESTRUTURAIS reabrem a validacao. Mudanca de execucao

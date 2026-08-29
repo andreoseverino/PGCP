@@ -85,6 +85,7 @@ import {
   addAgendaItem as apiAddAgendaItem,
   addAgendaItemParticipant as apiAddAgendaItemParticipant,
   addParticipant as apiAddParticipant,
+  callAgendaItemParticipants,
   describeMeetingError,
   localToInstant,
   getMeeting,
@@ -92,7 +93,10 @@ import {
   removeAgendaItem as apiRemoveAgendaItem,
   removeAgendaItemParticipant as apiRemoveAgendaItemParticipant,
   reorderAgendaItems as apiReorderAgendaItems,
+  sendAgendaItemTeamsMessage,
   setAgendaItemStatus as apiSetAgendaItemStatus,
+  describeTeamsMessageError,
+  TEAMS_MESSAGE_MAX_LENGTH,
   updateAgendaItem as apiUpdateAgendaItem,
   updateMeeting as apiUpdateMeeting,
   type AgendaItemPatchPayload
@@ -254,8 +258,13 @@ export default function MeetingDetailView({
   const [notesConflict, setNotesConflict] = useState<MeetingNotes | null>(null);
 
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
+  const [messageTargetAgendaItemId, setMessageTargetAgendaItemId] = useState<string>("");
   const [messageTargetTopic, setMessageTargetTopic] = useState<string>("");
   const [customMessage, setCustomMessage] = useState("");
+  const [isSendingCustomMessage, setIsSendingCustomMessage] = useState(false);
+  const [customMessageError, setCustomMessageError] = useState<string | null>(null);
+  /** ID da pauta em chamada; impede clique repetido enquanto a API trabalha. */
+  const [callingAgendaItemId, setCallingAgendaItemId] = useState<string | null>(null);
 
   /*
    * Carga inicial. `cielo_meeting_notes_*` não é consultada: a fonte é o banco,
@@ -914,30 +923,104 @@ export default function MeetingDetailView({
     );
 
   // --- Ações das pautas na aba Anotações ------------------------------------
-  const handleCallParticipants = (topicTitle: string) => {
-    const alvo = (meeting.participants || []).length;
-    triggerToast(
-      language === "en"
-        ? `Participants called for: "${topicTitle}" (${alvo}).`
-        : `Convocação registrada para a pauta "${topicTitle}" (${alvo} participantes).`
-    );
+  const teamsDeliverySummary = (
+    result: Awaited<ReturnType<typeof callAgendaItemParticipants>>,
+    purpose: "message" | "call"
+  ): string => {
+    const failedNames = result.results
+      .filter((delivery) => delivery.status === "failed")
+      .map((delivery) => delivery.participantName)
+      .join(", ");
+    const failure = failedNames
+      ? language === "en"
+        ? ` Could not send to: ${failedNames}.`
+        : ` Não foi possível enviar para: ${failedNames}.`
+      : "";
+    if (result.sent === 0) {
+      return language === "en"
+        ? `The ${purpose === "call" ? "call" : "message"} could not be sent to any of the ${result.total} participants.${failure}`
+        : `Não foi possível enviar ${purpose === "call" ? "a chamada" : "a mensagem"} para nenhum dos ${result.total} participantes.${failure}`;
+    }
+    const label = language === "en"
+      ? purpose === "call" ? "Call sent" : "Message sent"
+      : purpose === "call" ? "Chamada enviada" : "Mensagem enviada";
+    return `${label} ${language === "en" ? "to" : "para"} ${result.sent} ${language === "en" ? "of" : "de"} ${result.total} ${language === "en" ? "participants" : "participantes"}.${failure}`;
   };
 
-  const handleOpenMessageModal = (topicTitle: string) => {
-    setMessageTargetTopic(topicTitle);
+  const handleCallParticipants = async (item: AgendaItem) => {
+    if (callingAgendaItemId !== null) return;
+
+    setCallingAgendaItemId(item.id);
+    try {
+      const result = await callAgendaItemParticipants(meeting.id, item.id);
+      if (result.total === 0) {
+        triggerToast(
+          language === "en"
+            ? "This agenda item has no participants to call."
+            : "Esta pauta não possui participantes para receber a chamada."
+        );
+        return;
+      }
+      triggerToast(teamsDeliverySummary(result, "call"));
+    } catch (error) {
+      triggerToast(describeTeamsMessageError(error, language));
+    } finally {
+      setCallingAgendaItemId(null);
+    }
+  };
+
+  const handleOpenMessageModal = (item: AgendaItem) => {
+    setMessageTargetAgendaItemId(item.id);
+    setMessageTargetTopic(item.title);
     setCustomMessage("");
+    setCustomMessageError(null);
     setIsMessageModalOpen(true);
   };
 
-  const handleSendCustomMessage = () => {
-    if (!customMessage.trim()) return;
-    triggerToast(
-      language === "en"
-        ? `Message registered for: "${messageTargetTopic}".`
-        : `Mensagem registrada para a pauta "${messageTargetTopic}".`
-    );
+  const closeMessageModal = () => {
+    if (isSendingCustomMessage) return;
     setIsMessageModalOpen(false);
-    setCustomMessage("");
+    setCustomMessageError(null);
+  };
+
+  const handleSendCustomMessage = async () => {
+    if (!customMessage.trim() || !messageTargetAgendaItemId || isSendingCustomMessage) return;
+
+    setIsSendingCustomMessage(true);
+    setCustomMessageError(null);
+    try {
+      const result = await sendAgendaItemTeamsMessage(
+        meeting.id,
+        messageTargetAgendaItemId,
+        customMessage
+      );
+
+      if (result.total === 0) {
+        triggerToast(
+          language === "en"
+            ? "This agenda item has no participants to message."
+            : "Esta pauta não possui participantes para receber a mensagem."
+        );
+        setIsMessageModalOpen(false);
+        return;
+      }
+
+      const summary = teamsDeliverySummary(result, "message");
+
+      if (result.sent === 0) {
+        // Mantem o texto no modal para permitir nova tentativa sem redigitar.
+        setCustomMessageError(summary);
+        return;
+      }
+
+      triggerToast(summary);
+      setIsMessageModalOpen(false);
+      setCustomMessage("");
+    } catch (error) {
+      setCustomMessageError(describeTeamsMessageError(error, language));
+    } finally {
+      setIsSendingCustomMessage(false);
+    }
   };
 
 /*
@@ -2280,8 +2363,8 @@ export default function MeetingDetailView({
                     <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl">
                       <p className="text-[11px] font-bold text-amber-800">
                         {language === "pt"
-                          ? "Sem e-mail cadastrado — o convite não foi enviado a ninguém:"
-                          : "No e-mail on file — the invitation was sent to nobody:"}
+                          ? "Não foi possível obter o endereço corporativo — o convite não foi enviado a ninguém:"
+                          : "The corporate address could not be resolved — the invitation was sent to nobody:"}
                       </p>
                       <ul className="mt-1.5 space-y-0.5">
                         {semEndereco.map((p) => (
@@ -3259,20 +3342,24 @@ export default function MeetingDetailView({
                           </button>
                           <button
                             type="button"
-                            onClick={() => handleCallParticipants(ag.title)}
-                            className="px-2 py-1 text-[9.5px] font-extrabold uppercase tracking-wider text-slate-600 bg-white border border-slate-200 rounded-lg hover:border-[#00658d] hover:text-[#00658d] transition cursor-pointer inline-flex items-center gap-1"
+                            onClick={() => void handleCallParticipants(ag)}
+                            disabled={callingAgendaItemId !== null}
+                            aria-busy={callingAgendaItemId === ag.id}
+                            className="px-2 py-1 text-[9.5px] font-extrabold uppercase tracking-wider text-slate-600 bg-white border border-slate-200 rounded-lg hover:border-[#00658d] hover:text-[#00658d] transition cursor-pointer inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            <BellRing className="w-3 h-3" />
-                            {language === "en" ? "Call" : "Chamar"}
+                            <BellRing className={`w-3 h-3 ${callingAgendaItemId === ag.id ? "animate-pulse" : ""}`} />
+                            {callingAgendaItemId === ag.id
+                              ? (language === "en" ? "Calling..." : "Chamando...")
+                              : (language === "en" ? "Call" : "Chamar")}
                           </button>
-                          <button
+                          {canSchedule && <button
                             type="button"
-                            onClick={() => handleOpenMessageModal(ag.title)}
+                            onClick={() => handleOpenMessageModal(ag)}
                             className="px-2 py-1 text-[9.5px] font-extrabold uppercase tracking-wider text-slate-600 bg-white border border-slate-200 rounded-lg hover:border-[#00658d] hover:text-[#00658d] transition cursor-pointer inline-flex items-center gap-1"
                           >
                             <MessageSquare className="w-3 h-3" />
                             {language === "en" ? "Message" : "Mensagem"}
-                          </button>
+                          </button>}
                         </div>
                       </div>
                     );
@@ -4342,28 +4429,43 @@ export default function MeetingDetailView({
                     </label>
                     {vinculados.length > 0 && (
                       <div className="flex flex-wrap gap-1.5 mb-1">
-                        {vinculados.map((p) => (
-                          <span key={p.participantId} className="inline-flex items-center gap-1 bg-[#00658d]/5 text-[#00658d] text-[10px] font-bold px-2 py-0.5 rounded-full">
-                            {p.name}
-                            {canSchedule && (
-                              <button
-                                type="button"
-                                disabled={isPersisting}
-                                onClick={() => {
-                                  const msg = language === "pt"
-                                    ? "Ao remover esta pessoa da pauta, ela também será removida dos participantes da reunião. Continuar?"
-                                    : "Removing this person from the topic also removes them from the meeting participants. Continue?";
-                                  if (window.confirm(msg)) void desvincularParticipantePauta(itemAtual!.id, p.participantId);
-                                }}
-                                className="hover:text-red-600 disabled:opacity-40"
-                                title={language === "pt" ? "Remover da pauta e da reunião" : "Remove from topic and meeting"}
-                                aria-label={language === "pt" ? "Remover da pauta e da reunião" : "Remove from topic and meeting"}
-                              >
-                                <X className="w-3 h-3" />
-                              </button>
-                            )}
-                          </span>
-                        ))}
+                        {vinculados.map((p) => {
+                          const participanteDaReuniao = (meeting.participants ?? []).find(
+                            (participant) => participant.participantId === p.participantId
+                          );
+                          const isResponsible = Boolean(
+                            itemAtual?.authorEntraObjectId &&
+                            participanteDaReuniao?.entraObjectId &&
+                            itemAtual.authorEntraObjectId.toLowerCase() === participanteDaReuniao.entraObjectId.toLowerCase()
+                          );
+                          return (
+                            <span key={p.participantId} className="inline-flex items-center gap-1 bg-[#00658d]/5 text-[#00658d] text-[10px] font-bold px-2 py-0.5 rounded-full">
+                              {p.name}
+                              {isResponsible && (
+                                <span className="text-[8px] uppercase opacity-75">
+                                  {language === "pt" ? "Responsável" : "Responsible"}
+                                </span>
+                              )}
+                              {canSchedule && !isResponsible && (
+                                <button
+                                  type="button"
+                                  disabled={isPersisting}
+                                  onClick={() => {
+                                    const msg = language === "pt"
+                                      ? "Ao remover esta pessoa da pauta, ela também será removida dos participantes da reunião. Continuar?"
+                                      : "Removing this person from the topic also removes them from the meeting participants. Continue?";
+                                    if (window.confirm(msg)) void desvincularParticipantePauta(itemAtual!.id, p.participantId);
+                                  }}
+                                  className="hover:text-red-600 disabled:opacity-40"
+                                  title={language === "pt" ? "Remover da pauta e da reunião" : "Remove from topic and meeting"}
+                                  aria-label={language === "pt" ? "Remover da pauta e da reunião" : "Remove from topic and meeting"}
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              )}
+                            </span>
+                          );
+                        })}
                       </div>
                     )}
                     {canSchedule && itemAtual && (
@@ -4466,7 +4568,7 @@ export default function MeetingDetailView({
       {isMessageModalOpen && (
         <div
           className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"
-          onClick={() => setIsMessageModalOpen(false)}
+          onClick={closeMessageModal}
         >
           <div
             className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-md w-full overflow-hidden"
@@ -4492,6 +4594,8 @@ export default function MeetingDetailView({
                 onChange={(e) => setCustomMessage(e.target.value)}
                 autoFocus
                 rows={5}
+                maxLength={TEAMS_MESSAGE_MAX_LENGTH}
+                disabled={isSendingCustomMessage}
                 placeholder={language === "en"
                   ? "Write the message for the participants of this topic..."
                   : "Escreva a mensagem para os participantes desta pauta..."}
@@ -4500,15 +4604,26 @@ export default function MeetingDetailView({
 
               <p className="text-[10px] text-slate-400 font-semibold mt-2 leading-relaxed">
                 {language === "en"
-                  ? "The message is registered in the audit trail. No external delivery is performed yet."
-                  : "A mensagem é registrada na trilha de auditoria. Ainda não há envio externo."}
+                  ? "Sent individually in Microsoft Teams as your signed-in account. The message content is not copied to the PGCP audit trail."
+                  : "Enviada individualmente no Microsoft Teams em nome da sua conta autenticada. O conteúdo não é copiado para a auditoria do PGCP."}
               </p>
+              <div className="mt-2 flex items-start justify-between gap-3">
+                {customMessageError ? (
+                  <p className="text-[10px] text-red-600 font-semibold leading-relaxed" role="alert">
+                    {customMessageError}
+                  </p>
+                ) : <span />}
+                <span className="text-[9px] text-slate-400 font-semibold whitespace-nowrap">
+                  {customMessage.length}/{TEAMS_MESSAGE_MAX_LENGTH}
+                </span>
+              </div>
             </div>
 
             <div className="bg-slate-50 px-6 py-4 flex items-center justify-end gap-2 border-t border-slate-100">
               <button
                 type="button"
-                onClick={() => setIsMessageModalOpen(false)}
+                onClick={closeMessageModal}
+                disabled={isSendingCustomMessage}
                 className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 transition rounded-xl cursor-pointer"
               >
                 {language === "en" ? "Cancel" : "Cancelar"}
@@ -4516,11 +4631,13 @@ export default function MeetingDetailView({
               <button
                 type="button"
                 onClick={handleSendCustomMessage}
-                disabled={!customMessage.trim()}
+                disabled={!customMessage.trim() || isSendingCustomMessage}
                 className="px-4 py-2 text-xs font-bold bg-[#00658d] hover:bg-[#00aeef] active:scale-95 text-white transition rounded-xl shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
               >
                 <Send className="w-3.5 h-3.5" />
-                {language === "en" ? "Register" : "Registrar"}
+                {isSendingCustomMessage
+                  ? (language === "en" ? "Sending..." : "Enviando...")
+                  : (language === "en" ? "Send" : "Enviar")}
               </button>
             </div>
           </div>

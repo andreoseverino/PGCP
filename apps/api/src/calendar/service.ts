@@ -2,10 +2,19 @@ import type { PoolClient } from "pg";
 import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
-import { GraphError, getGraphConfig, graphRequest, missingGraphConfig } from "../graph/client.js";
+import {
+  GraphError,
+  getDirectoryAddressesByObjectIds,
+  getGraphConfig,
+  graphRequest,
+  missingGraphConfig,
+  type DirectoryAddress,
+  type GraphConfig,
+} from "../graph/client.js";
 import {
   montarAttendees,
   montarEvento,
+  resolverEnderecoCorporativo,
   type ParticipanteParaConvite,
   type ReuniaoParaCalendario,
 } from "./mapper.js";
@@ -167,6 +176,55 @@ interface DadosDaSincronizacao {
   participantes: ParticipanteParaConvite[];
 }
 
+type DirectoryAddressResolver = (
+  config: GraphConfig,
+  objectIds: readonly string[],
+) => Promise<Map<string, DirectoryAddress>>;
+
+/**
+ * Reidrata somente participantes Entra do tenant configurado que não possuem
+ * endereço local utilizável. A consulta é uma só operação lógica, batelada no
+ * cliente Graph, e não grava snapshots nem altera a identidade persistida.
+ */
+export async function resolverEnderecosCorporativosDosParticipantes(
+  participantes: readonly ParticipanteParaConvite[],
+  config: GraphConfig,
+  resolver: DirectoryAddressResolver = getDirectoryAddressesByObjectIds,
+): Promise<ParticipanteParaConvite[]> {
+  const tenant = config.tenantId.toLowerCase();
+  const oids = [
+    ...new Map(
+      participantes
+        .filter(
+          (participante) =>
+            !resolverEnderecoCorporativo(participante.email, participante.userPrincipalName) &&
+            participante.entraTenantId?.toLowerCase() === tenant &&
+            Boolean(participante.entraObjectId),
+        )
+        .map((participante) => [
+          participante.entraObjectId!.toLowerCase(),
+          participante.entraObjectId!,
+        ]),
+    ).values(),
+  ];
+
+  if (oids.length === 0) return [...participantes];
+
+  const porOid = await resolver(config, oids);
+  return participantes.map((participante) => {
+    const endereco = participante.entraObjectId
+      ? porOid.get(participante.entraObjectId.toLowerCase())
+      : undefined;
+    return endereco
+      ? {
+          ...participante,
+          email: endereco.mail,
+          userPrincipalName: endereco.userPrincipalName,
+        }
+      : { ...participante };
+  });
+}
+
 /**
  * Reune tudo que a sincronizacao precisa e recusa cedo o que nao da para
  * cumprir. Falhar aqui e melhor do que descobrir no meio da chamada ao Graph:
@@ -211,24 +269,32 @@ async function carregarDados(executor: Executor, meetingId: string): Promise<Dad
   }
 
   /*
-   * Endereco por participante, na ordem de confiabilidade:
+   * Endereco local por participante, na ordem de confiabilidade:
    *   1. `users.email` de quem tem conta no PGCP;
-   *   2. o e-mail informado no proprio registro do participante.
+   *   2. o e-mail snapshot do proprio registro;
+   *   3. `users.upn` como fallback corporativo.
    *
    * Nunca derivado de nome. Pessoa do Entra sem conta no PGCP so tem endereco
-   * se ele foi capturado no momento da escolha no diretorio.
+   * se ele foi capturado no momento da escolha no diretorio. Quando nenhum
+   * endereço local serve, tenant+OID permitem a reidratação segura no Graph.
    */
   const { rows: participantes } = await executor.query<{
     id: string;
     display_name: string | null;
-    email: string | null;
+    user_email: string | null;
+    participant_email: string | null;
+    user_principal_name: string | null;
     user_id: string | null;
+    entra_tenant_id: string | null;
     entra_object_id: string | null;
   }>(
     `SELECT p.id,
             COALESCE(u.name, p.display_name) AS display_name,
-            COALESCE(u.email, p.email)       AS email,
+            u.email                          AS user_email,
+            p.email                          AS participant_email,
+            u.upn                            AS user_principal_name,
             p.user_id,
+            p.entra_tenant_id,
             p.entra_object_id
        FROM meeting_participants p
        LEFT JOIN users u ON u.id = p.user_id
@@ -252,8 +318,10 @@ async function carregarDados(executor: Executor, meetingId: string): Promise<Dad
     participantes: participantes.map((p) => ({
       participantId: p.id,
       displayName: p.display_name,
-      email: p.email,
+      email: resolverEnderecoCorporativo(p.user_email, p.participant_email),
+      userPrincipalName: p.user_principal_name,
       userId: p.user_id,
+      entraTenantId: p.entra_tenant_id,
       entraObjectId: p.entra_object_id,
     })),
   };
@@ -387,7 +455,11 @@ export async function syncMeetingCalendar(
     }
 
     const dados = await carregarDados(pool, meetingId);
-    const { attendees, semEndereco } = montarAttendees(dados.participantes);
+    const participantes = await resolverEnderecosCorporativosDosParticipantes(
+      dados.participantes,
+      config,
+    );
+    const { attendees, semEndereco } = montarAttendees(participantes);
 
     if (semEndereco.length > 0) {
       /*
@@ -397,7 +469,7 @@ export async function syncMeetingCalendar(
        */
       throw new CalendarPreconditionError({
         code: "participants_without_email",
-        message: `${semEndereco.length} participante(s) sem e-mail utilizável. O convite não foi enviado.`,
+        message: `Não foi possível obter o endereço corporativo de ${semEndereco.length} participante(s). O convite não foi enviado.`,
         participants: semEndereco,
       });
     }
