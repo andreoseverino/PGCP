@@ -33,8 +33,9 @@ import {
 } from "lucide-react";
 import { StandaloneAgenda, Meeting } from "../types";
 import DirectoryUserPicker from "./DirectoryUserPicker";
+import DurationHoursMinutesSelect from "./DurationHoursMinutesSelect";
 import { directoryEmail, type DirectoryUser } from "../lib/directory";
-import { parseDurationMinutes } from "../lib/agenda-time";
+import { formatMinutesAsTime, parseDurationMinutes } from "../lib/agenda-time";
 
 interface UnlinkedAgendasViewProps {
   language: "en" | "pt";
@@ -70,8 +71,7 @@ export default function UnlinkedAgendasView({
 
   // Form states matching standard inputs
   const [title, setTitle] = useState("");
-  const [durationHours, setDurationHours] = useState("00");
-  const [durationMinutes, setDurationMinutes] = useState("30");
+  const [duration, setDuration] = useState("00:30");
   const [author, setAuthor] = useState("");
   /**
    * Pessoa escolhida no diretório corporativo. `null` quando nada foi
@@ -178,18 +178,6 @@ export default function UnlinkedAgendasView({
     noPart: language === "en" ? "No extra participants." : "Nenhum participante extra adicionado.",
   };
 
-  // Divide a duração nos dois selects (horas/minutos). A interpretação vem de
-  // `parseDurationMinutes`: fonte única, compartilhada com o recálculo de
-  // horários das pautas. Antes havia um split por ":" próprio aqui, que lia
-  // "1h" como 1 minuto.
-  const parseDurationString = (dur: string) => {
-    const total = parseDurationMinutes(dur, 30);
-    return {
-      hours: String(Math.floor(total / 60)).padStart(2, "0"),
-      minutes: String(total % 60).padStart(2, "0")
-    };
-  };
-
   const handleRemoveParticipant = (indexToRemove: number) => {
     setParticipants(participants.filter((_, idx) => idx !== indexToRemove));
   };
@@ -198,13 +186,11 @@ export default function UnlinkedAgendasView({
     e.preventDefault();
     if (!title.trim() || !author.trim()) return;
 
-    // Standard duration in format HH:mm
-
     /*
      * Duração vai em MINUTOS: a API guarda `estimated_duration_minutes` como
      * inteiro, e a string "HH:mm" era formato de exibição.
      */
-    const totalMinutos = Number(durationHours) * 60 + Number(durationMinutes);
+    const totalMinutos = parseDurationMinutes(duration, 30);
 
     const participantesComResponsavel = ensureResponsibleTopicParticipant(
       participants,
@@ -238,8 +224,7 @@ export default function UnlinkedAgendasView({
     setAuthorEntraObjectId("");
     setDescription("");
     setParticipants([]);
-    setDurationHours("00");
-    setDurationMinutes("30");
+    setDuration("00:30");
     setIsFupForm(false);
     setMeetingId("");
     setPautaTypeId(pautaTypes[0]?.id || "");
@@ -277,9 +262,7 @@ export default function UnlinkedAgendasView({
       setPautaNatureId(agenda.pautaNatureId || pautaNatures[0]?.id || "");
       setIsCircular(agenda.isCircularTheme === true);
 
-      const parsed = parseDurationString(agenda.duration);
-      setDurationHours(parsed.hours);
-      setDurationMinutes(parsed.minutes);
+      setDuration(agenda.duration);
     } catch (error) {
       setEditLoadError(describeTopicError(error, language));
     } finally {
@@ -296,8 +279,7 @@ export default function UnlinkedAgendasView({
     setAuthorEntraObjectId("");
     setDescription("");
     setParticipants([]);
-    setDurationHours("00");
-    setDurationMinutes("30");
+    setDuration("00:30");
     setIsFupForm(false);
     setMeetingId("");
     setPautaTypeId(pautaTypes[0]?.id || "");
@@ -474,33 +456,12 @@ export default function UnlinkedAgendasView({
               <label className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
                 {t.lblDuration} *
               </label>
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <span className="text-[9px] text-slate-400 font-bold uppercase select-none">{language === "en" ? "Hours" : "Horas"}</span>
-                  <select
-                    value={durationHours}
-                    onChange={(e) => setDurationHours(e.target.value)}
-                    className="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-2.5 py-1.5 text-xs text-slate-700 focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] focus:bg-white outline-none cursor-pointer transition-all duration-200"
-                  >
-                    {Array.from({ length: 13 }).map((_, i) => {
-                      const val = String(i).padStart(2, '0');
-                      return <option key={val} value={val}>{val}</option>;
-                    })}
-                  </select>
-                </div>
-                <div className="flex-1">
-                  <span className="text-[9px] text-slate-400 font-bold uppercase select-none">{language === "en" ? "Minutes" : "Minutos"}</span>
-                  <select
-                    value={durationMinutes}
-                    onChange={(e) => setDurationMinutes(e.target.value)}
-                    className="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-2.5 py-1.5 text-xs text-slate-700 focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] focus:bg-white outline-none cursor-pointer transition-all duration-200"
-                  >
-                    {["00", "05", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55"].map((val) => (
-                      <option key={val} value={val}>{val}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              <DurationHoursMinutesSelect
+                language={language}
+                value={duration}
+                onChangeMinutes={(m) => setDuration(formatMinutesAsTime(m))}
+                selectClassName="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-2.5 py-1.5 text-xs text-slate-700 focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] focus:bg-white outline-none cursor-pointer transition-all duration-200"
+              />
             </div>
 
             {/* FUP Classification Checkbox */}

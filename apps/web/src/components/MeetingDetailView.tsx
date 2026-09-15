@@ -106,6 +106,7 @@ import { hrefSeguro } from "../lib/safe-url";
 import DirectoryUserPicker from "./DirectoryUserPicker";
 import { directoryEmail, type DirectoryUser } from "../lib/directory";
 import type { TaxonomyItem } from "../lib/agenda-topics";
+import DurationHoursMinutesSelect from "./DurationHoursMinutesSelect";
 import {
   parseDurationMinutes,
   parseTimeToMinutes,
@@ -2925,18 +2926,12 @@ export default function MeetingDetailView({
 
                       <div className="md:col-span-3 flex flex-col gap-1">
                         <label className="text-[10px] font-extrabold text-slate-500 uppercase font-sans">Duração Estimada</label>
-                        <select
+                        <DurationHoursMinutesSelect
+                          language={language}
                           value={extraDuration}
-                          onChange={(e) => setExtraDuration(e.target.value)}
-                          className="w-full bg-white border border-slate-205 rounded-xl p-2.5 text-xs text-slate-705 cursor-pointer focus:outline-none"
-                        >
-                          <option value="10 mins">10 min</option>
-                          <option value="15 mins">15 min</option>
-                          <option value="20 mins">20 min</option>
-                          <option value="30 mins">30 min</option>
-                          <option value="45 mins">45 min</option>
-                          <option value="60 mins">60 min</option>
-                        </select>
+                          onChangeMinutes={(m) => setExtraDuration(formatMinutesAsTime(m))}
+                          selectClassName="w-full bg-white border border-slate-205 rounded-xl p-2.5 text-xs text-slate-705 cursor-pointer focus:outline-none"
+                        />
                       </div>
 
                       {/* Tema circular: só REGISTRA um fato da pauta. Sem automação,
@@ -4146,11 +4141,10 @@ export default function MeetingDetailView({
                   <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
                     {language === "en" ? "Start Time" : "Hora Início"}
                   </label>
-                  <input 
-                    type="text"
+                  <input
+                    type="time"
                     value={editedStartTime}
                     onChange={(e) => setEditedStartTime(e.target.value)}
-                    placeholder="HH:MM"
                     className="w-full text-sm font-bold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-2.5 outline-none focus:bg-white transition-all focus:ring-2 focus:ring-[#00658d]/10"
                   />
                 </div>
@@ -4158,11 +4152,10 @@ export default function MeetingDetailView({
                   <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
                     {language === "en" ? "End Time" : "Hora Fim"}
                   </label>
-                  <input 
-                    type="text"
+                  <input
+                    type="time"
                     value={editedEndTime}
                     onChange={(e) => setEditedEndTime(e.target.value)}
-                    placeholder="HH:MM"
                     className="w-full text-sm font-bold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-2.5 outline-none focus:bg-white transition-all focus:ring-2 focus:ring-[#00658d]/10"
                   />
                 </div>
@@ -4327,18 +4320,12 @@ export default function MeetingDetailView({
                 <label className="text-[10px] font-extrabold text-slate-500 uppercase">
                   {language === "pt" ? "Duração" : "Duration"}
                 </label>
-                <select
+                <DurationHoursMinutesSelect
+                  language={language}
                   value={editDuration}
-                  onChange={(e) => setEditDuration(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
-                >
-                  <option value="10 mins">10 min</option>
-                  <option value="15 mins">15 min</option>
-                  <option value="20 mins">20 min</option>
-                  <option value="30 mins">30 min</option>
-                  <option value="45 mins">45 min</option>
-                  <option value="60 mins">60 min</option>
-                </select>
+                  onChangeMinutes={(m) => setEditDuration(formatMinutesAsTime(m))}
+                  selectClassName="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                />
               </div>
 
               {/* Tema circular NESTA reunião. Permite Não↔Sim; grava via PATCH.

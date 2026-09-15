@@ -3,8 +3,15 @@ import { X, Calendar, Clock, MapPin, CheckCircle, Sparkles, User, Users, Plus, T
 import { AgendaItem, GovernanceBody, Participant, StandaloneAgenda } from "../types";
 import { newId } from "../lib/id";
 import DirectoryUserPicker from "./DirectoryUserPicker";
+import DurationHoursMinutesSelect from "./DurationHoursMinutesSelect";
 import type { DirectoryUser } from "../lib/directory";
-import type { BibliotecaFormInput, TaxonomyItem, TopicParticipantPayload } from "../lib/agenda-topics";
+import type { BibliotecaFormInput, TaxonomyItem, TopicParticipant, TopicParticipantPayload } from "../lib/agenda-topics";
+import {
+  addAgendaTopicParticipant,
+  describeTopicError,
+  getAgendaTopic,
+  removeAgendaTopicParticipant
+} from "../lib/agenda-topics";
 import {
   addParticipantOnce,
   canOfferAsParticipant,
@@ -146,6 +153,25 @@ export default function ScheduleMeetingModal({
   const [editingTopicAuthorOid, setEditingTopicAuthorOid] = useState<string | undefined>(undefined);
   /** Endereço do responsável escolhido no diretório, para o convite. */
   const [editingTopicAuthorEmail, setEditingTopicAuthorEmail] = useState<string | undefined>(undefined);
+  /**
+   * Ficha (Tipo/Natureza/FUP/Circular/Descrição) — mesmos campos do drawer de
+   * criar pauta. Snapshot NESTA reunião: editar aqui nunca toca o tema mestre
+   * da Biblioteca (mesma regra de `isCircularTheme` em `types.ts`).
+   */
+  const [editingTopicTypeId, setEditingTopicTypeId] = useState("");
+  const [editingTopicNatureId, setEditingTopicNatureId] = useState("");
+  const [editingTopicFup, setEditingTopicFup] = useState(false);
+  const [editingTopicCircular, setEditingTopicCircular] = useState(false);
+  const [editingTopicDescription, setEditingTopicDescription] = useState("");
+  /**
+   * Participantes da pauta — ao contrário da ficha acima, isto É o tema
+   * mestre da Biblioteca (mesma tabela que a tela de Biblioteca edita).
+   * Add/remove são imediatos (Opção A), só quando o item já tem `agendaTopicId`.
+   */
+  const [editingTopicAgendaTopicId, setEditingTopicAgendaTopicId] = useState<string | undefined>(undefined);
+  const [editingTopicParticipants, setEditingTopicParticipants] = useState<TopicParticipant[]>([]);
+  const [editingTopicParticipantsLoading, setEditingTopicParticipantsLoading] = useState(false);
+  const [editingTopicParticipantsError, setEditingTopicParticipantsError] = useState<string | null>(null);
 
 
   /**
@@ -365,18 +391,44 @@ export default function ScheduleMeetingModal({
           }
         : null
     );
+
+    setEditingTopicTypeId(item.agendaTopicTypeId || pautaTypes[0]?.id || "");
+    setEditingTopicNatureId(item.agendaTopicNatureId || pautaNatures[0]?.id || "");
+    setEditingTopicFup(item.generatesActionItem === true);
+    setEditingTopicCircular(item.isCircularTheme === true);
+    setEditingTopicDescription(item.description || "");
+
+    setEditingTopicAgendaTopicId(item.agendaTopicId);
+    setEditingTopicParticipants([]);
+    setEditingTopicParticipantsError(null);
+    if (item.agendaTopicId) {
+      setEditingTopicParticipantsLoading(true);
+      getAgendaTopic(item.agendaTopicId)
+        .then((detalhe) => setEditingTopicParticipants(detalhe.participants))
+        .catch((erro) => setEditingTopicParticipantsError(describeTopicError(erro, language)))
+        .finally(() => setEditingTopicParticipantsLoading(false));
+    }
   };
 
   const handleSaveEditedAgendaItem = () => {
     if (editingAgendaIndex === null) return;
     const autor = editingTopicAuthor.trim() || "Todos";
+    const tipoEscolhido = pautaTypes.find((pt) => pt.id === editingTopicTypeId);
+    const naturezaEscolhida = pautaNatures.find((pn) => pn.id === editingTopicNatureId);
     const updatedAgenda = [...agenda];
     updatedAgenda[editingAgendaIndex] = {
       ...updatedAgenda[editingAgendaIndex],
       title: editingTopicTitle.trim(),
       duration: editingTopicDuration.trim(),
       author: autor,
-      authorEntraObjectId: editingTopicAuthorOid
+      authorEntraObjectId: editingTopicAuthorOid,
+      agendaTopicTypeId: editingTopicTypeId || undefined,
+      pautaType: tipoEscolhido?.name,
+      agendaTopicNatureId: editingTopicNatureId || undefined,
+      pautaNature: naturezaEscolhida?.name,
+      generatesActionItem: editingTopicFup,
+      isCircularTheme: editingTopicCircular,
+      description: editingTopicDescription.trim() || undefined
     };
 
     if (editingTopicAuthorOid) {
@@ -387,9 +439,41 @@ export default function ScheduleMeetingModal({
     setEditingAgendaIndex(null);
   };
 
+  /**
+   * Participantes do tema em edição — imediato (Opção A), igual à Biblioteca.
+   * Só existe quando o item já tem `agendaTopicId`: sem tema vinculado não há
+   * onde persistir o participante.
+   */
+  const handleAddEditingTopicParticipant = async (u: DirectoryUser) => {
+    if (!editingTopicAgendaTopicId) return;
+    if (editingTopicParticipants.some((p) => p.entraObjectId === u.id)) return;
+    setEditingTopicParticipantsError(null);
+    try {
+      const detalhe = await addAgendaTopicParticipant(editingTopicAgendaTopicId, {
+        entraObjectId: u.id,
+        displayName: u.displayName ?? enderecoDoDiretorio(u) ?? "",
+        email: enderecoDoDiretorio(u)
+      });
+      setEditingTopicParticipants(detalhe.participants);
+    } catch (erro) {
+      setEditingTopicParticipantsError(describeTopicError(erro, language));
+    }
+  };
+
+  const handleRemoveEditingTopicParticipant = async (participantId: string) => {
+    if (!editingTopicAgendaTopicId) return;
+    setEditingTopicParticipantsError(null);
+    try {
+      const detalhe = await removeAgendaTopicParticipant(editingTopicAgendaTopicId, participantId);
+      setEditingTopicParticipants(detalhe.participants);
+    } catch (erro) {
+      setEditingTopicParticipantsError(describeTopicError(erro, language));
+    }
+  };
+
   // Drawer fields
   const [tempPautaTitle, setTempPautaTitle] = useState("");
-  const [tempPautaDuration, setTempPautaDuration] = useState("30 mins");
+  const [tempPautaDuration, setTempPautaDuration] = useState("00:30");
   /** Responsável escolhido no diretório. `null` = pauta sem pessoa definida. */
   const [tempPautaAuthorUser, setTempPautaAuthorUser] = useState<DirectoryUser | null>(null);
   const [tempPautaDescription, setTempPautaDescription] = useState("");
@@ -732,11 +816,10 @@ export default function ScheduleMeetingModal({
                   </label>
                   <input
                     id="startTime"
-                    type="text"
+                    type="time"
                     required
                     value={startTime}
                     onChange={(e) => setStartTime(e.target.value)}
-                    placeholder="10:00"
                     className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 text-center focus:outline-none"
                   />
                 </div>
@@ -749,11 +832,10 @@ export default function ScheduleMeetingModal({
                   </label>
                   <input
                     id="endTime"
-                    type="text"
+                    type="time"
                     required
                     value={endTime}
                     onChange={(e) => setEndTime(e.target.value)}
-                    placeholder="12:00"
                     className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 text-center focus:outline-none"
                   />
                 </div>
@@ -1138,8 +1220,8 @@ export default function ScheduleMeetingModal({
 
         {/* 2) CREATE AGENDA DRAWER SLIDING OVERLAY PANEL */}
         {isCreateAgendaDrawerOpen && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] flex items-center justify-end p-0">
-            <div className="bg-white border-l border-slate-200 h-full max-w-md w-full p-6 md:p-8 flex flex-col justify-between animate-slide-in overflow-y-auto">
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+            <div className="bg-white border border-slate-200 rounded-3xl p-6 md:p-8 max-w-md w-full max-h-[85vh] overflow-y-auto animate-fade-in shadow-2xl">
               <div>
                 <div className="flex justify-between items-center mb-6 pb-2 border-b border-slate-100">
                   <div>
@@ -1179,13 +1261,11 @@ export default function ScheduleMeetingModal({
                       <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
                         {language === "en" ? "Duration" : "Tempo Estimado"}
                       </label>
-                      <input
-                        type="text"
-                        required
+                      <DurationHoursMinutesSelect
+                        language={language}
                         value={tempPautaDuration}
-                        onChange={(e) => setTempPautaDuration(e.target.value)}
-                        placeholder="Ex: 30 mins"
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-850 focus:outline-none"
+                        onChangeMinutes={(m) => setTempPautaDuration(formatMinutesAsTime(m))}
+                        selectClassName="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-850 focus:outline-none cursor-pointer"
                       />
                     </div>
 
@@ -1391,9 +1471,13 @@ export default function ScheduleMeetingModal({
                       );
                     }
 
+                    for (const p of tempPautaParticipants) {
+                      incluirComoParticipante(p.displayName ?? "", p.entraObjectId, p.email);
+                    }
+
                     // Reset states
                     setTempPautaTitle("");
-                    setTempPautaDuration("30 mins");
+                    setTempPautaDuration("00:30");
                     setTempPautaAuthorUser(null);
                     setTempPautaDescription("");
                     setTempPautaCircular(false);
@@ -1415,7 +1499,7 @@ export default function ScheduleMeetingModal({
         {/* EDIT AGENDA TOPIC SUB-MODAL */}
         {editingAgendaIndex !== null && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
-            <div className="bg-white border border-slate-200 rounded-3xl p-6 max-w-md w-full animate-fade-in shadow-2xl font-medium text-xs text-slate-705">
+            <div className="bg-white border border-slate-200 rounded-3xl p-6 max-w-md w-full max-h-[85vh] overflow-y-auto animate-fade-in shadow-2xl font-medium text-xs text-slate-705">
               <div className="flex justify-between items-center mb-4 border-b border-slate-100 pb-2">
                 <h4 className="text-sm font-extrabold text-[#001e2d] uppercase">
                   {language === "en" ? "Edit Agenda Topic" : "Editar Tópico da Pauta"}
@@ -1448,12 +1532,11 @@ export default function ScheduleMeetingModal({
                     <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
                       {language === "en" ? "Duration" : "Duração"}
                     </label>
-                    <input
-                      type="text"
-                      required
+                    <DurationHoursMinutesSelect
+                      language={language}
                       value={editingTopicDuration}
-                      onChange={(e) => setEditingTopicDuration(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-850 focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                      onChangeMinutes={(m) => setEditingTopicDuration(formatMinutesAsTime(m))}
+                      selectClassName="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-850 focus:outline-none focus:ring-1 focus:ring-[#00658d] cursor-pointer"
                     />
                   </div>
 
@@ -1486,6 +1569,117 @@ export default function ScheduleMeetingModal({
                     {renderAvisoResponsavelParticipante(editingTopicAuthor, editingTopicAuthorOid)}
                   </div>
                 </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                      {language === "en" ? "Pauta type" : "Tipo de Pauta"}
+                    </label>
+                    <select
+                      value={editingTopicTypeId}
+                      onChange={(e) => setEditingTopicTypeId(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-800 cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                    >
+                      {pautaTypes.map((pt) => (
+                        <option key={pt.id} value={pt.id}>{pt.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                      {language === "en" ? "Pauta nature" : "Natureza da Pauta"}
+                    </label>
+                    <select
+                      value={editingTopicNatureId}
+                      onChange={(e) => setEditingTopicNatureId(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-800 cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                    >
+                      {pautaNatures.map((pn) => (
+                        <option key={pn.id} value={pn.id}>{pn.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={editingTopicFup}
+                    onChange={(e) => setEditingTopicFup(e.target.checked)}
+                    className="w-4 h-4 accent-[#00658d] cursor-pointer"
+                  />
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                    {language === "en" ? "Classify as follow-up (FUP) theme" : "Classificar como Tema de FUP"}
+                  </span>
+                </label>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                    {language === "en" ? "Recurring theme?" : "Tema circular?"}
+                  </label>
+                  <select
+                    value={editingTopicCircular ? "sim" : "nao"}
+                    onChange={(e) => setEditingTopicCircular(e.target.value === "sim")}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-800 cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                  >
+                    <option value="nao">{language === "en" ? "No" : "Não"}</option>
+                    <option value="sim">{language === "en" ? "Yes" : "Sim"}</option>
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                    {language === "en" ? "Description / Debate objective" : "Descrição / Objetivo de Debate"}
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={editingTopicDescription}
+                    onChange={(e) => setEditingTopicDescription(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-800 focus:outline-none resize-none font-sans"
+                  />
+                </div>
+
+                {/* Participantes do TEMA (Biblioteca) — imediato, não espera
+                    "Gravar Alterações". Só existe com agendaTopicId. */}
+                {editingTopicAgendaTopicId && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                      {language === "en" ? "Pauta participants" : "Participantes da Pauta"}
+                    </label>
+                    <DirectoryUserPicker
+                      language={language}
+                      selected={null}
+                      placeholder={language === "en" ? "Add a participant..." : "Adicionar participante..."}
+                      onSelect={handleAddEditingTopicParticipant}
+                      onClear={() => {}}
+                    />
+                    {editingTopicParticipantsError && (
+                      <p className="text-[10px] text-red-500 font-semibold">{editingTopicParticipantsError}</p>
+                    )}
+                    {editingTopicParticipantsLoading && (
+                      <p className="text-[10px] text-slate-400 font-semibold">
+                        {language === "en" ? "Loading…" : "Carregando…"}
+                      </p>
+                    )}
+                    {editingTopicParticipants.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-1">
+                        {editingTopicParticipants.map((p) => (
+                          <span key={p.id} className="inline-flex items-center gap-1 bg-[#00658d]/5 text-[#00658d] text-[10px] font-bold px-2 py-0.5 rounded-full">
+                            {p.displayName ?? p.userName ?? p.email}
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveEditingTopicParticipant(p.id)}
+                              className="hover:text-red-600"
+                              aria-label="Remover"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="mt-6 pt-3 border-t border-slate-100 flex justify-end gap-2 select-none">
