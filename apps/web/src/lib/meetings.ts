@@ -48,6 +48,14 @@ export async function createMeeting(payload: CreateMeetingPayload): Promise<ApiM
 }
 
 /**
+ * Apaga a reunião. Cascata inteira (participantes, pautas vinculadas,
+ * Anotações, Ata) acontece no servidor; a Biblioteca e os FUPs sobrevivem.
+ * 204 sem corpo — não há reunião para devolver.
+ */
+export const deleteMeeting = (id: string): Promise<void> =>
+  apiRequest<void>(`/meetings/${id}`, { auth: true, method: "DELETE" });
+
+/**
  * Mensagem para a usuária, a partir do status HTTP.
  *
  * A API já devolve texto pronto para 400 e 409 — são erros de preenchimento e

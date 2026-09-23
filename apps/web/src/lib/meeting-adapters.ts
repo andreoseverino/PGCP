@@ -37,6 +37,9 @@ export type ApiMeetingStatus =
 export interface ApiGovernanceBody {
   id: string;
   name: string;
+  /** Presidente da Mesa cadastrado no órgão (fato do órgão, não da reunião). */
+  chairEntraObjectId: string | null;
+  chairName: string | null;
 }
 
 export interface ApiMeetingSummary {
@@ -321,6 +324,10 @@ export function meetingFromApi(api: ApiMeetingSummary | ApiMeetingDetail): Meeti
     // Exibição do órgão. A identidade continua sendo `governanceBody.id`;
     // este campo textual não resolve nada no servidor.
     category: api.governanceBody.name,
+    // Presidente da Mesa do ÓRGÃO — alimenta a seção MESA da Ata
+    // (`buildMinutesTemplate`). `null` = nenhum presidente cadastrado ainda.
+    governanceBodyChairName: api.governanceBody.chairName,
+    governanceBodyChairEntraObjectId: api.governanceBody.chairEntraObjectId,
     status: statusFromApi(api.status),
     expectedParticipantsCount: api.participantsCount,
     agendaItemsCount: api.agendaItemsCount,

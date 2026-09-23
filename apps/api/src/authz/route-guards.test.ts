@@ -178,7 +178,6 @@ test("meetings: as rotas de maior risco estao individualmente protegidas", () =>
     // Libera o envio do convite: quem pode marcar aprovado decide quando o
     // convite pode sair.
     ["POST", "/:id/agenda-approval"],
-    ["PUT", "/:id/notes"],
     ["PUT", "/:id/minutes"],
     ["POST", "/:id/minutes/clear-by-secretariat"],
   ];
@@ -194,9 +193,9 @@ test("meetings: as rotas de maior risco estao individualmente protegidas", () =>
   }
 });
 
-test("meetings: Anotacoes e Ata sao legiveis por usuario ativo e escritas pela Assessoria", () => {
+test("meetings: Ata e legivel por usuario ativo e escrita pela Assessoria", () => {
   const todas = rotasDe(meetingsRouter);
-  for (const caminho of ["/:id/notes", "/:id/minutes"]) {
+  for (const caminho of ["/:id/minutes"]) {
     const leitura = todas.find((r) => r.metodo === "GET" && r.caminho === caminho);
     assert.ok(leitura, `GET ${caminho} deveria existir`);
     assert.ok(leitura.handlers.includes(requireActivePgcpUser));

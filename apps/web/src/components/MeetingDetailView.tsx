@@ -1,9 +1,8 @@
-import React, { useState, useEffect, useRef, useMemo, lazy, Suspense } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
   AlertCircle,
   ArrowLeft,
   BellRing,
-  Bold,
   Calendar,
   Check,
   CheckSquare,
@@ -11,22 +10,15 @@ import {
   ChevronUp,
   Clock,
   Download,
-  Eraser,
   ExternalLink,
   Eye,
   FileCheck,
   FileText,
   GripVertical,
-  Heading1,
-  Heading2,
   Info,
-  Italic,
   Landmark,
-  List,
-  ListOrdered,
   Lock,
   MessageSquare,
-  NotebookPen,
   Pencil,
   Play,
   Plus,
@@ -37,7 +29,6 @@ import {
   User,
   Users,
   Video,
-  Wand2,
   X,
   CalendarDays
 } from "lucide-react";
@@ -61,17 +52,11 @@ import {
 } from "../lib/agenda-validation";
 import type { FupFormInput } from "../lib/action-items";
 import {
-  NotesConflictError,
-  describeNotesError,
-  getMeetingNotes,
-  saveMeetingNotes,
-  type MeetingNotes
-} from "../lib/meeting-notes";
-import {
   MinutesConflictError,
   buildMinutesTemplate,
   clearMinutesBySecretariat,
   describeMinutesError,
+  downloadMeetingMinutesPdf,
   getMeetingMinutes,
   minutesStatusLabel,
   saveMeetingMinutes,
@@ -120,13 +105,6 @@ import {
   stageIndex,
   type MeetingStage
 } from "../lib/meeting-progress";
-
-/**
- * Editor carregado sob demanda: o Tiptap/ProseMirror pesa ~415 kB e só é
- * necessário quando a aba Anotações é aberta. O Vite gera um chunk separado
- * automaticamente a partir deste import dinâmico.
- */
-const NotesEditor = lazy(() => import("./NotesEditor"));
 
 /** Aparência de cada estado na timeline da Visão Geral. */
 const TIMELINE_BADGES: Record<string, { className: string; labelPt: string; labelEn: string }> = {
@@ -230,34 +208,12 @@ export default function MeetingDetailView({
   // ---------------------------------------------------------------------------
   // Minutes (Ata) States
   // ---------------------------------------------------------------------------
-  // ANOTAÇÕES DA REUNIÃO
-  //
-  // HTML do editor Tiptap — não texto puro. O conteúdo volta a ser interpretado
-  // pelo próprio editor na leitura, que só aceita os nós e marcas do schema
-  // dele; nada é renderizado com `dangerouslySetInnerHTML`.
-  //
-  // Persistido em `meeting_notes` (PostgreSQL). Documento OPERACIONAL, distinto
-  // da Ata, que tem ciclo formal próprio e não é tocada por aqui.
-  // ---------------------------------------------------------------------------
-  const [notesText, setNotesText] = useState<string>("");
 
   /**
-   * Revisão que o editor está editando. O servidor só aceita a gravação se ela
-   * ainda for a vigente — é o que impede duas abas de apagarem uma à outra.
-   * `0` significa que a reunião ainda não tem documento.
+   * Mensagem personalizada e chamada Teams por pauta — ações da aba Pautas
+   * durante a reunião ao vivo (Próximas Pautas). Independentes de Anotações
+   * (removida): nunca leram nem escreveram o texto do editor.
    */
-  const [notesRevision, setNotesRevision] = useState(0);
-  const [notesStatus, setNotesStatus] = useState<
-    "idle" | "loading" | "saving" | "saved" | "error" | "conflict"
-  >("idle");
-  const [notesError, setNotesError] = useState<string | null>(null);
-
-  /**
-   * Conteúdo do servidor quando há conflito. Fica guardado para a usuária
-   * escolher: nada do que ela digitou é descartado sem uma ação dela.
-   */
-  const [notesConflict, setNotesConflict] = useState<MeetingNotes | null>(null);
-
   const [isMessageModalOpen, setIsMessageModalOpen] = useState(false);
   const [messageTargetAgendaItemId, setMessageTargetAgendaItemId] = useState<string>("");
   const [messageTargetTopic, setMessageTargetTopic] = useState<string>("");
@@ -266,99 +222,6 @@ export default function MeetingDetailView({
   const [customMessageError, setCustomMessageError] = useState<string | null>(null);
   /** ID da pauta em chamada; impede clique repetido enquanto a API trabalha. */
   const [callingAgendaItemId, setCallingAgendaItemId] = useState<string | null>(null);
-
-  /*
-   * Carga inicial. `cielo_meeting_notes_*` não é consultada: a fonte é o banco,
-   * e reunião sem documento significa anotação vazia.
-   */
-  useEffect(() => {
-    let cancelado = false;
-    const controlador = new AbortController();
-
-    setNotesStatus("loading");
-    setNotesError(null);
-    setNotesConflict(null);
-
-    getMeetingNotes(meeting.id, controlador.signal)
-      .then((doc) => {
-        if (cancelado) return;
-        setNotesText(doc.contentHtml);
-        setNotesRevision(doc.revision);
-        setNotesStatus("idle");
-      })
-      .catch((erro) => {
-        if (cancelado || (erro as Error)?.name === "AbortError") return;
-        setNotesStatus("error");
-        setNotesError(describeNotesError(erro, language));
-      });
-
-    return () => {
-      cancelado = true;
-      controlador.abort();
-    };
-  }, [meeting.id]);
-
-  /** Última versão gravada com sucesso. Evita PUT sem mudança de conteúdo. */
-  const notesSalvasRef = useRef<string | null>(null);
-
-  /*
-   * AUTOSAVE com debounce.
-   *
-   * O modelo anterior gravava a cada tecla — inofensivo contra `localStorage`,
-   * inaceitável contra HTTP. 1200 ms é o intervalo: longo o bastante para
-   * agrupar uma frase digitada, curto o bastante para a pessoa não perder
-   * trabalho ao fechar a aba.
-   *
-   * Não salva enquanto carrega, nem durante um conflito não resolvido: aí o
-   * servidor tem conteúdo que a tela ainda não mostrou.
-   */
-  useEffect(() => {
-    // Sem `PGCP.Assessoria` não há gravação: tentar salvar renderia 403 em
-    // laço e sujaria a trilha. A leitura continua liberada.
-    if (!canSchedule) return;
-    if (notesStatus === "loading" || notesStatus === "conflict") return;
-    if (notesSalvasRef.current === null) {
-      // Primeira renderização depois da carga: nada mudou ainda.
-      notesSalvasRef.current = notesText;
-      return;
-    }
-    if (notesText === notesSalvasRef.current) return;
-
-    const timer = setTimeout(() => {
-      setNotesStatus("saving");
-      setNotesError(null);
-
-      saveMeetingNotes(meeting.id, notesText, notesRevision)
-        .then((doc) => {
-          notesSalvasRef.current = doc.contentHtml;
-          setNotesRevision(doc.revision);
-          setNotesStatus("saved");
-        })
-        .catch((erro) => {
-          if (erro instanceof NotesConflictError) {
-            // O texto local FICA. Descartá-lo em silêncio perderia o que a
-            // pessoa acabou de escrever.
-            setNotesConflict(erro.current);
-            setNotesStatus("conflict");
-            return;
-          }
-          setNotesStatus("error");
-          setNotesError(describeNotesError(erro, language));
-        });
-    }, 1200);
-
-    return () => clearTimeout(timer);
-  }, [notesText, notesRevision, notesStatus, meeting.id, language]);
-
-  /** Descarta o texto local e adota a versão do servidor. Ação explícita. */
-  const recarregarNotas = () => {
-    if (!notesConflict) return;
-    setNotesText(notesConflict.contentHtml);
-    setNotesRevision(notesConflict.revision);
-    notesSalvasRef.current = notesConflict.contentHtml;
-    setNotesConflict(null);
-    setNotesStatus("idle");
-  };
 
   /*
    * ATA — fonte de verdade no PostgreSQL (`meeting_minutes`).
@@ -448,11 +311,16 @@ export default function MeetingDetailView({
   };
 
   /**
-   * Abre a Ata com um esqueleto montado só de fatos já registrados.
+   * (Re)monta o esqueleto da Ata só com fatos já registrados — chamada tanto
+   * na criação (estado vazio) quanto no botão "Resetar Esqueleto", que existe
+   * porque atualizar o formato do esqueleto não republica sozinho as Atas já
+   * geradas: sem um jeito de regenerar, cada ajuste de modelo exigia apagar o
+   * texto na mão.
    *
-   * Não gera conteúdo: deliberação, decisão, votação, responsável e prazo ficam
-   * em branco para quem participou da sessão escrever. O texto não é gravado
-   * aqui — vira rascunho na tela até alguém salvar.
+   * Não gera conteúdo: deliberação, decisão, votação, responsável e prazo
+   * ficam em branco para quem participou da sessão escrever. O texto não é
+   * gravado aqui — vira rascunho na tela até alguém salvar, e SUBSTITUI
+   * qualquer coisa já digitada (o botão de reset confirma antes de chamar).
    */
   const handleCreateMinutes = () => {
     setMinutesText(buildMinutesTemplate(meeting, language));
@@ -825,10 +693,10 @@ export default function MeetingDetailView({
     }
 
     // Ponto ÚNICO de encerramento do estado ao vivo. Concluir e reabrir passam
-    // por aqui vindo tanto de Pautas quanto de Anotações, então a limpeza não
-    // precisa ser repetida nos handlers. Sem isso, concluir pelas Anotações
-    // deixava o cronômetro rodando e o "Apresentando" persistido, e a pauta
-    // ressuscitava em apresentação ao ser reaberta.
+    // por aqui vindo tanto da lista principal quanto do atalho em Próximas
+    // Pautas, então a limpeza não precisa ser repetida nos handlers. Sem isso,
+    // concluir pelo atalho deixava o cronômetro rodando e o "Apresentando"
+    // persistido, e a pauta ressuscitava em apresentação ao ser reaberta.
     // A remoção é condicionada a "Apresentando": "Postergado" nunca é tocado.
     if (topicStates[item.id] === "Apresentando") setTopicState(item.id, null);
     if (activeAgendaId === item.id) setActiveAgendaId(null);
@@ -842,88 +710,7 @@ export default function MeetingDetailView({
     }
   };
 
-  /** Acrescenta um bloco HTML ao final das anotações. */
-  const appendToNotes = (html: string) => {
-    setNotesText((prev) => (prev && prev !== "<p></p>" ? `${prev}${html}` : html));
-  };
-
-  /** Escapa texto vindo dos dados antes de virar HTML do editor. */
-  const esc = (v: string) =>
-    (v || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-
-  // --- Apoio contextual: monta texto a partir dos dados JÁ existentes -------
-  // Não há IA nem chamada externa: são consultas ao próprio objeto `meeting`.
-  const dataPorExtenso = () =>
-    new Date(meeting.date + "T12:00:00").toLocaleDateString(language === "en" ? "en-US" : "pt-BR", {
-      day: "2-digit", month: "long", year: "numeric"
-    });
-
-  const relatedFups = (actionItems || []).filter((a) => {
-    if (a.status === "Completed") return false;
-    const origem = (a.origin || "").toLowerCase();
-    return (
-      origem.includes((meeting.title || "").toLowerCase()) ||
-      (!!meeting.category && origem.includes(meeting.category.toLowerCase()))
-    );
-  });
-
-  const insertSummary = () =>
-    appendToNotes(
-      `<h2>${esc(meeting.title)}</h2>` +
-        `<ul>` +
-        `<li>${esc(dataPorExtenso())} — ${esc(meeting.startTime)} às ${esc(meeting.endTime)}</li>` +
-        `<li>Órgão: ${esc(meeting.category || "-")}</li>` +
-        `<li>Organização: ${esc(meeting.organizer || "-")}</li>` +
-        `</ul>`
-    );
-
-  const insertParticipants = () => {
-    const itens = (meeting.participants || []).map(
-      (p) => `<li>${esc(p.name)} — ${esc(p.role)}${p.confirmed ? "" : " (não confirmado)"}</li>`
-    );
-    appendToNotes(
-      `<h2>${language === "en" ? "Participants" : "Participantes"}</h2>` +
-        `<ul>${itens.length ? itens.join("") : `<li>${language === "en" ? "None registered" : "Nenhum registrado"}</li>`}</ul>`
-    );
-  };
-
-  const insertUpcomingTopics = () => {
-    const itens = (meeting.agenda || []).map(
-      (ag) => `<li>${esc(ag.time)} — ${esc(ag.title)}${ag.author ? ` (${esc(ag.author)})` : ""}</li>`
-    );
-    appendToNotes(
-      `<h2>${language === "en" ? "Agenda" : "Pautas"}</h2>` +
-        `<ol>${itens.length ? itens.join("") : `<li>${language === "en" ? "No topics" : "Nenhuma pauta"}</li>`}</ol>`
-    );
-  };
-
-  const insertRelatedFups = () => {
-    const itens = relatedFups.map(
-      (f) =>
-        `<li data-checked="false" data-type="taskItem"><label><input type="checkbox"><span></span></label>` +
-        `<div><p>${esc(f.title)} — ${esc(f.assignedUser.name)}</p></div></li>`
-    );
-    appendToNotes(
-      `<h2>${language === "en" ? "Open follow-ups" : "FUPs em aberto"}</h2>` +
-        (itens.length
-          ? `<ul data-type="taskList">${itens.join("")}</ul>`
-          : `<p>${language === "en" ? "None linked" : "Nenhum vinculado a esta reunião"}</p>`)
-    );
-  };
-
-  const insertStructure = () =>
-    appendToNotes(
-      `<h2>${language === "en" ? "Discussion" : "Discussões"}</h2><p></p>` +
-        `<h2>${language === "en" ? "Decisions" : "Deliberações"}</h2><p></p>` +
-        `<h2>${language === "en" ? "Next steps" : "Encaminhamentos"}</h2>` +
-        `<ul data-type="taskList"><li data-checked="false" data-type="taskItem">` +
-        `<label><input type="checkbox"><span></span></label><div><p></p></div></li></ul>`
-    );
-
-  // --- Ações das pautas na aba Anotações ------------------------------------
+  // --- Ações das pautas em execução (Pautas · Próximas Pautas) -------------
   const teamsDeliverySummary = (
     result: Awaited<ReturnType<typeof callAgendaItemParticipants>>,
     purpose: "message" | "call"
@@ -1049,15 +836,30 @@ export default function MeetingDetailView({
  *                              próprio contra `/action-items`.
  */
 
-  const handleDownloadMinutesFile = () => {
-    const element = document.createElement("a");
-    const file = new Blob([minutesText], { type: "text/plain;charset=UTF-8" });
-    element.href = URL.createObjectURL(file);
-    element.download = `Ata_Cielo_${meeting.title.replace(/\s+/g, "_")}.txt`;
-    document.body.appendChild(element);
-    element.click();
-    document.body.removeChild(element);
-    
+  const [isDownloadingMinutesPdf, setIsDownloadingMinutesPdf] = useState(false);
+
+  /**
+   * Exporta a Ata como PDF de verdade — nunca .txt. O documento é gerado no
+   * servidor a partir do conteúdo já persistido (mesma identidade visual do
+   * PDF de validação de pautas), não do texto solto no editor.
+   */
+  const handleDownloadMinutesFile = async () => {
+    if (isDownloadingMinutesPdf) return;
+    setIsDownloadingMinutesPdf(true);
+    try {
+      const { blob, filename } = await downloadMeetingMinutesPdf(meeting.id);
+      const element = document.createElement("a");
+      element.href = URL.createObjectURL(blob);
+      element.download = filename ?? `Ata-${meeting.title.replace(/\s+/g, "-")}.pdf`;
+      document.body.appendChild(element);
+      element.click();
+      document.body.removeChild(element);
+      URL.revokeObjectURL(element.href);
+    } catch (error) {
+      triggerToast(describeMinutesError(error, language));
+    } finally {
+      setIsDownloadingMinutesPdf(false);
+    }
   };
 
 
@@ -1449,16 +1251,16 @@ export default function MeetingDetailView({
       agendaTopicId: type === "standalone" ? (ag as StandaloneAgenda).id : undefined
     };
 
-    // POST direcionado: o banco gera o UUID e devolve a reunião inteira.
-    // Nenhum id local é inventado para uma linha que vai existir no PostgreSQL.
+    /*
+     * POST direcionado: o banco gera o UUID e devolve a reunião inteira.
+     * Nenhum id local é inventado para uma linha que vai existir no PostgreSQL.
+     *
+     * `persistirNovaPauta` já dispara o toast de sucesso OU de erro, a partir
+     * do resultado real (ex.: 409 quando o tema já está vinculado). Um toast
+     * de sucesso fixo aqui, disparado sem esperar a resposta, mentia quando a
+     * chamada falhava — inclusive brigando na tela com o toast de erro real.
+     */
     void persistirNovaPauta(newAgendaItem);
-
-    triggerToast(
-      language === "en" 
-        ? `Successfully imported topic: "${newAgendaItem.title}" into board pauta.`
-        : `Sucesso: Tema "${newAgendaItem.title}" integrado na pauta desta reunião!`
-    );
-
   };
 
   const handleAddLiveExtraTopic = (
@@ -1547,7 +1349,7 @@ export default function MeetingDetailView({
     // Nome FIXO "Validação". O estado (Pendente de envio / Aguardando aprovação /
     // Aprovado) é derivado de `agendaValidation` e mostrado no centro do donut.
     { id: "validation", label: language === "en" ? "Validation" : "Validação", tab: "Agendas" },
-    { id: "in_meeting", label: language === "en" ? "In Meeting" : "Em Reunião", tab: "Notes" },
+    { id: "in_meeting", label: language === "en" ? "In Meeting" : "Em Reunião", tab: "Agendas" },
     { id: "recording", label: language === "en" ? "Recording" : "Registro", tab: "Fup" },
     { id: "minutes", label: language === "en" ? "Minutes" : "Ata", tab: "Minutes" },
     { id: "finished", label: language === "en" ? "Finished" : "Finalizado", tab: "Minutes" }
@@ -1600,10 +1402,7 @@ export default function MeetingDetailView({
   ];
   const COLORS = ['#10b981', '#f1f5f9'];
 
-  // --- Derivados da aba Anotações ------------------------------------------
-  const notesPlain = notesText.replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").trim();
-  const notesWordCount = notesPlain ? notesPlain.split(/\s+/).length : 0;
-
+  // --- Derivados de Próximas Pautas (aba Pautas, execução) -----------------
   const notesTopics = (meeting.agenda || []).map((ag, index) => ({
     ag,
     index,
@@ -1636,10 +1435,21 @@ export default function MeetingDetailView({
    * "Vincular", permitindo reimportá-la para a reunião de onde acabou de sair.
    * O filtro é LOCAL: a cópia continua visível na Biblioteca e disponível para
    * qualquer outra reunião.
+   *
+   * Exclui também o que JÁ está vinculado a esta reunião — sem isso, o mesmo
+   * tema continuava oferecido com botão "Vincular" depois de importado, e
+   * cada clique criava outra cópia idêntica na pauta (bug real, sem barreira
+   * nem aqui nem no servidor até esta correção).
    */
+  const agendaTopicIdsJaVinculados = new Set(
+    (meeting.agenda || [])
+      .map((ag) => ag.agendaTopicId)
+      .filter((id): id is string => Boolean(id))
+  );
   const bibliotecaDisponivel = standaloneAgendas.filter(
     (ca) =>
       ca.sourceMeetingId !== meeting.id &&
+      !agendaTopicIdsJaVinculados.has(ca.id) &&
       ca.title.toLowerCase().includes(annualSearch.toLowerCase())
   );
 
@@ -1910,9 +1720,8 @@ export default function MeetingDetailView({
             { id: "Overview", label: language === "en" ? "Overview" : "Visão Geral", icon: FileText },
             { id: "Agendas", label: language === "en" ? "Agenda" : "Pautas", icon: CheckSquare },
             { id: "Participants", label: language === "en" ? "Participants" : "Participantes", icon: Users },
-            { id: "Fup", label: "FUP", icon: AlertCircle },
-            { id: "Notes", label: language === "en" ? "Notes" : "Anotações", icon: NotebookPen },
-            { id: "Minutes", label: language === "en" ? "Minutes" : "Ata", icon: FileCheck }
+            { id: "Minutes", label: language === "en" ? "Minutes" : "Ata", icon: FileCheck },
+            { id: "Fup", label: "FUP", icon: AlertCircle }
           ].map((tab) => {
             const isTabActive = activeSubTab === tab.id;
             const Icon = tab.icon;
@@ -2595,7 +2404,7 @@ export default function MeetingDetailView({
 
           {/* Planejamento: agenda (2/3) + Biblioteca (1/3). Execução/Resultado:
               a agenda ocupa a largura toda e a Biblioteca não aparece. */}
-          <div className={`grid grid-cols-1 gap-8 ${modoPlanejamento ? "lg:grid-cols-3" : ""}`}>
+          <div className={`grid grid-cols-1 gap-8 ${modoPlanejamento || modoExecucao ? "lg:grid-cols-3" : ""}`}>
           <div className={modoPlanejamento ? "lg:col-span-2 space-y-6" : "space-y-6"}>
             <div className="bg-white border border-slate-200 p-6 md:p-8 rounded-2xl card-shadow">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-4 border-b border-slate-100">
@@ -3152,143 +2961,14 @@ export default function MeetingDetailView({
             </div>
           </div>
           )}
-          </div>
-        </div>
-      )}
 
-      {activeSubTab === "Notes" && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mt-8">
-
-          {/* EDITOR DE ANOTAÇÕES */}
-          <div className="lg:col-span-2 space-y-4">
-            <div className="bg-white border border-slate-200 rounded-2xl card-shadow overflow-hidden">
-              <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-b border-slate-100">
-                <div>
-                  <h3 className="text-base font-extrabold text-slate-900 uppercase tracking-wide flex items-center gap-2">
-                    <NotebookPen className="w-4 h-4 text-[#00658d]" />
-                    {language === "en" ? "Meeting notes" : "Anotações da Reunião"}
-                  </h3>
-                  <p className="text-xs text-slate-400 font-semibold mt-0.5">
-                    {/* O texto dizia "neste dispositivo" — agora vai para o banco. */}
-                    {language === "en"
-                      ? "Your working area during the session. Saved automatically."
-                      : "Sua área de trabalho durante a sessão. Salvo automaticamente."}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  {/* Estado honesto da gravação: nunca dizer "salvo" sem sê-lo. */}
-                  {notesStatus === "loading" && (
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                      {language === "en" ? "Loading..." : "Carregando..."}
-                    </span>
-                  )}
-                  {notesStatus === "saving" && (
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                      {language === "en" ? "Saving..." : "Salvando..."}
-                    </span>
-                  )}
-                  {notesStatus === "saved" && (
-                    <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">
-                      {language === "en" ? "Saved" : "Salvo"}
-                    </span>
-                  )}
-                  {notesStatus === "error" && (
-                    <span className="text-[10px] font-bold text-rose-600 uppercase tracking-wider" title={notesError ?? ""}>
-                      {language === "en" ? "Save failed" : "Erro ao salvar"}
-                    </span>
-                  )}
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                    {notesWordCount > 0
-                      ? `${notesWordCount} ${language === "en" ? "words" : "palavras"}`
-                      : (language === "en" ? "Empty" : "Vazio")}
-                  </span>
-                </div>
-              </div>
-
-              {/*
-                CONFLITO — outra sessão gravou primeiro.
-                O autosave para e o texto local FICA na tela. Recarregar é uma
-                escolha explícita: nada é sobrescrito nem descartado sozinho.
-              */}
-              {notesStatus === "conflict" && (
-                <div
-                  role="alert"
-                  className="mb-3 flex flex-col sm:flex-row sm:items-center gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900"
-                >
-                  <Info className="w-4 h-4 shrink-0" />
-                  <span className="text-[11px] font-semibold min-w-0 flex-1">
-                    {language === "en"
-                      ? "These notes were changed in another session. Your text is still here and was not saved."
-                      : "Estas anotações foram alteradas em outra sessão. Seu texto continua aqui e não foi salvo."}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={recarregarNotas}
-                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-bold uppercase tracking-wider transition cursor-pointer shrink-0"
-                  >
-                    {language === "en" ? "Load latest version" : "Carregar versão mais recente"}
-                  </button>
-                </div>
-              )}
-
-              {/* Editor de texto rico carregado sob demanda (Tiptap) */}
-              <Suspense
-                fallback={
-                  <div className="min-h-[29rem] flex items-center justify-center text-slate-300">
-                    <span className="w-5 h-5 border-2 border-slate-200 border-t-[#00658d] rounded-full animate-spin" />
-                  </div>
-                }
-              >
-                <NotesEditor
-                  value={notesText}
-                  onChange={setNotesText}
-                  documentKey={meeting.id}
-                  language={language}
-                  editable={canSchedule}
-                  placeholder={language === "en"
-                    ? "Write your notes during the meeting..."
-                    : "Escreva suas anotações durante a reunião..."}
-                />
-              </Suspense>
-            </div>
-
-            {/* APOIO CONTEXTUAL — sem IA: monta texto com dados da própria reunião */}
-            <div className="bg-white border border-slate-200 rounded-2xl p-5 card-shadow">
-              <div className="flex items-center gap-2 mb-1">
-                <Wand2 className="w-4 h-4 text-[#00658d]" />
-                <h4 className="text-xs font-extrabold text-slate-900 uppercase tracking-wider">
-                  {language === "en" ? "Contextual support" : "Apoio Contextual"}
-                </h4>
-              </div>
-              <p className="text-[11px] text-slate-400 font-semibold mb-3.5 leading-relaxed">
-                {language === "en"
-                  ? "Inserts blocks built from this meeting's own data. No external service involved."
-                  : "Insere blocos montados com os dados desta própria reunião. Nenhum serviço externo envolvido."}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {[
-                  { label: language === "en" ? "Meeting summary" : "Resumo da reunião", action: insertSummary },
-                  { label: language === "en" ? "Participants" : "Participantes", action: insertParticipants },
-                  { label: language === "en" ? "Agenda topics" : "Pautas", action: insertUpcomingTopics },
-                  { label: language === "en" ? "Open follow-ups" : "FUPs em aberto", action: insertRelatedFups },
-                  { label: language === "en" ? "Suggested structure" : "Estrutura sugerida", action: insertStructure }
-                ].map((chip) => (
-                  <button
-                    key={chip.label}
-                    type="button"
-                    onClick={chip.action}
-                    className="px-3 py-1.5 text-[11px] font-bold text-slate-600 bg-slate-50 border border-slate-200 rounded-lg hover:border-[#00658d] hover:text-[#00658d] hover:bg-white transition cursor-pointer inline-flex items-center gap-1.5"
-                  >
-                    <Plus className="w-3 h-3" />
-                    {chip.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* PRÓXIMAS PAUTAS */}
-          <div className="lg:col-span-1">
+          {/* Próximas Pautas — Chamar, Mensagem e Concluir durante a reunião ao
+              vivo. Só em Execução: antes da reunião não existe "próxima pauta"
+              no sentido operacional, e depois dela conduzir deixa de fazer
+              sentido. Vivia na antiga aba Anotações; nada aqui lê ou escreve
+              texto livre, então a remoção do editor não tira nada disto. */}
+          {modoExecucao && (
+          <div className="space-y-6">
             <div className="bg-white border border-slate-200 rounded-2xl p-5 card-shadow">
               <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider mb-1 flex items-center gap-2">
                 <CheckSquare className="w-4 h-4 text-[#00658d]" />
@@ -3447,6 +3127,8 @@ export default function MeetingDetailView({
               )}
             </div>
           </div>
+          )}
+          </div>
         </div>
       )}
 
@@ -3504,7 +3186,12 @@ export default function MeetingDetailView({
                       value={minutesText}
                       readOnly={!canSchedule}
                       onChange={(e) => setMinutesText(e.target.value)}
-                      className="w-full text-xs font-mono bg-slate-50 border border-slate-200 rounded-xl p-5 leading-relaxed focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#003e58]/20 focus:border-[#00658d]"
+                      // "Courier New" explícito, não o genérico `font-mono` do
+                      // Tailwind: esse resolve para fontes diferentes por
+                      // sistema operacional (Consolas no Windows, Menlo no
+                      // Mac), e o PDF exportado usa Courier — precisam bater.
+                      style={{ fontFamily: '"Courier New", Courier, monospace' }}
+                      className="w-full text-xs bg-slate-50 border border-slate-200 rounded-xl p-5 leading-relaxed focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#003e58]/20 focus:border-[#00658d]"
                     />
 
                     {/* CONFLITO — o texto local NÃO é descartado sozinho. */}
@@ -3542,12 +3229,34 @@ export default function MeetingDetailView({
                       </p>
 
                       <div className="flex gap-2 justify-end">
+                        {canSchedule && (
                         <button
-                          onClick={handleDownloadMinutesFile}
+                          type="button"
+                          onClick={() => {
+                            const msg = language === "pt"
+                              ? "Isso apaga o texto atual (inclusive o que ainda não foi salvo) e recomeça do esqueleto com os dados de hoje da reunião. Continuar?"
+                              : "This erases the current text (including anything not saved yet) and starts over from the skeleton with today's meeting data. Continue?";
+                            if (window.confirm(msg)) handleCreateMinutes();
+                          }}
+                          title={language === "en"
+                            ? "Discard current text and regenerate the skeleton"
+                            : "Descarta o texto atual e gera o esqueleto de novo"}
                           className="px-4 py-2 bg-white hover:bg-slate-50 border border-slate-250 text-slate-700 text-xs font-extrabold rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-xs"
                         >
+                          <RotateCcw className="w-4 h-4 text-slate-500" />
+                          {language === "en" ? "Reset skeleton" : "Resetar Esqueleto"}
+                        </button>
+                        )}
+
+                        <button
+                          onClick={() => void handleDownloadMinutesFile()}
+                          disabled={isDownloadingMinutesPdf}
+                          className="px-4 py-2 bg-white hover:bg-slate-50 border border-slate-250 text-slate-700 text-xs font-extrabold rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
                           <Download className="w-4 h-4 text-slate-500" />
-                          {language === "en" ? "Export" : "Exportar Ata"}
+                          {isDownloadingMinutesPdf
+                            ? (language === "en" ? "Generating..." : "Gerando...")
+                            : (language === "en" ? "Export" : "Exportar Ata")}
                         </button>
 
                         {canSchedule && (

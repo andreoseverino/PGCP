@@ -1,9 +1,16 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { mockTestPeople } from "./auth/mock-login-people";
-import { Meeting, AuditLog, ActionItem, StandaloneAgenda, GovernanceBody, SessionUser, TestProfile } from "./types";
+import { Meeting, AuditLog, ActionItem, StandaloneAgenda, GovernanceBody, GovernanceBodyChairInput, SessionUser, TestProfile } from "./types";
 import { ApiError, apiRequest } from "./lib/api";
-import { describeMeetingError, getMeeting, listMeetings, meetingFromApi, updateMeeting } from "./lib/meetings";
+import {
+  deleteMeeting as apiDeleteMeeting,
+  describeMeetingError,
+  getMeeting,
+  listMeetings,
+  meetingFromApi,
+  updateMeeting
+} from "./lib/meetings";
 import {
   actionItemFromApi,
   buildActionItemPayload,
@@ -65,7 +72,7 @@ import ScheduleMeetingModal from "./components/ScheduleMeetingModal";
 import UnlinkedAgendasView from "./components/UnlinkedAgendasView";
 import FupListView from "./components/FupListView";
 import LoginView from "./components/LoginView";
-import { FileCheck, Sparkles, X } from "lucide-react";
+import { FileCheck, Sparkles, Trash2, X } from "lucide-react";
 
 /**
  * Chave da sessão local. Fica em sessionStorage, NÃO em localStorage:
@@ -165,6 +172,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  /** Reunião com exclusão pendente de confirmação. `null` = modal fechado. */
+  const [meetingParaExcluir, setMeetingParaExcluir] = useState<Meeting | null>(null);
 
   /*
    * REUNIÕES: PostgreSQL, via GET /meetings.
@@ -441,21 +450,28 @@ export default function App() {
     void loadActionItems();
   }, [isAuthenticated]);
 
-  const handleCreateGovernanceBody = async (name: string) => {
+  const handleCreateGovernanceBody = async (
+    name: string,
+    chair: GovernanceBodyChairInput | null
+  ) => {
     const created = await apiRequest<GovernanceBody>("/governance-bodies", {
       auth: true,
       method: "POST",
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name, chair })
     });
     setGovernanceBodies((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
     triggerToast(`Órgão "${created.name}" cadastrado com sucesso.`);
   };
 
-  const handleUpdateGovernanceBody = async (id: string, name: string) => {
+  const handleUpdateGovernanceBody = async (
+    id: string,
+    name: string,
+    chair: GovernanceBodyChairInput | null
+  ) => {
     const updated = await apiRequest<GovernanceBody>(`/governance-bodies/${id}`, {
       auth: true,
       method: "PUT",
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name, chair })
     });
     setGovernanceBodies((prev) =>
       prev.map((b) => (b.id === id ? updated : b)).sort((a, b) => a.name.localeCompare(b.name))
@@ -611,23 +627,37 @@ export default function App() {
   };
 
   /*
-   * EXCLUSÃO DE REUNIÃO — indisponível.
+   * EXCLUSÃO DE REUNIÃO.
    *
-   * As reuniões agora vivem no PostgreSQL. O handler antigo removia a linha
-   * apenas do estado React: a reunião reaparecia no F5, e a trilha registrava
-   * uma exclusão que nunca aconteceu. Fingir isso é pior do que não oferecer.
+   * `PGCP.Assessoria` é a regra de autorização que faltava — o backend
+   * revalida, o botão na tela é só cortesia (mesmo padrão de toda mutação de
+   * reunião). O clique abre a confirmação; `confirmarExclusaoReuniao` é o
+   * ato de verdade, contra `DELETE /meetings/:id`.
    *
-   * `DELETE /meetings/:id` não foi criado de propósito: apagar uma reunião
-   * apaga em cascata participantes e pautas, e o modelo ainda não tem papel
-   * funcional que diga quem pode fazer isso. A ação volta quando existir a
-   * regra de autorização.
+   * NÃO apaga a Biblioteca nem os FUPs: o servidor só deleta o que existe
+   * exclusivamente por causa desta reunião (participantes, pautas vinculadas,
+   * Anotações, Ata). Temas da Biblioteca e FUPs sobrevivem, só perdendo o
+   * vínculo de origem — mesmo princípio do "Postergar".
    */
-  const handleDeleteMeeting = () => {
-    triggerToast(
-      language === "pt"
-        ? "Exclusão de reunião ainda não disponível: aguarda a regra de autorização."
-        : "Deleting meetings is not available yet: it awaits the authorization rule."
-    );
+  const handleDeleteMeeting = (id: string) => {
+    const alvo = meetings.find((m) => m.id === id);
+    if (alvo) setMeetingParaExcluir(alvo);
+  };
+
+  const confirmarExclusaoReuniao = async () => {
+    const alvo = meetingParaExcluir;
+    if (!alvo) return;
+
+    try {
+      await apiDeleteMeeting(alvo.id);
+      if (selectedMeeting?.id === alvo.id) setSelectedMeeting(null);
+      await loadMeetings();
+      triggerToast(language === "en" ? "Meeting deleted." : "Reunião excluída.");
+    } catch (error) {
+      triggerToast(describeMeetingError(error, language));
+    } finally {
+      setMeetingParaExcluir(null);
+    }
   };
 
 
@@ -1075,8 +1105,60 @@ export default function App() {
         />
       )}
 
-      {/* Modal de confirmação de exclusão removido junto com a ação: ver
-          o comentário em `handleDeleteMeeting`. */}
+      {/* MODAL: confirmação de exclusão de reunião — identifica pelo título e
+          deixa claro que a Biblioteca não é afetada (mesmo padrão visual do
+          modal de excluir pauta em MeetingDetailView). */}
+      {meetingParaExcluir && (
+        <div
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"
+          onClick={() => setMeetingParaExcluir(null)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-sm w-full overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                  <Trash2 className="w-5 h-5 text-red-600" />
+                </div>
+                <h3 className="text-sm font-extrabold text-slate-900">
+                  {language === "pt" ? "Excluir reunião" : "Delete meeting"}
+                </h3>
+              </div>
+              <p className="text-xs text-slate-600 font-medium leading-relaxed">
+                {language === "pt" ? "Excluir a reunião " : "Delete the meeting "}
+                <span className="font-extrabold text-slate-900">&ldquo;{meetingParaExcluir.title}&rdquo;</span>
+                {language === "pt"
+                  ? "? Isso apaga participantes, anotações, Ata e o vínculo com as pautas. Esta ação não pode ser desfeita."
+                  : "? This deletes participants, Notes, Minutes and the link to its agenda items. This action cannot be undone."}
+              </p>
+              <p className="text-xs text-slate-400 font-medium leading-relaxed mt-2">
+                {language === "pt"
+                  ? "As pautas continuam disponíveis na Biblioteca."
+                  : "Agenda topics remain available in the Library."}
+              </p>
+            </div>
+            <div className="bg-slate-50 px-6 py-4 flex items-center justify-end gap-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setMeetingParaExcluir(null)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 transition rounded-xl cursor-pointer"
+              >
+                {language === "pt" ? "Cancelar" : "Cancel"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmarExclusaoReuniao()}
+                className="px-4 py-2 text-xs font-bold bg-red-600 hover:bg-red-700 active:scale-95 text-white transition rounded-xl shadow-sm cursor-pointer inline-flex items-center gap-2"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {language === "pt" ? "Excluir" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

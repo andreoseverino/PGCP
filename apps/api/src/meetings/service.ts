@@ -44,6 +44,13 @@ export const MEETINGS_LIMIT_MAX = 200;
 export interface MeetingGovernanceBody {
   id: string;
   name: string;
+  /**
+   * Presidente da Mesa CADASTRADO NO ÓRGÃO (migration 023) — fato do órgão,
+   * nao desta reuniao. Alimenta a secao MESA da Ata sem depender de alguem
+   * marcar um participante como "presidente" toda vez.
+   */
+  chairEntraObjectId: string | null;
+  chairName: string | null;
 }
 
 /**
@@ -223,6 +230,8 @@ interface MeetingRow {
   updated_at: Date;
   governance_body_id: string;
   governance_body_name: string;
+  governance_body_chair_entra_object_id: string | null;
+  governance_body_chair_name: string | null;
   organizer_user_id: string | null;
   organizer_name: string | null;
   participants_count: number;
@@ -270,7 +279,12 @@ function toSummary(row: MeetingRow): MeetingSummary {
     id: row.id,
     title: row.title,
     description: row.description,
-    governanceBody: { id: row.governance_body_id, name: row.governance_body_name },
+    governanceBody: {
+      id: row.governance_body_id,
+      name: row.governance_body_name,
+      chairEntraObjectId: row.governance_body_chair_entra_object_id,
+      chairName: row.governance_body_chair_name,
+    },
     organizer:
       row.organizer_user_id && row.organizer_name
         ? { userId: row.organizer_user_id, name: row.organizer_name }
@@ -371,8 +385,10 @@ const SUMMARY_SELECT = `
          m.pending_requirements,
          m.created_at,
          m.updated_at,
-         gb.id    AS governance_body_id,
-         gb.name  AS governance_body_name,
+         gb.id                    AS governance_body_id,
+         gb.name                  AS governance_body_name,
+         gb.chair_entra_object_id AS governance_body_chair_entra_object_id,
+         gb.chair_name            AS governance_body_chair_name,
          m.organizer_user_id,
          org.name AS organizer_name,
          (SELECT count(*) FROM meeting_participants mp WHERE mp.meeting_id = m.id)::int AS participants_count,

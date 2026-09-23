@@ -17,7 +17,9 @@ import {
   Loader2,
   Pencil
 } from "lucide-react";
-import { GovernanceBody } from "../types";
+import { GovernanceBody, GovernanceBodyChairInput } from "../types";
+import DirectoryUserPicker from "./DirectoryUserPicker";
+import type { DirectoryUser } from "../lib/directory";
 
 interface AdministrationViewProps {
   language: "en" | "pt";
@@ -25,8 +27,12 @@ interface AdministrationViewProps {
   governanceBodiesLoading: boolean;
   governanceBodiesError: string | null;
   onReloadGovernanceBodies: () => void;
-  onCreateGovernanceBody: (name: string) => Promise<void>;
-  onUpdateGovernanceBody: (id: string, name: string) => Promise<void>;
+  onCreateGovernanceBody: (name: string, chair: GovernanceBodyChairInput | null) => Promise<void>;
+  onUpdateGovernanceBody: (
+    id: string,
+    name: string,
+    chair: GovernanceBodyChairInput | null
+  ) => Promise<void>;
   onSetGovernanceBodyActive: (id: string, isActive: boolean) => Promise<void>;
   /**
    * Cadastros reais de `agenda_topic_types` / `agenda_topic_natures`.
@@ -70,6 +76,14 @@ export default function AdministrationView({
 
   // Órgãos: estado da chamada de rede (só esta aba fala com a API)
   const [editingBodyId, setEditingBodyId] = useState<string | null>(null);
+  /**
+   * Presidente da Mesa em edição no formulário. Reconstruído como
+   * `DirectoryUser` a partir do snapshot salvo (`chairEntraObjectId` +
+   * `chairName`) — o resto do registro do diretório não foi persistido, e os
+   * `null` dizem "desconhecido", que é a verdade. Mesmo padrão já usado para
+   * reidratar responsável de pauta em `MeetingDetailView`.
+   */
+  const [newGovernanceBodyChair, setNewGovernanceBodyChair] = useState<DirectoryUser | null>(null);
   const [bodySubmitting, setBodySubmitting] = useState(false);
   const [bodyActionError, setBodyActionError] = useState<string | null>(null);
   const [togglingBodyId, setTogglingBodyId] = useState<string | null>(null);
@@ -100,16 +114,23 @@ export default function AdministrationView({
     const name = newStringItem.trim();
     if (!name || bodySubmitting) return;
 
+    // Reenvia sempre o estado ATUAL do formulário — mesmo princípio de `name`
+    // e `icon` aqui: nunca um PATCH parcial que dependa do que já existia.
+    const chair = newGovernanceBodyChair
+      ? { entraObjectId: newGovernanceBodyChair.id, displayName: newGovernanceBodyChair.displayName ?? "" }
+      : null;
+
     setBodySubmitting(true);
     setBodyActionError(null);
     try {
       if (editingBodyId) {
-        await onUpdateGovernanceBody(editingBodyId, name);
+        await onUpdateGovernanceBody(editingBodyId, name, chair);
       } else {
-        await onCreateGovernanceBody(name);
+        await onCreateGovernanceBody(name, chair);
       }
       setNewStringItem("");
       setEditingBodyId(null);
+      setNewGovernanceBodyChair(null);
     } catch (error) {
       setBodyActionError(error instanceof Error ? error.message : "Não foi possível salvar o órgão.");
     } finally {
@@ -120,6 +141,19 @@ export default function AdministrationView({
   const handleEditGovernanceBody = (body: GovernanceBody) => {
     setEditingBodyId(body.id);
     setNewStringItem(body.name);
+    setNewGovernanceBodyChair(
+      body.chairEntraObjectId
+        ? {
+            id: body.chairEntraObjectId,
+            displayName: body.chairName,
+            mail: null,
+            userPrincipalName: null,
+            jobTitle: null,
+            userType: null,
+            accountEnabled: null
+          }
+        : null
+    );
     setBodyActionError(null);
   };
 
@@ -127,6 +161,7 @@ export default function AdministrationView({
   const resetGovernanceBodyForm = () => {
     setEditingBodyId(null);
     setNewStringItem("");
+    setNewGovernanceBodyChair(null);
     setBodyActionError(null);
   };
 
@@ -304,6 +339,26 @@ export default function AdministrationView({
                 />
               </div>
 
+              {activeTab === "organs" && (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wide">
+                    {language === "en" ? "Chair" : "Presidente da Mesa"}
+                  </label>
+                  <DirectoryUserPicker
+                    language={language}
+                    selected={newGovernanceBodyChair}
+                    onSelect={setNewGovernanceBodyChair}
+                    onClear={() => setNewGovernanceBodyChair(null)}
+                    placeholder={language === "en" ? "Search in directory..." : "Buscar no diretório..."}
+                  />
+                  <p className="text-[10px] text-slate-400 font-semibold normal-case tracking-normal">
+                    {language === "en"
+                      ? "Feeds the MESA section of this organ's meeting minutes."
+                      : "Alimenta a seção MESA da Ata das reuniões deste órgão."}
+                  </p>
+                </div>
+              )}
+
               {activeTab === "organs" && bodyActionError && (
                 <p className="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2 leading-snug">
                   {bodyActionError}
@@ -407,6 +462,11 @@ export default function AdministrationView({
                                 {body.isActive ? t.lblActive : t.lblInactive}
                               </span>
                             </div>
+                            <p className="text-[10.5px] font-semibold text-slate-400 mt-0.5">
+                              {body.chairName
+                                ? `${language === "en" ? "Chair" : "Presidente"}: ${body.chairName}`
+                                : (language === "en" ? "No chair registered" : "Sem presidente cadastrado")}
+                            </p>
                           </td>
                           <td className="py-4 px-2 text-right whitespace-nowrap">
                             <button

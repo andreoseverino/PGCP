@@ -4,6 +4,7 @@ import { requireActivePgcpUser } from "../users/middleware.js";
 import { requirePgcpAssessoria } from "../authz/app-roles.js";
 import { findMeeting, listMeetings, parseListFilters } from "./service.js";
 import { createMeeting, parseCreateInput } from "./create.js";
+import { deleteMeeting } from "./delete.js";
 import { postponeAgendaItem, resumeAgendaItem } from "./postpone.js";
 import {
   CalendarPreconditionError,
@@ -26,12 +27,13 @@ import {
   lerStatusDeValidacao,
   parseEmailDoAprovador,
 } from "./agenda-validation.js";
-import { getNotesHandler, putNotesHandler } from "../meeting-notes/routes.js";
 import {
   clearMinutesHandler,
   getMinutesHandler,
   putMinutesHandler,
 } from "../meeting-minutes/routes.js";
+import { findMeetingMinutes } from "../meeting-minutes/service.js";
+import { gerarPdfDaAta, nomeDoArquivoDaAta, PDF_CONTENT_TYPE } from "../meeting-minutes/pdf.js";
 import {
   addAgendaItem,
   addAgendaItemParticipant,
@@ -64,7 +66,7 @@ export const meetingsRouter = Router();
  *
  * LER e ESCREVER sao separados de proposito: qualquer usuario ativo le (ver
  * `meetings/visibility.ts` para a politica de leitura), e toda mutacao —
- * cabecalho, participantes, pautas, ordem, postergar/retomar, Anotacoes, Ata e
+ * cabecalho, participantes, pautas, ordem, postergar/retomar, Ata e
  * sincronizacao de calendario — exige `PGCP.Assessoria`. Esconder o botao na
  * tela e cortesia; a barreira e esta.
  *
@@ -117,10 +119,10 @@ meetingsRouter.get("/", requireActivePgcpUser, async (req: Request, res: Respons
  * Devolve o nucleo da reuniao, participantes, pautas e o estado da integracao
  * de calendario.
  *
- * NAO devolve Anotacoes nem Ata, embora ambas sejam persistidas (migrations 007
- * e 008): sao documentos com ciclo proprio e volume proprio, servidos por
- * `GET /:id/notes` e `GET /:id/minutes`. Embuti-los aqui faria toda listagem de
- * detalhe carregar texto longo que a maioria das telas nao usa.
+ * NAO devolve a Ata, embora persistida (migration 008): e documento com ciclo
+ * proprio e volume proprio, servido por `GET /:id/minutes`. Embuti-la aqui
+ * faria toda listagem de detalhe carregar texto longo que a maioria das telas
+ * nao usa.
  */
 meetingsRouter.get<{ id: string }>("/:id", requireActivePgcpUser, async (req, res) => {
   try {
@@ -208,8 +210,8 @@ function atorDa(req: Request): { userId: string; name: string; entraTenantId: st
  * `sincroniza` liga a reprojecao automatica no Outlook DEPOIS do commit. Nao e
  * "sincronizar sempre": o helper so age se a mutacao tiver deixado a integracao
  * `stale`, o que por definicao acontece apenas quando o que mudou aparece no
- * convite. Mutacao interna (FUP, Anotacoes, Ata, pauta, status) nao liga a
- * flag — e, mesmo se ligasse, nao encontraria `stale` para agir.
+ * convite. Mutacao interna (FUP, Ata, pauta, status) nao liga a flag — e,
+ * mesmo se ligasse, nao encontraria `stale` para agir.
  */
 function mutacao(
   contexto: string,
@@ -406,14 +408,6 @@ meetingsRouter.post("/:id/agenda-items/:agendaItemId/resume", requirePgcpAssesso
 ));
 
 /**
- * Anotacoes da reuniao. Documento operacional, distinto da Ata — que tem ciclo
- * formal proprio e nao e tocada aqui. O `meetingId` vem da rota, nunca do corpo.
- */
-meetingsRouter.get("/:id/notes", requireActivePgcpUser, getNotesHandler);
-meetingsRouter.put("/:id/notes", requirePgcpAssessoria, putNotesHandler);
-
-/**
-/**
  * Sincroniza a reuniao com o calendario externo.
  *
  * EXPLICITA, e nao automatica dentro do POST /meetings: PostgreSQL e Graph nao
@@ -477,7 +471,33 @@ meetingsRouter.post("/:id/calendar-sync", requirePgcpAssessoria, async (req, res
 });
 
 /**
- * Ata da reuniao. Documento formal, distinto das Anotacoes.
+ * DELETE /meetings/:id
+ *
+ * Apaga a reuniao, participantes, pautas vinculadas, Anotacoes, Ata e a
+ * integracao de calendario local (cascata das FKs — ver `delete.ts`). Os temas
+ * na Biblioteca e os FUPs sobrevivem, so perdendo o vinculo de origem.
+ *
+ * EXIGE `PGCP.Assessoria` — a mesma barreira de toda mutacao aqui. Se a
+ * reuniao ja tinha convite real no Outlook, tenta cancela-lo primeiro
+ * (melhor esforco: falha no Graph nao impede a exclusao local).
+ */
+meetingsRouter.delete<{ id: string }>("/:id", requirePgcpAssessoria, async (req, res) => {
+  const usuario = req.pgcpUser;
+  if (!usuario) {
+    res.status(500).json({ error: "Erro interno ao resolver a identidade." });
+    return;
+  }
+
+  try {
+    await deleteMeeting(req.params.id, { id: usuario.id, name: usuario.name });
+    res.status(204).end();
+  } catch (error) {
+    sendError(res, error, "excluir");
+  }
+});
+
+/**
+ * Ata da reuniao. Documento formal, com ciclo proprio.
  *
  * O saneamento e POST porque e um ATO da Secretaria, nao a edicao de um campo:
  * ator, data e status sao definidos pelo servidor.
@@ -551,3 +571,40 @@ meetingsRouter.post("/:id/agenda-approval", requirePgcpAssessoria, async (req, r
 meetingsRouter.get("/:id/minutes", requireActivePgcpUser, getMinutesHandler);
 meetingsRouter.put("/:id/minutes", requirePgcpAssessoria, putMinutesHandler);
 meetingsRouter.post("/:id/minutes/clear-by-secretariat", requirePgcpAssessoria, clearMinutesHandler);
+
+/**
+ * GET /:id/minutes/pdf
+ *
+ * Baixa a Ata como PDF — nunca .txt. Mesma politica de leitura de
+ * `GET /:id/minutes`: qualquer usuario ativo baixa, so a Assessoria grava.
+ *
+ * Gera em memoria a cada chamada; nao ha cache. A Ata muda por autosave e um
+ * PDF desatualizado seria pior do que a espera de gerar de novo.
+ */
+meetingsRouter.get("/:id/minutes/pdf", requireActivePgcpUser, async (req: Request, res: Response) => {
+  try {
+    const meetingId = req.params.id as string;
+    const [reuniao, ata] = await Promise.all([
+      findMeeting(meetingId),
+      findMeetingMinutes(meetingId),
+    ]);
+
+    const pdf = await gerarPdfDaAta({
+      titulo: reuniao.title,
+      orgao: reuniao.governanceBody.name,
+      inicioEm: reuniao.startAt,
+      fimEm: reuniao.endAt,
+      fuso: reuniao.timezone,
+      conteudo: ata.content,
+    });
+
+    res.setHeader("Content-Type", PDF_CONTENT_TYPE);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${nomeDoArquivoDaAta(reuniao.title)}"`,
+    );
+    res.send(pdf);
+  } catch (error) {
+    sendError(res, error, "gerar PDF da Ata");
+  }
+});

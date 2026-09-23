@@ -476,7 +476,7 @@ export function parseCreateInput(body: unknown): CreateMeetingInput {
   const endAt = instante(dados.endAt, "endAt");
 
   if (endAt.getTime() <= startAt.getTime()) {
-    throw new HttpError(400, "'endAt' deve ser posterior a 'startAt'.");
+    throw new HttpError(400, "O horário de término deve ser depois do horário de início.");
   }
 
   const governanceBodyId = uuidOpcional(dados.governanceBodyId, "governanceBodyId");

@@ -40,11 +40,15 @@ governanceBodiesRouter.use(requireActivePgcpUser);
 /**
  * Ator da trilha. `requireActivePgcpUser` garante que existe; a checagem cobre
  * o caso impossivel sem mentir sobre quem agiu.
+ *
+ * `entraTenantId` vem do token ja validado — e o mesmo usado para gravar a
+ * identidade Microsoft do Presidente da Mesa, nunca aceito do corpo.
  */
-function exigirAtor(req: Request): { id: string; name: string } {
+function exigirAtor(req: Request): { id: string; name: string; entraTenantId: string } {
   const usuario = req.pgcpUser;
-  if (!usuario) throw new HttpError(500, "Erro interno ao resolver a identidade.");
-  return { id: usuario.id, name: usuario.name };
+  const principal = req.principal;
+  if (!usuario || !principal) throw new HttpError(500, "Erro interno ao resolver a identidade.");
+  return { id: usuario.id, name: usuario.name, entraTenantId: principal.entraTenantId };
 }
 
 /** Express 5 tipa req.params como string | string[]; o generico fixa como string. */

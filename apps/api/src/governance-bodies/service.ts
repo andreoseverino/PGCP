@@ -8,6 +8,13 @@ export interface GovernanceBody {
   name: string;
   icon: string | null;
   isActive: boolean;
+  /**
+   * Identidade MICROSOFT do Presidente da Mesa deste orgao — fato do orgao,
+   * nao da reuniao. Ver migration 023. `null` = ninguem cadastrado ainda.
+   */
+  chairEntraObjectId: string | null;
+  /** Snapshot de exibicao, capturado no momento da escolha no diretorio. */
+  chairName: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -17,14 +24,33 @@ interface GovernanceBodyRow {
   name: string;
   icon: string | null;
   is_active: boolean;
+  chair_entra_object_id: string | null;
+  chair_name: string | null;
   created_at: Date;
   updated_at: Date;
+}
+
+/**
+ * Presidente da Mesa escolhido no diretorio corporativo.
+ *
+ * So `entraObjectId`: o tenant vem do token do ator, nunca do corpo — mesmo
+ * principio de `OrganizerInput` em `meetings/create.ts`.
+ */
+export interface ChairInput {
+  entraObjectId?: string;
+  displayName?: string;
 }
 
 export interface GovernanceBodyInput {
   name: string;
   icon?: string | null;
   isActive?: boolean;
+  /**
+   * `undefined` = nao mexe no presidente atual; `null` = remove; objeto =
+   * define/substitui. Os tres estados sao distintos de proposito — um PUT que
+   * so muda o nome nao pode apagar o presidente por omissao.
+   */
+  chair?: ChairInput | null;
 }
 
 /**
@@ -40,12 +66,15 @@ export interface GovernanceBodyInput {
 export interface GovernanceBodyActor {
   id: string;
   name: string;
+  /** Tenant validado no token — usado para gravar a identidade do presidente. */
+  entraTenantId: string;
 }
 
 /** `entity_type` da trilha. Mesmo vocabulario snake_case dos demais dominios. */
 const AUDIT_ENTITY = "governance_body";
 
-const COLUMNS = "id, name, icon, is_active, created_at, updated_at";
+const COLUMNS =
+  "id, name, icon, is_active, chair_entra_object_id, chair_name, created_at, updated_at";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -56,9 +85,59 @@ function toGovernanceBody(row: GovernanceBodyRow): GovernanceBody {
     name: row.name,
     icon: row.icon,
     isActive: row.is_active,
+    chairEntraObjectId: row.chair_entra_object_id,
+    chairName: row.chair_name,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
+}
+
+/**
+ * Valida o Presidente da Mesa recebido no corpo — mesmo formato de
+ * `parseOrganizerInput` em `meetings/create.ts`: so `entraObjectId` e
+ * `displayName` sao aceitos, o tenant nunca vem do cliente.
+ *
+ * `null` explicito remove o presidente; `undefined` (campo ausente) preserva
+ * o atual. Os dois casos so se distinguem porque o chamador testa
+ * `"chair" in body` antes de chegar aqui — ver `parseInput`.
+ */
+function parseChairInput(valor: unknown): ChairInput | undefined {
+  if (valor === undefined || valor === null) return undefined;
+  if (typeof valor !== "object" || Array.isArray(valor)) {
+    throw new HttpError(400, "O campo 'chair' deve ser um objeto ou nulo.");
+  }
+
+  const dados = valor as Record<string, unknown>;
+  for (const proibido of ["entraTenantId", "userId"]) {
+    if (dados[proibido] !== undefined) {
+      throw new HttpError(
+        400,
+        `O campo 'chair.${proibido}' não pode ser informado: a identidade é resolvida pelo servidor.`,
+      );
+    }
+  }
+
+  const { entraObjectId, displayName } = dados;
+  if (entraObjectId !== undefined && typeof entraObjectId !== "string") {
+    throw new HttpError(400, "O campo 'chair.entraObjectId' deve ser um texto.");
+  }
+  if (displayName !== undefined && typeof displayName !== "string") {
+    throw new HttpError(400, "O campo 'chair.displayName' deve ser um texto.");
+  }
+
+  const nome = typeof displayName === "string" ? displayName.trim() : undefined;
+
+  if (entraObjectId && !nome) {
+    throw new HttpError(400, "Informe 'chair.displayName' junto com 'chair.entraObjectId'.");
+  }
+  if (!entraObjectId) {
+    throw new HttpError(
+      400,
+      "O Presidente da Mesa precisa ser escolhido no diretório corporativo: informe 'chair.entraObjectId'.",
+    );
+  }
+
+  return { entraObjectId, displayName: nome };
 }
 
 /** Garante que o :id da rota e um UUID antes de ir ao banco. */
@@ -74,7 +153,8 @@ export function parseInput(body: unknown): GovernanceBodyInput {
     throw new HttpError(400, "Corpo da requisição inválido.");
   }
 
-  const { name, icon, isActive } = body as Record<string, unknown>;
+  const dados = body as Record<string, unknown>;
+  const { name, icon, isActive } = dados;
 
   if (typeof name !== "string") {
     throw new HttpError(400, "O campo 'name' é obrigatório e deve ser um texto.");
@@ -96,10 +176,17 @@ export function parseInput(body: unknown): GovernanceBodyInput {
     throw new HttpError(400, "O campo 'isActive' deve ser booleano.");
   }
 
+  // Distingue "campo ausente" (nao mexe no presidente) de `chair: null`
+  // explicito (remove o presidente) — por isso testa a CHAVE, nao o valor.
+  const chair: ChairInput | null | undefined = "chair" in dados
+    ? (dados.chair === null ? null : parseChairInput(dados.chair))
+    : undefined;
+
   return {
     name: trimmedName,
     icon: typeof icon === "string" ? icon.trim() || null : (icon as null | undefined),
     isActive: isActive as boolean | undefined,
+    chair,
   };
 }
 
@@ -159,10 +246,18 @@ export async function createGovernanceBody(
     await client.query("BEGIN");
 
     const { rows } = await client.query<GovernanceBodyRow>(
-      `INSERT INTO governance_bodies (name, icon, is_active)
-       VALUES ($1, $2, COALESCE($3, true))
+      `INSERT INTO governance_bodies
+              (name, icon, is_active, chair_entra_tenant_id, chair_entra_object_id, chair_name)
+       VALUES ($1, $2, COALESCE($3, true), $4, $5, $6)
        RETURNING ${COLUMNS}`,
-      [input.name, input.icon ?? null, input.isActive ?? null],
+      [
+        input.name,
+        input.icon ?? null,
+        input.isActive ?? null,
+        input.chair?.entraObjectId ? actor.entraTenantId : null,
+        input.chair?.entraObjectId ?? null,
+        input.chair?.displayName ?? null,
+      ],
     );
 
     const criado = toGovernanceBody(rows[0]!);
@@ -241,14 +336,37 @@ export async function updateGovernanceBody(
     // icon e is_active sao opcionais: quando omitidos, o valor atual e mantido.
     // isActive: false chega como false (?? so cai em null/undefined), entao
     // COALESCE(false, is_active) resolve para false corretamente.
+    //
+    // chair NAO da para resolver com COALESCE: `null` explicito (remover o
+    // presidente) e "campo ausente" (manter) tem que produzir resultados
+    // diferentes, e os dois chegam aqui como valores nulos nos parametros. O
+    // CASE decide pelo flag `chairProvided`, calculado no service a partir da
+    // presenca da chave no corpo (`parseInput`).
+    const chairProvided = input.chair !== undefined;
+    const chairEntraTenantId = chairProvided && input.chair?.entraObjectId ? actor.entraTenantId : null;
+    const chairEntraObjectId = chairProvided ? input.chair?.entraObjectId ?? null : null;
+    const chairName = chairProvided ? input.chair?.displayName ?? null : null;
+
     const { rows } = await client.query<GovernanceBodyRow>(
       `UPDATE governance_bodies
-          SET name      = $2,
-              icon      = COALESCE($3, icon),
-              is_active = COALESCE($4, is_active)
+          SET name                  = $2,
+              icon                  = COALESCE($3, icon),
+              is_active             = COALESCE($4, is_active),
+              chair_entra_tenant_id = CASE WHEN $5 THEN $6 ELSE chair_entra_tenant_id END,
+              chair_entra_object_id = CASE WHEN $5 THEN $7 ELSE chair_entra_object_id END,
+              chair_name            = CASE WHEN $5 THEN $8 ELSE chair_name END
         WHERE id = $1
         RETURNING ${COLUMNS}`,
-      [id, input.name, input.icon ?? null, input.isActive ?? null],
+      [
+        id,
+        input.name,
+        input.icon ?? null,
+        input.isActive ?? null,
+        chairProvided,
+        chairEntraTenantId,
+        chairEntraObjectId,
+        chairName,
+      ],
     );
 
     const atualizado = toGovernanceBody(rows[0]!);

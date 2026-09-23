@@ -30,8 +30,17 @@ export interface GovernanceBody {
   name: string;
   icon: string | null;
   isActive: boolean;
+  /** Presidente da Mesa cadastrado no órgão. `null` = ninguém cadastrado ainda. */
+  chairEntraObjectId: string | null;
+  chairName: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Presidente da Mesa escolhido no diretório, ao criar/editar um órgão. */
+export interface GovernanceBodyChairInput {
+  entraObjectId: string;
+  displayName: string;
 }
 
 export interface Participant {
@@ -211,6 +220,13 @@ export interface Meeting {
   endTime: string; // e.g. "14:00"
   timeZone: string; // e.g. "EST"
   category: string;
+  /**
+   * Presidente da Mesa cadastrado no ÓRGÃO de governança (não na reunião).
+   * Alimenta a seção MESA do esqueleto da Ata. `null`/`undefined` = ninguém
+   * cadastrado ainda para este órgão.
+   */
+  governanceBodyChairName?: string | null;
+  governanceBodyChairEntraObjectId?: string | null;
   /**
    * Situação formal da reunião. NÃO representa a aba aberta nem a etapa do
    * processo — o andamento visual é derivado, não armazenado.

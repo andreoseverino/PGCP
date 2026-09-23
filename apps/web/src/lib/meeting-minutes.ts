@@ -1,4 +1,4 @@
-import { apiRequest } from "./api";
+import { apiRequest, apiRequestBlob } from "./api";
 import type { MeetingMinutes } from "./meeting-minutes-adapters";
 
 /**
@@ -42,6 +42,13 @@ function traduzirConflito(error: unknown, padrao: string): never {
 
 export const getMeetingMinutes = (meetingId: string, signal?: AbortSignal) =>
   apiRequest<MeetingMinutes>(`/meetings/${meetingId}/minutes`, { auth: true, signal });
+
+/**
+ * Baixa a Ata como PDF — nunca .txt. O servidor gera na hora a partir do
+ * conteúdo persistido; o nome do arquivo vem do `Content-Disposition`.
+ */
+export const downloadMeetingMinutesPdf = (meetingId: string) =>
+  apiRequestBlob(`/meetings/${meetingId}/minutes/pdf`, { auth: true });
 
 /**
  * Grava a Ata.

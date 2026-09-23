@@ -111,3 +111,62 @@ export async function apiRequest<T>(path: string, init?: ApiRequestInit): Promis
 
   return (await response.json()) as T;
 }
+
+/**
+ * Extrai o `filename` de `Content-Disposition: attachment; filename="..."`.
+ * O servidor sempre manda; o `null` e so defesa para o caso de faltar.
+ */
+function nomeDoAnexo(response: Response): string | null {
+  const cabecalho = response.headers.get("Content-Disposition");
+  const casado = cabecalho?.match(/filename="([^"]+)"/);
+  return casado?.[1] ?? null;
+}
+
+/**
+ * Baixa um arquivo binario (PDF, por ora) em vez de JSON.
+ *
+ * Mesma autenticacao e o mesmo tratamento de erro de `apiRequest` — a API
+ * devolve JSON na falha mesmo quando o sucesso e binario, entao o corpo de
+ * erro e lido do mesmo jeito.
+ */
+export async function apiRequestBlob(
+  path: string,
+  init?: ApiRequestInit
+): Promise<{ blob: Blob; filename: string | null }> {
+  const { auth = false, ...requestInit } = init ?? {};
+
+  const headers: Record<string, string> = {
+    ...(requestInit.headers as Record<string, string> | undefined),
+  };
+
+  if (auth) {
+    if (!accessTokenProvider) {
+      throw new ApiError(401, "Sessão não autenticada.", "no_token_provider");
+    }
+    headers.Authorization = `Bearer ${await accessTokenProvider()}`;
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, { ...requestInit, headers });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    throw new ApiError(0, "Não foi possível conectar ao servidor. Verifique se a API está no ar.");
+  }
+
+  if (!response.ok) {
+    let message = `Falha na requisição (HTTP ${response.status}).`;
+    let code: string | undefined;
+    let body: Record<string, unknown> | undefined;
+    try {
+      body = (await response.json()) as Record<string, unknown>;
+      if (typeof body?.error === "string") message = body.error;
+      if (typeof body?.code === "string") code = body.code;
+    } catch {
+      // Resposta sem JSON: mantem a mensagem padrao.
+    }
+    throw new ApiError(response.status, message, code, body);
+  }
+
+  return { blob: await response.blob(), filename: nomeDoAnexo(response) };
+}

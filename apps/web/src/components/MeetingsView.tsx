@@ -618,15 +618,18 @@ export default function MeetingsView({
                             {/* COLUMN 6: ACTIONS */}
                             <td className="py-4 px-5 align-middle text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-2">
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteMeeting(meet.id);
-                                  }}
-                                  className="p-1.5 text-slate-400 hover:text-rose-600 bg-white hover:bg-rose-50 rounded-lg border border-slate-200 hover:border-rose-200 transition"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                                {/* Cortesia com quem não pode: o servidor revalida PGCP.Assessoria. */}
+                                {canSchedule && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onDeleteMeeting(meet.id);
+                                    }}
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 bg-white hover:bg-rose-50 rounded-lg border border-slate-200 hover:border-rose-200 transition"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                               </div>
                             </td>
 

@@ -290,7 +290,7 @@ export async function updateMeeting(
     const inicio = input.startAt ? new Date(input.startAt) : atual.rows[0]!.start_at;
     const fim = input.endAt ? new Date(input.endAt) : atual.rows[0]!.end_at;
     if (fim.getTime() <= inicio.getTime()) {
-      throw new HttpError(400, "'endAt' deve ser posterior a 'startAt'.");
+      throw new HttpError(400, "O horário de término deve ser depois do horário de início.");
     }
 
     if (input.governanceBodyId) {
@@ -424,6 +424,17 @@ export async function addAgendaItem(
       ]);
       if (rows.length === 0) {
         throw new HttpError(404, "Pauta não encontrada na biblioteca.");
+      }
+
+      // Barreira de verdade contra o mesmo tema entrando duas vezes na mesma
+      // reuniao. Esconder o botao na tela (ja feito) e cortesia; isto e o que
+      // impede de fato, inclusive num clique duplo ou numa chamada direta.
+      const { rows: existentes } = await client.query(
+        "SELECT 1 FROM meeting_agenda_items WHERE meeting_id = $1 AND agenda_topic_id = $2",
+        [meetingId, input.agendaTopicId],
+      );
+      if (existentes.length > 0) {
+        throw new HttpError(409, "Esta pauta da Biblioteca já está vinculada a esta reunião.");
       }
     }
 
