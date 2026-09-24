@@ -1,21 +1,30 @@
-import React, { useState, useMemo } from "react";
+import React, { useMemo } from "react";
 import { Search, CalendarDays, FileText, ArrowRight, Sparkles } from "lucide-react";
 import { Meeting } from "../types";
+import { searchMeetings } from "../lib/meeting-search";
 
 interface QuickSearchViewProps {
   language: "en" | "pt";
   meetings: Meeting[];
   onNavigateToMeeting: (meet: Meeting) => void;
   onNavigateToTab: (tab: string) => void;
+  /**
+   * Controlado por quem chama — a mesma busca da barra flutuante do topo
+   * (App.tsx) alimenta esta tela, para digitar lá e já chegar aqui com o
+   * resultado pronto, em vez de duas caixas de busca desencontradas.
+   */
+  query: string;
+  onQueryChange: (query: string) => void;
 }
 
 export default function QuickSearchView({
   language,
   meetings,
   onNavigateToMeeting,
-  onNavigateToTab
+  onNavigateToTab,
+  query,
+  onQueryChange
 }: QuickSearchViewProps) {
-  const [query, setQuery] = useState("");
 
   const t = {
     title: language === "en" ? "Global Search Index" : "Busca Global Governamental",
@@ -30,17 +39,7 @@ export default function QuickSearchView({
   };
 
   const results = useMemo(() => {
-    if (!query.trim()) return { meetings: [] };
-    
-    const lc = query.toLowerCase();
-
-    // Scan Meetings & Agenda items
-    const matchedMeetings = meetings.filter(m => 
-      m.title.toLowerCase().includes(lc) || 
-      m.description.toLowerCase().includes(lc) ||
-      m.organizer.toLowerCase().includes(lc) ||
-      m.agenda?.some(a => a.title.toLowerCase().includes(lc) || a.author.toLowerCase().includes(lc))
-    );
+    const matchedMeetings = searchMeetings(meetings, query);
 
     /*
      * A busca por auditoria saiu na 4.12a: varria a trilha LOCAL do navegador,
@@ -73,7 +72,7 @@ export default function QuickSearchView({
         <input
           type="text"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => onQueryChange(e.target.value)}
           placeholder={t.placeholder}
           autoFocus
           className="w-full pl-12 pr-4 py-3.5 bg-white border-2 border-slate-200 rounded-2xl text-sm placeholder:text-slate-400 focus:outline-none focus:border-[#00658d] focus:ring-1 focus:ring-[#00658d] transition-all text-slate-800 font-medium card-shadow"

@@ -535,6 +535,10 @@ export default function MeetingDetailView({
   const [isAddingFupOnTab, setIsAddingFupOnTab] = useState(false);
   const [newFupTitle, setNewFupTitle] = useState("");
   const [newFupTopic, setNewFupTopic] = useState("");
+  const [newFupVp, setNewFupVp] = useState("");
+  const [newFupDueDate, setNewFupDueDate] = useState("");
+  const [newFupComments, setNewFupComments] = useState("");
+  const [newFupStatus, setNewFupStatus] = useState<"open" | "completed">("open");
   /** Responsável do FUP, escolhido no diretório corporativo. */
   const [newFupAssignee, setNewFupAssignee] = useState<DirectoryUser | null>(null);
 
@@ -931,6 +935,20 @@ export default function MeetingDetailView({
     executionStatus: "pending" | "completed" | "postponed",
     mensagem: string
   ) => persistir(() => apiSetAgendaItemStatus(meeting.id, item.id, executionStatus), mensagem);
+
+  /**
+   * Marca/desmarca uma pauta como "Tema de FUP" direto da aba Ata — mesmo
+   * campo (`generatesActionItem`) que a edição de pauta já grava. Só a
+   * classificação; não cria o FUP. Quem preenche responsável e prazo é a
+   * aba FUP, a partir da lista de pendentes.
+   */
+  const alternarFupDaPauta = (item: AgendaItem, marcado: boolean) =>
+    persistir(
+      () => apiUpdateAgendaItem(meeting.id, item.id, { generatesActionItem: marcado }),
+      marcado
+        ? (language === "en" ? "Topic flagged as a follow-up candidate." : "Pauta marcada como possível FUP.")
+        : (language === "en" ? "Follow-up flag removed." : "Marcação de FUP removida.")
+    );
 
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [annualSearch, setAnnualSearch] = useState("");
@@ -1509,6 +1527,16 @@ export default function MeetingDetailView({
   const fupsDaReuniao = (actionItems || []).filter((a) => a.originMeetingId === meeting.id);
   const fupEmAberto = fupsDaReuniao.filter((a) => a.status !== "Completed");
   const fupVencidos = fupsDaReuniao.filter((a) => a.status === "Overdue");
+
+  /**
+   * Pautas classificadas como "Tema de FUP" (`generatesActionItem`) que ainda
+   * não têm um FUP real vinculado — casamento por `originAgendaItemId`, o
+   * mesmo id estrutural que `fupsDaReuniao` usa, nunca por título.
+   */
+  const pautasPendentesDeFup = (meeting.agenda || []).filter(
+    (item) => item.generatesActionItem === true &&
+      !fupsDaReuniao.some((fup) => fup.originAgendaItemId === item.id)
+  );
 
   /** Rótulo amigável do status formal — mesmos textos da lista de Reuniões. */
   const statusFormalLabel =
@@ -3181,6 +3209,50 @@ export default function MeetingDetailView({
               {minutesLoadState === "ready" && (
                 minutesText ? (
                   <div className="space-y-4">
+                    {/*
+                      Marcação de "possível FUP" por pauta, ao lado da
+                      DELIBERAÇÕES — não dentro do texto: a Ata é texto puro e
+                      isto é controle de tela, não sai no PDF. Mesmo campo
+                      (`generatesActionItem`) da edição de pauta; só um lugar
+                      mais conveniente para marcar enquanto se redige a Ata.
+                    */}
+                    {(meeting.agenda || []).length > 0 && (
+                      <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                        <p className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">
+                          {language === "en"
+                            ? "Flag topics as follow-up (FUP) candidates"
+                            : "Marcar pautas como possível FUP"}
+                        </p>
+                        <div className="space-y-1.5">
+                          {(meeting.agenda || []).map((item, indice) => (
+                            <label
+                              key={item.id}
+                              className={`flex items-start gap-2 select-none ${canSchedule ? "cursor-pointer" : "cursor-default"}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={item.generatesActionItem === true}
+                                disabled={!canSchedule || isPersisting}
+                                onChange={(e) => void alternarFupDaPauta(item, e.target.checked)}
+                                className="w-4 h-4 mt-0.5 accent-[#00658d] cursor-pointer disabled:cursor-not-allowed"
+                              />
+                              <span className="text-xs text-slate-700">
+                                <span className="font-bold text-slate-500">
+                                  ({String(indice + 1).padStart(2, "0")})
+                                </span>{" "}
+                                {item.title}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                        <p className="text-[10px] text-slate-400 font-semibold">
+                          {language === "en"
+                            ? "Marked topics show up in the FUP tab to have owner and due date filled in."
+                            : "Pautas marcadas aparecem na aba FUP para preencher responsável e prazo."}
+                        </p>
+                      </div>
+                    )}
+
                     <textarea
                       rows={22}
                       value={minutesText}
@@ -3452,7 +3524,7 @@ export default function MeetingDetailView({
                   type="button"
                   onClick={() => {
                     setIsAddingFupOnTab(!isAddingFupOnTab);
-                    if (meeting.agenda && meeting.agenda.length > 0) setNewFupTopic(meeting.agenda[0].title);
+                    if (meeting.agenda && meeting.agenda.length > 0) setNewFupTopic(meeting.agenda[0].id);
                     // Sem pré-seleção de responsável: escolher pessoa é ato
                     // deliberado, e não existe mais uma lista local de onde
                     // tirar "o primeiro".
@@ -3464,11 +3536,50 @@ export default function MeetingDetailView({
                 </button>
               </div>
 
+              {/*
+                Pautas classificadas como "Tema de FUP" (na aba Ata ou na
+                edição da pauta) que ainda não viraram um FUP de verdade —
+                falta responsável e prazo, que só quem preenche este
+                formulário decide. Casamento por ID estrutural
+                (`originAgendaItemId`), nunca por título.
+              */}
+              {pautasPendentesDeFup.length > 0 && (
+                <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl space-y-2">
+                  <p className="text-[10.5px] font-extrabold text-amber-800 uppercase tracking-wide flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5" />
+                    {language === "en"
+                      ? "Topics flagged for follow-up, awaiting details"
+                      : "Pautas marcadas para FUP, aguardando cadastro"}
+                  </p>
+                  <div className="space-y-1.5">
+                    {pautasPendentesDeFup.map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center justify-between gap-3 bg-white border border-amber-100 rounded-xl px-3 py-2"
+                      >
+                        <span className="text-xs font-bold text-slate-700 min-w-0 truncate">{item.title}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsAddingFupOnTab(true);
+                            setNewFupTitle(item.title);
+                            setNewFupTopic(item.id);
+                          }}
+                          className="shrink-0 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-extrabold rounded-lg transition cursor-pointer"
+                        >
+                          {language === "en" ? "Fill in FUP" : "Preencher FUP"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {isAddingFupOnTab && (
                 <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl space-y-4 animate-fade-in">
                   <div className="flex flex-col gap-1.5">
                     <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                      {language === "en" ? "FUP Title" : "Título ou Descrição da Ação FUP"} *
+                      {language === "en" ? "Subject" : "Assunto"} *
                     </label>
                     <input
                       type="text"
@@ -3492,7 +3603,7 @@ export default function MeetingDetailView({
                         className="w-full bg-white border border-slate-205 p-2.5 rounded-xl text-xs text-slate-705 cursor-pointer focus:outline-none"
                       >
                         {(meeting.agenda || []).map((ag) => (
-                          <option key={ag.id} value={ag.title}>{ag.title}</option>
+                          <option key={ag.id} value={ag.id}>{ag.title}</option>
                         ))}
                         {(meeting.agenda || []).length === 0 && (
                           <option value="">
@@ -3504,7 +3615,7 @@ export default function MeetingDetailView({
 
                     <div className="flex flex-col gap-1.5">
                       <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
-                        {language === "en" ? "Responsible Owner" : "Usuário Responsável"} *
+                        {language === "en" ? "Responsible" : "Responsáveis"} *
                       </label>
                       {/* Mesma fonte e mesma semântica da aba FUP: pessoa vem
                           do diretório, e o vínculo vai em
@@ -3517,6 +3628,61 @@ export default function MeetingDetailView({
                         onClear={() => setNewFupAssignee(null)}
                       />
                     </div>
+
+                    {/* VP responsável — texto livre, por decisão explícita: não vem do diretório nem de um cadastro. */}
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                        {language === "en" ? "Responsible VP" : "VP Responsável"}
+                      </label>
+                      <input
+                        type="text"
+                        placeholder={language === "en" ? "Ex: Jane Doe" : "Ex: Fulano de Tal"}
+                        value={newFupVp}
+                        onChange={(e) => setNewFupVp(e.target.value)}
+                        className="w-full bg-white border border-slate-205 p-2.5 rounded-xl text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                        {language === "en" ? "Due Date" : "Data para Conclusão"}
+                      </label>
+                      <input
+                        type="date"
+                        value={newFupDueDate}
+                        onChange={(e) => setNewFupDueDate(e.target.value)}
+                        className="w-full bg-white border border-slate-205 p-2.5 rounded-xl text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                      />
+                    </div>
+
+                    {/* Status — só duas opções, por decisão do produto. */}
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                        {language === "en" ? "Status" : "Status"}
+                      </label>
+                      <select
+                        value={newFupStatus}
+                        onChange={(e) => setNewFupStatus(e.target.value as "open" | "completed")}
+                        className="w-full bg-white border border-slate-205 p-2.5 rounded-xl text-xs text-slate-705 cursor-pointer focus:outline-none"
+                      >
+                        <option value="open">{language === "en" ? "In Progress" : "Em Andamento"}</option>
+                        <option value="completed">{language === "en" ? "Completed" : "Concluído"}</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Comentários — campo único, sobrescrito a cada edição (sem histórico). */}
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                      {language === "en" ? "Comments" : "Comentários"}
+                    </label>
+                    <textarea
+                      rows={2}
+                      placeholder={language === "en" ? "Notes about this FUP..." : "Observações sobre este FUP..."}
+                      value={newFupComments}
+                      onChange={(e) => setNewFupComments(e.target.value)}
+                      className="w-full bg-white border border-slate-205 p-2.5 rounded-xl text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#00658d] resize-none"
+                    />
                   </div>
 
                   <div className="flex justify-end gap-2 pt-2 select-none">
@@ -3536,19 +3702,28 @@ export default function MeetingDetailView({
                           newFupAssignee.displayName ?? directoryEmail(newFupAssignee) ?? "";
 
                         /*
-                         * Origem real: UUID da reunião e da pauta. Nada de
-                         * concatenar títulos — `newFupTopic` guarda o id.
+                         * Origem real: UUID da reunião e da pauta —
+                         * `newFupTopic` guarda o id. O toast de sucesso ou
+                         * erro é o de `onCreateActionItem` (App.tsx); nada é
+                         * anunciado aqui antes do servidor confirmar.
                          */
                         void onCreateActionItem({
                           title: newFupTitle,
                           assigneeName: nomeResponsavel,
                           assigneeEntraObjectId: newFupAssignee?.id,
                           originMeetingId: meeting.id,
-                          originAgendaItemId: newFupTopic || undefined
+                          originAgendaItemId: newFupTopic || undefined,
+                          vpResponsavel: newFupVp.trim() || undefined,
+                          dueDate: newFupDueDate || undefined,
+                          description: newFupComments.trim() || undefined,
+                          status: newFupStatus
                         });
-                        triggerToast(language === "en" ? "FUP item matched!" : "Ação de FUP cadastrada e vinculada com sucesso!");
-                        
+
                         setNewFupTitle("");
+                        setNewFupVp("");
+                        setNewFupDueDate("");
+                        setNewFupComments("");
+                        setNewFupStatus("open");
                         setNewFupAssignee(null);
                         setIsAddingFupOnTab(false);
                       }}
@@ -3593,7 +3768,20 @@ export default function MeetingDetailView({
                             <span className="bg-slate-105 text-slate-500 text-[8.5px] font-bold px-2 py-0.5 rounded uppercase">
                               {fup.assignedUser.name}
                             </span>
+                            {fup.vpResponsavel && (
+                              <span className="bg-slate-105 text-slate-500 text-[8.5px] font-bold px-2 py-0.5 rounded uppercase">
+                                VP: {fup.vpResponsavel}
+                              </span>
+                            )}
+                            {fup.dueDate && (
+                              <span className="bg-slate-105 text-slate-500 text-[8.5px] font-bold px-2 py-0.5 rounded uppercase">
+                                {language === "en" ? "Due" : "Conclusão"}: {fup.dueDate.split("-").reverse().join("/")}
+                              </span>
+                            )}
                           </div>
+                          {fup.description && (
+                            <p className="text-[10px] text-slate-400 font-semibold mt-1.5">{fup.description}</p>
+                          )}
                         </div>
 
                         <div className="shrink-0 flex items-center gap-3 select-none">

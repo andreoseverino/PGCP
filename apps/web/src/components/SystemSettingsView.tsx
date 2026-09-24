@@ -142,7 +142,7 @@ export default function SystemSettingsView({ language }: SystemSettingsViewProps
                 </div>
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-slate-800 font-bold">{language === "en" ? "Region" : "Região Principal"}</span>
-                  <span className="text-slate-500 font-medium">us-east1 (Primary Cloud)</span>
+                  <span className="text-slate-500 font-medium">{language === "en" ? "us-east1 (Primary Cloud)" : "us-east1 (Nuvem Principal)"}</span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-slate-800 font-bold">{language === "en" ? "Retention Cap" : "Tempo de Retenção"}</span>
@@ -150,7 +150,7 @@ export default function SystemSettingsView({ language }: SystemSettingsViewProps
                 </div>
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-slate-800 font-bold">{language === "en" ? "Backups Clock" : "Frequência Backup"}</span>
-                  <span className="text-slate-500 font-medium">Daily (UTC 03:00)</span>
+                  <span className="text-slate-500 font-medium">{language === "en" ? "Daily (UTC 03:00)" : "Diário (UTC 03:00)"}</span>
                 </div>
               </div>
             </div>

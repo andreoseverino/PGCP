@@ -59,6 +59,8 @@ function dataCivil(valor: unknown, campo: string): string | undefined {
 export interface ActionItemInput {
   title?: string;
   description?: string | null;
+  /** VP responsavel pelo tema perante a governanca. Texto livre — ver migration 024. */
+  vpResponsavel?: string | null;
   dueDate?: string | null;
   assignedUserId?: string | null;
   assigneeEntraObjectId?: string | null;
@@ -71,7 +73,7 @@ export interface ActionItemInput {
 }
 
 const PERMITIDOS = new Set([
-  "title", "description", "dueDate", "assignedUserId", "assigneeEntraObjectId",
+  "title", "description", "vpResponsavel", "dueDate", "assignedUserId", "assigneeEntraObjectId",
   "assigneeName", "originMeetingId", "originAgendaItemId", "governanceBodyId",
   "originLabel", "status",
 ]);
@@ -113,6 +115,7 @@ export function parseActionItemInput(body: unknown, parcial = false): ActionItem
   }
 
   if ("description" in dados) saida.description = texto(dados.description, "description", 5000) ?? null;
+  if ("vpResponsavel" in dados) saida.vpResponsavel = texto(dados.vpResponsavel, "vpResponsavel", 300) ?? null;
   if ("dueDate" in dados) saida.dueDate = dataCivil(dados.dueDate, "dueDate") ?? null;
   if ("assigneeName" in dados) saida.assigneeName = texto(dados.assigneeName, "assigneeName", 200) ?? null;
   if ("originLabel" in dados) saida.originLabel = texto(dados.originLabel, "originLabel", 300) ?? null;
@@ -240,17 +243,20 @@ export async function createActionItem(
       throw new HttpError(400, "Informe o responsável: 'assignedUserId' ou 'assigneeEntraObjectId'.");
     }
 
+    const status = input.status ?? "open";
+
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO action_items
-              (title, description, assigned_user_id, assignee_name,
+              (title, description, vp_responsavel, assigned_user_id, assignee_name,
                assignee_entra_tenant_id, assignee_entra_object_id,
                origin_meeting_id, origin_agenda_item_id, governance_body_id,
-               origin_label, due_date, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'open')
+               origin_label, due_date, status, completed_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING id`,
       [
         input.title,
         input.description ?? null,
+        input.vpResponsavel ?? null,
         userId,
         input.assigneeName ?? null,
         entraObjectId ? actor.entraTenantId : null,
@@ -260,6 +266,10 @@ export async function createActionItem(
         input.governanceBodyId ?? null,
         input.originLabel ?? null,
         input.dueDate ?? null,
+        status,
+        // `completed_at` é EFEITO de nascer concluido, nunca campo do cliente
+        // separado — mesma regra de `updateActionItem`.
+        status === "completed" ? new Date() : null,
       ],
     );
 
@@ -283,6 +293,7 @@ export async function createActionItem(
 const COLUNA_DE: Record<string, string> = {
   title: "title",
   description: "description",
+  vpResponsavel: "vp_responsavel",
   dueDate: "due_date",
   originMeetingId: "origin_meeting_id",
   originAgendaItemId: "origin_agenda_item_id",

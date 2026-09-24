@@ -69,6 +69,8 @@ export interface ActionItem {
   id: string;
   title: string;
   description: string | null;
+  /** VP responsavel pelo tema perante a governanca. Texto livre — ver migration 024. */
+  vpResponsavel: string | null;
   assignee: ActionItemAssignee;
   origin: ActionItemOrigin;
   /** Data civil de vencimento, `YYYY-MM-DD`. Sem horario, sem fuso. */
@@ -88,6 +90,7 @@ interface Row {
   id: string;
   title: string;
   description: string | null;
+  vp_responsavel: string | null;
   assigned_user_id: string | null;
   user_name: string | null;
   assignee_name: string | null;
@@ -113,6 +116,7 @@ function toActionItem(row: Row): ActionItem {
     id: row.id,
     title: row.title,
     description: row.description,
+    vpResponsavel: row.vp_responsavel,
     assignee: {
       userId: row.assigned_user_id,
       userName: row.user_name,
@@ -151,6 +155,7 @@ const SELECT = `
   SELECT ai.id,
          ai.title,
          ai.description,
+         ai.vp_responsavel,
          ai.assigned_user_id,
          u.name AS user_name,
          ai.assignee_name,

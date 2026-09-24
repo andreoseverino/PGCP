@@ -151,9 +151,15 @@ export default function AuditLogsView({
   }, [logs, userQuery, selectedEntity, selectedAction]);
 
   const handleExportCSV = () => {
-    const headers = "Timestamp (UTC),User,Role,Action,Entity,EntityID,Status\n";
-    const rows = filteredLogs.map(l => 
-      `"${l.timestamp}","${l.user}","${l.role}","${l.action}","${l.entity}","${l.entityId}","${l.status}"`
+    const headers = language === "en"
+      ? "Timestamp (UTC),User,Role,Action,Entity,EntityID,Status\n"
+      : "Data/Hora (UTC),Usuário,Cargo,Ação,Entidade,ID da Entidade,Status\n";
+    // `l.status` já vem do banco como "Sucesso"/"Falha" (ver linha 364) — só
+    // precisa de tradução para inglês, nunca o contrário.
+    const statusLabel = (status: string) =>
+      language === "en" ? (status === "Sucesso" ? "Success" : status === "Falha" ? "Failure" : status) : status;
+    const rows = filteredLogs.map(l =>
+      `"${l.timestamp}","${l.user}","${l.role}","${l.action}","${l.entity}","${l.entityId}","${statusLabel(l.status)}"`
     ).join("\n");
     const blob = new Blob([headers + rows], { type: "text/csv;charset=utf-8;" });
     const u = URL.createObjectURL(blob);
@@ -440,10 +446,10 @@ export default function AuditLogsView({
                                 </div>
                                 <div>
                                   <span className="block text-slate-400 font-bold uppercase text-[9px]">{language === "en" ? "Verification Certificate" : "Hash de Assinatura"}</span>
-                                  SHA-256 Verified
+                                  {language === "en" ? "SHA-256 Verified" : "SHA-256 Verificado"}
                                 </div>
                                 <div className="col-span-2">
-                                  <span className="block text-slate-400 font-bold uppercase text-[9px]">Cielo SHA Block Hash</span>
+                                  <span className="block text-slate-400 font-bold uppercase text-[9px]">{language === "en" ? "Cielo SHA Block Hash" : "Hash do Bloco SHA Cielo"}</span>
                                   8fa10b9ce2f83d41fe0901da38ba4cf07161e1b52a1
                                 </div>
                               </div>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, Calendar, Clock, MapPin, CheckCircle, Sparkles, User, Users, Plus, Trash2, ListTodo, FileText, Info, GripVertical, Edit2 } from "lucide-react";
+import { X, Clock, MapPin, CheckCircle, Sparkles, User, Users, Plus, Trash2, FileText, Info, GripVertical, Edit2 } from "lucide-react";
 import { AgendaItem, GovernanceBody, Participant, StandaloneAgenda } from "../types";
 import { newId } from "../lib/id";
 import DirectoryUserPicker from "./DirectoryUserPicker";
@@ -362,6 +362,25 @@ export default function ScheduleMeetingModal({
     });
   }, [agenda, language]);
 
+  /**
+   * Organizador também é participante — mesma regra do responsável de pauta:
+   * quem organiza a reunião está nela. Só ADICIONA; trocar ou limpar o
+   * organizador depois não desconvida quem já foi incluído (mesma filosofia
+   * do efeito acima, que nunca remove por causa de uma mudança de pauta).
+   */
+  useEffect(() => {
+    if (!organizerUser) return;
+    setParticipants((anterior) =>
+      addParticipantOnce(anterior, {
+        name: organizerUser.displayName ?? "",
+        role: papelPadraoDoParticipante(language),
+        confirmed: false,
+        entraObjectId: organizerUser.id,
+        email: enderecoDoDiretorio(organizerUser)
+      })
+    );
+  }, [organizerUser, language]);
+
   const handleEditAgendaItem = (index: number) => {
     const item = agenda[index];
     if (!item) return;
@@ -512,10 +531,6 @@ export default function ScheduleMeetingModal({
 
   const t = {
     title: language === "en" ? "Schedule Corporate Meeting" : "Agendar Nova Reunião",
-    subTitle: language === "en" 
-      ? "Create a new compliant session, allocate agendas, and define expected quorum limits." 
-      : "Registre uma nova sessão oficial de governança, configure o cronograma e escale participantes.",
-    
     lblTitle: language === "en" ? "Meeting Topic / Title" : "Título ou Tema da Reunião",
     lblCategory: language === "en" ? "Meeting Template Category" : "Categoria do Colegiado / Reunião",
     lblDate: language === "en" ? "Scheduled Date" : "Data da Reunião",
@@ -526,7 +541,6 @@ export default function ScheduleMeetingModal({
     lblDescription: language === "en" ? "Objective & Introductory Guidelines" : "Objetivos Principais e Diretrizes Executivas",
     
     lblParticipantsSec: language === "en" ? "Participants" : "Participantes",
-    subParticipants: language === "en" ? "Add people to compute the official quorum requirements." : "Instancie os membros para controle de presenças e convocações.",
     addPartName: language === "en" ? "Name" : "Nome",
     addPartRole: language === "en" ? "Role" : "Cargo / Função",
     addPartConfirmedShort: language === "en" ? "Confirmed" : "Confirmado",
@@ -666,7 +680,7 @@ export default function ScheduleMeetingModal({
         Com `overflow-hidden` aqui, o recorte do raio vale para a barra do
         filho também.
       */}
-      <div className="bg-white border border-slate-200 rounded-3xl max-w-5xl w-full relative animate-fade-in max-h-[95vh] overflow-hidden flex flex-col font-medium text-xs text-slate-705">
+      <div className="bg-white border border-slate-200 rounded-3xl max-w-6xl w-full relative animate-fade-in max-h-[95vh] overflow-hidden flex flex-col font-medium text-xs text-slate-705">
         
         {/* Close Button top-right */}
         <button
@@ -681,29 +695,29 @@ export default function ScheduleMeetingModal({
 
         {/* Header decoration */}
         <div className="mb-6 border-b border-slate-100 pb-4 select-none">
-          <span className="bg-[#00aeef]/10 text-[#00658d] px-3 py-1 rounded-full text-[9px] font-extrabold uppercase tracking-widest inline-block mb-2">
-            Novo Evento
-          </span>
-          <h3 className="text-xl font-extrabold text-[#001e2d] flex items-center gap-2">
-            <Calendar className="w-5 h-5 text-[#00658d]" />
+          <h3 className="text-xl font-extrabold text-[#001e2d]">
             {t.title}
           </h3>
-          <p className="text-slate-400 font-semibold text-[11px] mt-1 leading-relaxed">
-            {t.subTitle}
-          </p>
         </div>
 
         {/* Beautiful Form Layout */}
         <form onSubmit={handleSubmit} className="space-y-6">
           
-          <div className="flex flex-col gap-6">
-            
-            {/* 1. INFORMACÕES CARD */}
-            <div className="space-y-3.5 bg-slate-50/50 border border-slate-200/60 rounded-2xl p-4 md:p-5">
-              <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5 mb-1.5 border-b border-slate-200/40 pb-2 select-none">
-                <Info className="w-4 h-4 text-[#00658d]" />
-                1. Informações Básicas
-              </h4>
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-8">
+            {/* COLUNA ESQUERDA: Informações + Pautas, sem cartão — só
+                divisória entre as seções, no estilo mais limpo pedido. */}
+            <div className="min-w-0">
+
+            {/* 1. INFORMAÇÕES */}
+            <div className="space-y-3.5">
+              <div className="flex items-center gap-3 select-none">
+                <span className="w-8 h-8 rounded-full bg-[#00658d]/10 text-[#00658d] font-extrabold text-sm flex items-center justify-center shrink-0">
+                  1
+                </span>
+                <h4 className="text-sm font-extrabold text-[#001e2d]">
+                  {language === "en" ? "Meeting Information" : "Informações da Reunião"}
+                </h4>
+              </div>
 
               {/* Title Input */}
               <div className="flex flex-col gap-1">
@@ -721,8 +735,8 @@ export default function ScheduleMeetingModal({
                 />
               </div>
 
-              {/* Date, Recurrence, Start & End Times row - compacted into a 4-col grid on tablet/destkop */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {/* Data / Horário de Início / Horário de Término — 3 colunas iguais. */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {/* Date */}
                 <div className="flex flex-col gap-1">
                   <label htmlFor="meetDate" className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
@@ -736,76 +750,6 @@ export default function ScheduleMeetingModal({
                     onChange={(e) => setDate(e.target.value)}
                     className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-700 focus:outline-none"
                   />
-                </div>
-
-                {/* Órgão de governança — identidade real, vinda do PostgreSQL */}
-                <div className="flex flex-col gap-1">
-                  <label htmlFor="meetGovernanceBody" className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
-                    {language === "en" ? "Governance body" : "Órgão de Governança"} *
-                  </label>
-                  <select
-                    id="meetGovernanceBody"
-                    required
-                    value={governanceBodyId}
-                    onChange={(e) => setGovernanceBodyId(e.target.value)}
-                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#00658d]"
-                  >
-                    <option value="">
-                      {language === "en" ? "Select the body..." : "Selecione o órgão..."}
-                    </option>
-                    {/* `value` é o UUID: o nome serve só para a usuária ler. */}
-                    {governanceBodies.map((body) => (
-                      <option key={body.id} value={body.id}>{body.name}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/*
-                  ORGANIZADOR — de quem é o calendário.
-
-                  Explícito de propósito: assumir "organizador = quem está
-                  logado" impediria a assessora de agendar em nome do
-                  Presidente, que é justamente o fluxo real.
-                */}
-                <div className="flex flex-col gap-1 sm:col-span-2">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
-                    {language === "en" ? "Organiser" : "Organizador"}
-                  </label>
-                  <DirectoryUserPicker
-                    language={language}
-                    selected={organizerUser}
-                    onSelect={setOrganizerUser}
-                    onClear={() => setOrganizerUser(null)}
-                    placeholder={
-                      language === "en"
-                        ? "Search the directory — leave empty to organise it yourself"
-                        : "Buscar no diretório — vazio organiza você mesma"
-                    }
-                  />
-                  <p className="text-[10px] text-slate-400 font-medium">
-                    {language === "en"
-                      ? "The event is created in this person's calendar. Leave empty to organise it yourself."
-                      : "O evento é criado no calendário desta pessoa. Deixe vazio para organizar você mesma."}
-                  </p>
-                </div>
-
-                {/* Recurrence */}
-                <div className="flex flex-col gap-1">
-                  <label htmlFor="meetRecurrence" className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
-                    {language === "en" ? "Recurrence" : "Recorrência"}
-                  </label>
-                  <select
-                    id="meetRecurrence"
-                    value={recurrence}
-                    onChange={(e) => setRecurrence(e.target.value)}
-                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#00658d]"
-                  >
-                    <option value="Single">{language === "en" ? "Does not repeat" : "Não se repete (Única)"}</option>
-                    <option value="Semanal">{language === "en" ? "Weekly" : "Semanal"}</option>
-                    <option value="Quinzenal">{language === "en" ? "Biweekly" : "Quinzenal"}</option>
-                    <option value="Mensal">{language === "en" ? "Monthly" : "Mensal"}</option>
-                    <option value="Trimestral">{language === "en" ? "Quarterly" : "Trimestral"}</option>
-                  </select>
                 </div>
 
                 {/* Start Time */}
@@ -841,6 +785,74 @@ export default function ScheduleMeetingModal({
                 </div>
               </div>
 
+              {/* Órgão de Governança / Recorrência / Organizador — mesma largura das 3 colunas acima. */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* Órgão de governança — identidade real, vinda do PostgreSQL */}
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="meetGovernanceBody" className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                    {language === "en" ? "Governance body" : "Órgão de Governança"} *
+                  </label>
+                  <select
+                    id="meetGovernanceBody"
+                    required
+                    value={governanceBodyId}
+                    onChange={(e) => setGovernanceBodyId(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                  >
+                    <option value="">
+                      {language === "en" ? "Select the body..." : "Selecione o órgão..."}
+                    </option>
+                    {/* `value` é o UUID: o nome serve só para a usuária ler. */}
+                    {governanceBodies.map((body) => (
+                      <option key={body.id} value={body.id}>{body.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Recurrence */}
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="meetRecurrence" className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                    {language === "en" ? "Recurrence" : "Recorrência"}
+                  </label>
+                  <select
+                    id="meetRecurrence"
+                    value={recurrence}
+                    onChange={(e) => setRecurrence(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                  >
+                    <option value="Single">{language === "en" ? "Does not repeat" : "Não se repete (Única)"}</option>
+                    <option value="Semanal">{language === "en" ? "Weekly" : "Semanal"}</option>
+                    <option value="Quinzenal">{language === "en" ? "Biweekly" : "Quinzenal"}</option>
+                    <option value="Mensal">{language === "en" ? "Monthly" : "Mensal"}</option>
+                    <option value="Trimestral">{language === "en" ? "Quarterly" : "Trimestral"}</option>
+                  </select>
+                </div>
+
+                {/*
+                  ORGANIZADOR — de quem é o calendário.
+
+                  Explícito de propósito: assumir "organizador = quem está
+                  logado" impediria a assessora de agendar em nome do
+                  Presidente, que é justamente o fluxo real.
+                */}
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                    {language === "en" ? "Organiser" : "Organizador"}
+                  </label>
+                  <DirectoryUserPicker
+                    language={language}
+                    selected={organizerUser}
+                    onSelect={setOrganizerUser}
+                    onClear={() => setOrganizerUser(null)}
+                    placeholder={
+                      language === "en"
+                        ? "Search directory..."
+                        : "Buscar no diretório..."
+                    }
+                  />
+                </div>
+              </div>
+
               {/* Description Input */}
               <div className="flex flex-col gap-1">
                 <label htmlFor="meetDesc" className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
@@ -857,23 +869,23 @@ export default function ScheduleMeetingModal({
               </div>
             </div>
 
-            {/* 2. PAUTAS CARD */}
-            <div className="bg-white border border-slate-200 rounded-3xl p-5 md:p-6 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-100 pb-3 gap-2 select-none">
-                <div>
-                  <h4 className="text-xs font-bold text-[#001e2d] flex items-center gap-1.5 uppercase tracking-wider">
-                    <ListTodo className="w-4 h-4 text-[#001e2d]" />
+            {/* Divisória única — só entre os dois blocos, elemento próprio
+                em vez de borda do contêiner, pra não depender de padding
+                combinado com o vizinho. */}
+            <div className="h-px bg-slate-200 my-8" />
+
+            {/* 2. PAUTAS */}
+            <div className="space-y-3.5">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 select-none">
+                <div className="flex items-center gap-3">
+                  <span className="w-8 h-8 rounded-full bg-[#00658d]/10 text-[#00658d] font-extrabold text-sm flex items-center justify-center shrink-0">
+                    2
+                  </span>
+                  <h4 className="text-sm font-extrabold text-[#001e2d]">
                     Pautas
                   </h4>
-                  <p className="text-[10px] text-slate-400 font-semibold mt-0.5">
-                    {language === "en" ? "Define agenda items. Drag items to reorder them seamlessly." : "Cronograma detalhado de pautas. Arraste os itens para reordenar."}
-                  </p>
                 </div>
                 <div className="flex flex-wrap gap-2 items-center">
-                  <span className="text-[10px] font-extrabold bg-[#00658d]/5 text-[#00658d] px-2.5 py-1 rounded-full flex items-center gap-1">
-                    <Users className="w-3 h-3 text-[#00658d]" />
-                    {participants.length} {language === "en" ? "Attendees" : "Participantes"}
-                  </span>
                   <button
                     type="button"
                     onClick={() => {
@@ -982,26 +994,24 @@ export default function ScheduleMeetingModal({
                 </div>
               )}
             </div>
+            </div>
 
-            {/* 3. PARTICIPANTES CARD */}
-            <div className="bg-white border border-slate-200 rounded-3xl p-5 md:p-6 space-y-3.5">
+            {/* COLUNA DIREITA: Participantes — painel fixo ao lado, não é
+                mais um "passo" numerado, é contexto sempre visível. */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 md:p-6 space-y-3.5 flex flex-col">
               <div className="flex items-center justify-between border-b border-slate-100 pb-2 select-none">
-                <div>
-                  <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                    <Users className="w-4 h-4 text-[#00658d]" />
-                    {t.lblParticipantsSec}
-                  </h4>
-                  <p className="text-[10px] text-slate-400 font-semibold mt-0.5">
-                    {t.subParticipants}
-                  </p>
-                </div>
+                <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <Users className="w-4 h-4 text-[#00658d]" />
+                  {t.lblParticipantsSec}
+                </h4>
                 <span className="text-[10px] font-extrabold bg-[#00658d]/5 text-[#00658d] px-2 py-0.5 rounded-full">
                   {participants.length} {language === "en" ? "participants" : "participantes"}
                 </span>
               </div>
 
-              {/* List scrollbar */}
-              <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+              {/* List scrollbar — cresce até preencher a coluna, que agora
+                  estica até a altura da coluna esquerda. */}
+              <div className="space-y-2 flex-1 min-h-0 overflow-y-auto pr-1">
                 {participants.map((p, index) => {
                   /*
                    * Pautas sob responsabilidade desta pessoa.
@@ -1180,34 +1190,64 @@ export default function ScheduleMeetingModal({
                 <button
                   type="button"
                   disabled={selectedAgendaIds.length === 0}
-                  onClick={() => {
-                    const newItems = standaloneAgendas
-                      .filter(sa => selectedAgendaIds.includes(sa.id))
-                      .map((sa) => ({
-                        id: newId(),
-                        // Horário real vem da cascata em `atualizarAgenda`.
-                        time: "",
-                        title: sa.title,
-                        duration: sa.duration,
-                        author: sa.author,
-                        authorEntraObjectId: sa.authorEntraObjectId,
-                        // Vincular a Biblioteca: preserva a procedência
-                        // (`agenda_topic_id`); o backend copia a ficha do tema
-                        // (snapshot), depois independente. Espelhamos para exibir já.
-                        agendaTopicId: sa.id,
-                        isCircularTheme: sa.isCircularTheme,
-                        agendaTopicTypeId: sa.pautaTypeId,
-                        pautaType: sa.pautaType,
-                        agendaTopicNatureId: sa.pautaNatureId,
-                        pautaNature: sa.pautaNature,
-                        description: sa.description || undefined,
-                        generatesActionItem: sa.isFUP
-                      }));
+                  onClick={async () => {
+                    const selecionadas = standaloneAgendas.filter(sa => selectedAgendaIds.includes(sa.id));
+
+                    const newItems = selecionadas.map((sa) => ({
+                      id: newId(),
+                      // Horário real vem da cascata em `atualizarAgenda`.
+                      time: "",
+                      title: sa.title,
+                      duration: sa.duration,
+                      author: sa.author,
+                      authorEntraObjectId: sa.authorEntraObjectId,
+                      // Vincular a Biblioteca: preserva a procedência
+                      // (`agenda_topic_id`); o backend copia a ficha do tema
+                      // (snapshot), depois independente. Espelhamos para exibir já.
+                      agendaTopicId: sa.id,
+                      isCircularTheme: sa.isCircularTheme,
+                      agendaTopicTypeId: sa.pautaTypeId,
+                      pautaType: sa.pautaType,
+                      agendaTopicNatureId: sa.pautaNatureId,
+                      pautaNature: sa.pautaNature,
+                      description: sa.description || undefined,
+                      generatesActionItem: sa.isFUP
+                    }));
                     // avoid duplicate imports by title matching
                     const currentTitles = agenda.map(a => a.title.toLowerCase());
                     const uniqueNewItems = newItems.filter(item => !currentTitles.includes(item.title.toLowerCase()));
                     atualizarAgenda([...agenda, ...uniqueNewItems]);
                     setIsSelectAgendasOpen(false);
+
+                    /*
+                     * GAP: importar uma pauta pronta da Biblioteca pulava a
+                     * mesma regra que criar uma pauta nova já aplica —
+                     * responsável e participantes cadastrados no tema
+                     * ficavam de fora da reunião. `addParticipantOnce` (via
+                     * `incluirComoParticipante`) já deduplica por identidade,
+                     * então repetir para pautas já importadas antes é
+                     * inofensivo.
+                     */
+                    for (const sa of selecionadas) {
+                      if (sa.authorEntraObjectId) {
+                        incluirComoParticipante(sa.author, sa.authorEntraObjectId);
+                      }
+                    }
+
+                    for (const sa of selecionadas) {
+                      try {
+                        const detalhe = await getAgendaTopic(sa.id);
+                        for (const p of detalhe.participants) {
+                          if (p.entraObjectId) {
+                            incluirComoParticipante(p.displayName ?? p.userName ?? "", p.entraObjectId, p.email ?? undefined);
+                          }
+                        }
+                      } catch {
+                        // Falha ao buscar participantes da Biblioteca não pode
+                        // travar a importação da pauta em si — ela já foi
+                        // adicionada acima.
+                      }
+                    }
                   }}
                   className="px-4 py-2 bg-[#00658d] text-white rounded-lg text-xs font-bold hover:bg-[#00aeef] transition disabled:opacity-50 cursor-pointer"
                 >

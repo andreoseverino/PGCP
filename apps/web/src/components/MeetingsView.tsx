@@ -137,6 +137,20 @@ export default function MeetingsView({
     });
   }, [meetings, language]);
 
+  /*
+   * Categorias reais, derivadas das reuniões — igual `availableMonths` acima.
+   * As opções fixas ("Board Meeting", "Committee", "Shareholder") eram
+   * texto de protótipo em inglês que nunca batia com `m.category` (nome do
+   * órgão de governança, em português): o filtro nunca filtrava nada.
+   */
+  const availableCategories = useMemo(() => {
+    const set = new Set<string>();
+    meetings.forEach((m) => {
+      if (m.category) set.add(m.category);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "pt-BR"));
+  }, [meetings]);
+
   // Filter meetings based on tab, search, status, category, and selected month
   const filteredMeetings = useMemo(() => {
     return meetings.filter((m) => {
@@ -253,9 +267,22 @@ export default function MeetingsView({
   }, [pagina.items, language]);
 
   const handleExportCSV = () => {
-    const headers = "ID,Title,Date,Time,Category,Status,Organizer\n";
-    const dataRows = filteredMeetings.map(m => 
-      `"${m.id}","${m.title}","${m.date}","${m.startTime} - ${m.endTime}","${m.category}","${m.status}","${m.organizer}"`
+    const headers = language === "en"
+      ? "ID,Title,Date,Time,Category,Status,Organizer\n"
+      : "ID,Título,Data,Horário,Categoria,Status,Organizador\n";
+    // Mesmo rótulo do badge na tela (linha ~621) — nunca o valor bruto do enum.
+    const statusLabel = (status: string) =>
+      language === "en"
+        ? status
+        : status === "In Progress" ? "Iniciação"
+        : status === "Scheduled" ? "Agendada"
+        : status === "Done" ? "Concluído"
+        : status === "Closed" ? "Fechado"
+        : status === "Needs Approval" ? "Requer Aprovação"
+        : status === "Draft" ? "Rascunho"
+        : status;
+    const dataRows = filteredMeetings.map(m =>
+      `"${m.id}","${m.title}","${m.date}","${m.startTime} - ${m.endTime}","${m.category}","${statusLabel(m.status)}","${m.organizer}"`
     ).join("\n");
     const csvContent = "data:text/csv;charset=utf-8," + headers + dataRows;
     const encodedUri = encodeURI(csvContent);
@@ -348,10 +375,10 @@ export default function MeetingsView({
               className="appearance-none bg-slate-50 hover:bg-slate-100/50 text-slate-600 font-semibold text-xs border border-slate-200 rounded-xl pl-4 pr-9 py-2 cursor-pointer focus:ring-1 focus:ring-[#00658d] focus:bg-white focus:outline-none transition-all"
             >
               <option value="All Statuses">{t.optAllStatuses}</option>
-              <option value="Scheduled">Scheduled</option>
-              <option value="Draft">Draft</option>
-              <option value="Needs Approval">Needs Approval</option>
-              <option value="In Progress">In Progress</option>
+              <option value="Scheduled">{language === "en" ? "Scheduled" : "Agendada"}</option>
+              <option value="Draft">{language === "en" ? "Draft" : "Rascunho"}</option>
+              <option value="Needs Approval">{language === "en" ? "Needs Approval" : "Requer Aprovação"}</option>
+              <option value="In Progress">{language === "en" ? "In Progress" : "Iniciação"}</option>
             </select>
           </div>
 
@@ -363,9 +390,9 @@ export default function MeetingsView({
               className="appearance-none bg-slate-50 hover:bg-slate-100/50 text-slate-600 font-semibold text-xs border border-slate-200 rounded-xl pl-4 pr-9 py-2 cursor-pointer focus:ring-1 focus:ring-[#00658d] focus:bg-white focus:outline-none transition-all"
             >
               <option value="Category">{t.optCategory}</option>
-              <option value="Board Meeting">Board Meeting</option>
-              <option value="Committee">Committee</option>
-              <option value="Shareholder">Shareholder</option>
+              {availableCategories.map((cat) => (
+                <option key={cat} value={cat}>{cat}</option>
+              ))}
             </select>
           </div>
 

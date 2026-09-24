@@ -19,6 +19,8 @@ import {
   describeActionItemError,
   listActionItems,
   reopenActionItem,
+  updateActionItem as apiUpdateActionItem,
+  type ActionItemPayload,
   type FupFormInput
 } from "./lib/action-items";
 import {
@@ -61,6 +63,7 @@ import {
   fetchAuditLogs
 } from "./lib/audit-logs";
 import Sidebar from "./components/Sidebar";
+import { searchMeetings } from "./lib/meeting-search";
 import DashboardView from "./components/DashboardView";
 import MeetingsView from "./components/MeetingsView";
 import MeetingDetailView from "./components/MeetingDetailView";
@@ -72,7 +75,7 @@ import ScheduleMeetingModal from "./components/ScheduleMeetingModal";
 import UnlinkedAgendasView from "./components/UnlinkedAgendasView";
 import FupListView from "./components/FupListView";
 import LoginView from "./components/LoginView";
-import { FileCheck, Sparkles, Trash2, X } from "lucide-react";
+import { FileCheck, LogOut, Search, Sparkles, Trash2, X } from "lucide-react";
 
 /**
  * Chave da sessão local. Fica em sessionStorage, NÃO em localStorage:
@@ -128,6 +131,10 @@ export default function App() {
   );
 
   const [currentUser, setCurrentUser] = useState<SessionUser>(readSessionUser);
+  /** Busca da barra flutuante do topo — a mesma que alimenta a aba "Busca Rápida". */
+  const [globalSearchQuery, setGlobalSearchQuery] = useState("");
+  /** Dropdown de resultados só aparece com a busca em foco — evita ficar pairando depois de navegar. */
+  const [isGlobalSearchFocused, setIsGlobalSearchFocused] = useState(false);
 
   /**
    * Modo de autenticação. Avaliado uma vez: depende só de variáveis de build,
@@ -190,6 +197,12 @@ export default function App() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [meetingsLoading, setMeetingsLoading] = useState(true);
   const [meetingsError, setMeetingsError] = useState<string | null>(null);
+
+  /** Resultados ao vivo da busca do topo — mesma lógica da aba "Busca Rápida". */
+  const globalSearchResults = useMemo(
+    () => searchMeetings(meetings, globalSearchQuery).slice(0, 6),
+    [meetings, globalSearchQuery]
+  );
 
   /*
    * TRILHA CORPORATIVA: só `audit_logs` no PostgreSQL.
@@ -388,6 +401,21 @@ export default function App() {
       const atualizado = concluir ? await completeActionItem(id) : await reopenActionItem(id);
       await loadActionItems();
       triggerToast(concluir ? "Ação concluída." : "Ação reaberta.");
+    } catch (error) {
+      triggerToast(describeActionItemError(error, language));
+    }
+  };
+
+  /**
+   * PATCH parcial de um FUP existente — VP responsável, comentários, prazo
+   * etc. Mesmo padrão das demais mutações: só reflete na tela depois do banco
+   * confirmar.
+   */
+  const handleUpdateActionItem = async (id: string, payload: ActionItemPayload) => {
+    try {
+      await apiUpdateActionItem(id, payload);
+      await loadActionItems();
+      triggerToast("FUP atualizado.");
     } catch (error) {
       triggerToast(describeActionItemError(error, language));
     }
@@ -921,6 +949,8 @@ export default function App() {
               setActiveTab("meetings");
             }}
             onNavigateToTab={(tab) => setActiveTab(tab)}
+            query={globalSearchQuery}
+            onQueryChange={setGlobalSearchQuery}
           />
         );
       case "audit-logs":
@@ -976,6 +1006,7 @@ export default function App() {
             setActionItems={setActionItems}
             onCreateActionItem={handleCreateActionItem}
             onSetActionItemStatus={handleSetActionItemStatus}
+            onUpdateActionItem={handleUpdateActionItem}
             podeGerenciarFup={podeGerenciarFup}
             actionItemsLoading={actionItemsLoading}
             actionItemsError={actionItemsError}
@@ -1036,7 +1067,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f7f9fb] text-[#191c1e] flex font-sans antialiased selection:bg-[#c6e7ff]/60 selection:text-slate-900">
+    <div className="min-h-screen bg-[#eaedf1] text-[#191c1e] flex font-sans antialiased selection:bg-[#c6e7ff]/60 selection:text-slate-900">
       
       {/* Toast banner notifier */}
       <AnimatePresence>
@@ -1075,8 +1106,6 @@ export default function App() {
         setLanguage={setLanguage}
         canAdminister={usuarioPodeAdministrar}
         canOpenAdministration={usuarioPodeAbrirAdministracao}
-        currentUser={currentUser}
-        onLogout={handleSignout}
       />
 
       {/* Main Content Layout Pane wrapper.
@@ -1085,7 +1114,98 @@ export default function App() {
           empurrava a página inteira em telas estreitas. Com min-w-0 o main respeita
           a largura disponível e os contêineres overflow-x-auto passam a rolar
           internamente em vez de estourar o viewport. */}
-      <main className="flex-1 md:pl-64 min-w-0 min-h-screen flex flex-col pt-16 md:pt-0">
+      <main className="flex-1 md:pl-[280px] min-w-0 min-h-screen flex flex-col pt-16 md:pt-0">
+        {/* Barra superior desktop: logo + busca global à esquerda, perfil e
+            sair à direita — nenhum dos dois com faixa/fundo atrás, cada um
+            seu próprio elemento flutuante. Só desktop: no mobile o topo já
+            é ocupado pela barra com o menu de gaveta. */}
+        <div className="hidden md:flex items-center justify-between gap-4 px-8 pt-4 shrink-0">
+          <div className="flex items-center gap-3 min-w-0 flex-1 max-w-md">
+            <form
+              className="relative flex-1 min-w-0"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (globalSearchQuery.trim()) setActiveTab("search");
+                setIsGlobalSearchFocused(false);
+              }}
+            >
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-3.5 h-3.5 pointer-events-none" />
+              <input
+                type="text"
+                value={globalSearchQuery}
+                onChange={(e) => setGlobalSearchQuery(e.target.value)}
+                onFocus={() => setIsGlobalSearchFocused(true)}
+                onBlur={() => setIsGlobalSearchFocused(false)}
+                placeholder={language === "en" ? "Search meetings..." : "Buscar reuniões..."}
+                className="w-full pl-9 pr-3 py-2 rounded-full border border-slate-200 bg-white shadow-xs text-xs text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#00658d] focus:border-[#00658d] transition"
+              />
+
+              {/* Resultados ao vivo, digitando — sem precisar dar Enter. Some
+                  ao perder o foco; `onMouseDown` com preventDefault em cada
+                  item evita que o blur do input feche a lista ANTES do
+                  clique registrar. */}
+              {isGlobalSearchFocused && globalSearchQuery.trim() !== "" && (
+                <div className="absolute left-0 right-0 top-full mt-2 bg-white border border-slate-200 rounded-2xl shadow-md overflow-hidden z-50">
+                  {globalSearchResults.length === 0 ? (
+                    <p className="px-4 py-3 text-xs text-slate-400 font-semibold">
+                      {language === "en" ? "No meetings found." : "Nenhuma reunião encontrada."}
+                    </p>
+                  ) : (
+                    <>
+                      {globalSearchResults.map((m) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setSelectedMeeting(m);
+                            setActiveTab("meetings");
+                            setGlobalSearchQuery("");
+                            setIsGlobalSearchFocused(false);
+                          }}
+                          className="w-full text-left px-4 py-2.5 hover:bg-slate-50 transition cursor-pointer border-b border-slate-100 last:border-b-0"
+                        >
+                          <p className="text-xs font-bold text-slate-800 truncate">{m.title}</p>
+                          <p className="text-[10px] text-slate-400 font-semibold truncate">
+                            {m.date} • {m.startTime}
+                          </p>
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setActiveTab("search");
+                          setIsGlobalSearchFocused(false);
+                        }}
+                        className="w-full text-left px-4 py-2 text-[10.5px] font-bold text-[#00658d] hover:bg-slate-50 transition cursor-pointer"
+                      >
+                        {language === "en" ? "See all results" : "Ver todos os resultados"}
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </form>
+          </div>
+
+          <div className="flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-full border border-slate-200 bg-white shadow-xs shrink-0">
+            <div className="w-7 h-7 rounded-full bg-[#94a4bd] text-[#0b1c30] flex items-center justify-center font-semibold text-[10px] shrink-0 select-none">
+              {getInitials(currentUser.name)}
+            </div>
+            <span className="text-xs font-semibold text-slate-700 max-w-[160px] truncate">
+              {currentUser.name}
+            </span>
+            <button
+              onClick={handleSignout}
+              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-full transition cursor-pointer"
+              title={language === "en" ? "Sign Out" : "Sair do Sistema"}
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
         <div className="p-6 md:p-10 w-full min-w-0 flex-1 pb-16">
           {renderTabContent()}
         </div>

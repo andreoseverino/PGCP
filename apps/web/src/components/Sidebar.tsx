@@ -1,16 +1,12 @@
 import React from "react";
 import { motion } from "motion/react";
 import { CieloLogo } from "./CieloLogo";
-import { SessionUser } from "../types";
-import { getInitials } from "../lib/user";
 import {
   LayoutDashboard,
   CalendarDays,
-  Search,
   FileSpreadsheet,
   ShieldAlert,
   Settings,
-  LogOut,
   Layers,
   Menu,
   X,
@@ -22,12 +18,6 @@ interface SidebarProps {
   setActiveTab: (tab: string) => void;
   language: "en" | "pt";
   setLanguage: (lang: "en" | "pt") => void;
-  /**
-   * Usuário da sessão atual. A Sidebar apenas exibe o que recebe e não sabe
-   * se a sessão veio do Modo de teste ou, futuramente, do Microsoft Entra ID.
-   */
-  currentUser: SessionUser;
-  onLogout: () => void;
   /**
    * A pessoa tem `PGCP.Admin`?
    *
@@ -49,8 +39,6 @@ export default function Sidebar({
   setActiveTab,
   language,
   setLanguage,
-  currentUser,
-  onLogout,
   canAdminister = false,
   canOpenAdministration = false,
 }: SidebarProps) {
@@ -95,19 +83,12 @@ export default function Sidebar({
         },
       ],
     },
-    {
-      titleEn: "Tools",
-      titlePt: "Ferramentas",
-      items: [
-        {
-          id: "search",
-          labelEn: "Search Portal",
-          labelPt: "Busca Rápida",
-          icon: Search,
-          badge: null,
-        },
-      ],
-    },
+    /*
+     * "Busca Rápida" saiu do menu: a busca do topo (App.tsx) já leva direto
+     * pra lá — manter os dois seria dois caminhos pro mesmo lugar. A aba
+     * continua existindo e navegável (activeTab === "search"), só não tem
+     * mais entrada própria aqui.
+     */
     /*
      * Gestão — item a item, não bloco único: Administração abre para a
      * Assessoria; Auditoria e Configurações, só para a administração técnica.
@@ -159,7 +140,7 @@ export default function Sidebar({
       {/* Mobile Top Header Bar */}
       <div className="md:hidden fixed top-0 left-0 w-full z-50 flex justify-between items-center px-5 h-16 bg-white/90 backdrop-blur-md border-b border-slate-200">
         <div className="flex items-center gap-3">
-          <CieloLogo className="w-10 h-10 rounded-lg shrink-0 shadow-sm" />
+          <CieloLogo variant="wordmark" className="h-7 w-auto shrink-0" />
           <div className="leading-tight text-left min-w-0">
             <span className="font-extrabold text-[14px] tracking-tight text-slate-800 uppercase block">
               PGCP
@@ -187,26 +168,18 @@ export default function Sidebar({
         />
       )}
 
-      {/* Navigation Drawer (Desktop Sidebar / Mobile Drawer) */}
+      {/* Navigation Drawer (Desktop Sidebar / Mobile Drawer).
+          Mobile: continua encostada na borda (comportamento de gaveta).
+          Desktop: flutua com margem e cantos arredondados — só o md: muda. */}
       <aside
-        className={`fixed left-0 top-0 h-screen w-64 bg-[#f8fafc] border-r border-slate-200 z-50 p-5 flex flex-col justify-between transition-transform duration-300 md:translate-x-0 ${
+        className={`fixed left-0 top-0 bottom-0 w-64 bg-white border-r border-slate-200 z-50 p-5 flex flex-col justify-between transition-transform duration-300 md:translate-x-0 md:top-3 md:left-3 md:bottom-3 md:rounded-2xl md:border md:shadow-sm ${
           isOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
         <div className="flex flex-col flex-1">
           {/* Top Logo and Head */}
-          <div className="pt-2 pb-5 px-1.5 border-b border-slate-200/60 mb-6 flex items-center gap-3.5 select-none">
-            <CieloLogo className="w-12 h-12 rounded-lg shrink-0 shadow-sm" />
-            <div className="leading-tight text-left min-w-0">
-              <h1 className="font-extrabold text-[15px] tracking-tight text-slate-800 uppercase block">
-                PGCP
-              </h1>
-              <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wide block leading-snug mt-0.5">
-                Plataforma de
-                <br />
-                Governança Corporativa
-              </span>
-            </div>
+          <div className="pt-2 pb-5 px-1.5 border-b border-slate-200/60 mb-6 flex items-center justify-center select-none">
+            <CieloLogo variant="wordmark" className="h-10 w-auto shrink-0" />
           </div>
 
           {/* Nav Items */}
@@ -256,32 +229,6 @@ export default function Sidebar({
               </div>
             ))}
           </nav>
-        </div>
-
-        {/* Footer info & toggle */}
-        <div className="pt-4 border-t border-slate-200 mt-4 flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-9 h-9 rounded-full bg-[#94a4bd] text-[#0b1c30] flex items-center justify-center font-semibold text-xs shrink-0 select-none">
-                {getInitials(currentUser.name)}
-              </div>
-              <div className="truncate leading-tight">
-                <h4 className="text-xs font-semibold text-slate-800 truncate">
-                  {currentUser.name}
-                </h4>
-                <span className="text-[10px] text-slate-500 block truncate">
-                  {currentUser.role}
-                </span>
-              </div>
-            </div>
-            <button
-              onClick={onLogout}
-              className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-              title={language === "en" ? "Sign Out" : "Sair do Sistema"}
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
-          </div>
         </div>
       </aside>
     </>

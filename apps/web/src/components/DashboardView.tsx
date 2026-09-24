@@ -30,7 +30,6 @@ import {
 import { Meeting, ActionItem, GovernanceBody } from "../types";
 import { classificarPendencia, ordenarPendencias } from "../lib/action-items";
 import { calendarDayState } from "../lib/calendar-day-style";
-import { formatCurrentDateTime, millisecondsUntilNextMinute } from "../lib/current-datetime";
 import { DEFAULT_TIMEZONE, instantToLocal } from "../lib/meeting-adapters";
 
 /** Quantos itens a Visão Geral mostra. A gestão detalhada é na página de FUPs. */
@@ -101,31 +100,6 @@ export default function DashboardView({
     const [ano, mes] = todayStr.split("-").map(Number);
     return { year: ano, month: mes - 1 }; // month é 0-indexed
   }, [todayStr]);
-
-  /*
-   * RELÓGIO DO CABEÇALHO.
-   *
-   * O primeiro disparo é alinhado à virada do minuto; depois segue de minuto em
-   * minuto. Nada de intervalo de 1s para um texto que só muda a cada 60s.
-   * Timeout e interval são desarmados quando o componente sai de cena.
-   */
-  const [now, setNow] = useState(() => new Date());
-
-  useEffect(() => {
-    let intervalo: ReturnType<typeof setInterval> | undefined;
-
-    const timeout = setTimeout(() => {
-      setNow(new Date());
-      intervalo = setInterval(() => setNow(new Date()), 60_000);
-    }, millisecondsUntilNextMinute(new Date()));
-
-    return () => {
-      clearTimeout(timeout);
-      if (intervalo !== undefined) clearInterval(intervalo);
-    };
-  }, []);
-
-  const agoraExtenso = formatCurrentDateTime(now, language);
 
   // Calendar Navigation State
   const [currentMonth, setCurrentMonth] = useState<number>(latestDateInfo.month);
@@ -246,8 +220,7 @@ export default function DashboardView({
 
   // Translation Dictionaries
   const t = {
-    dashboardTitle: language === "en" ? "Dashboard Portal" : "Painel Executivo",
-    dashboardSub: language === "en" ? "Corporate governance oversight & meeting metrics indicators." : "Portal estratégico de governança, decisões colegiadas e follow-ups.",
+    dashboardTitle: language === "en" ? "Dashboard Portal" : "Plataforma de Governança Corporativa",
     btnNewMeeting: language === "en" ? "New Meeting" : "Nova Reunião",
     
     // KPI Cards
@@ -458,8 +431,8 @@ export default function DashboardView({
   return (
     <div className="space-y-6 font-sans select-none animate-in fade-in duration-300">
       
-      {/* 1. Dashboard Header Section */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-5 md:p-6 bg-white border border-slate-100 rounded-2xl">
+      {/* 1. Dashboard Header Section — sem cartão atrás, só os elementos. */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 px-1">
         <div className="flex items-center gap-3.5">
           <div className="w-12 h-12 rounded-full bg-[#00658d]/5 flex items-center justify-center shrink-0">
             <span className="material-symbols-outlined text-3xl text-[#00658d] animate-pulse">space_dashboard</span>
@@ -468,17 +441,6 @@ export default function DashboardView({
             <h1 className="text-xl md:text-2xl font-extrabold tracking-tight text-[#001e2d] flex items-center gap-2">
               {t.dashboardTitle}
             </h1>
-            <p className="text-xs text-slate-400 font-semibold mt-0.5">
-              {t.dashboardSub}
-            </p>
-            {/*
-              Referência do "agora" — discreta, uma linha, no fuso das reuniões.
-              Atualiza sozinha a cada minuto; não exige recarregar a página.
-            */}
-            <p className="text-[11px] text-slate-500 font-semibold mt-1.5 flex items-center gap-1.5">
-              <Clock className="w-3 h-3 text-slate-400 shrink-0" aria-hidden="true" />
-              <time dateTime={now.toISOString()}>{agoraExtenso}</time>
-            </p>
           </div>
         </div>
 

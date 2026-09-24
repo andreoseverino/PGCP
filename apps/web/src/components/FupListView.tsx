@@ -1,14 +1,14 @@
 import React, { useState } from "react";
-import { 
+import {
   ShieldAlert,
-  Clock, 
-  Plus, 
-  Check, 
-  TrendingUp, 
-  BarChart2, 
-  ArrowUpCircle, 
-  Sparkles, 
-  Inbox, 
+  Clock,
+  Plus,
+  Check,
+  TrendingUp,
+  BarChart2,
+  ArrowUpCircle,
+  Sparkles,
+  Inbox,
   Filter,
   Users,
   Search,
@@ -16,13 +16,23 @@ import {
   AlertTriangle,
   X,
   FileCheck,
-  Layers
+  Layers,
+  Pencil
 } from "lucide-react";
 import { ActionItem } from "../types";
-import { daysLateToDueDate, type FupFormInput } from "../lib/action-items";
+import type { ActionItemPayload, FupFormInput } from "../lib/action-items";
 import DirectoryUserPicker from "./DirectoryUserPicker";
 import { directoryEmail, type DirectoryUser } from "../lib/directory";
 import { getInitials } from "../lib/user";
+
+/** "Data da Solicitação" / prazo, exibidas como DD/MM/AAAA. Sem hora, sem fuso — mesma data civil que o banco guarda. */
+function formatarDataBR(iso: string | undefined | null): string {
+  if (!iso) return "—";
+  const data = iso.slice(0, 10);
+  const [ano, mes, dia] = data.split("-");
+  if (!ano || !mes || !dia) return "—";
+  return `${dia}/${mes}/${ano}`;
+}
 
 interface FupListViewProps {
   language: "en" | "pt";
@@ -31,6 +41,8 @@ interface FupListViewProps {
   onCreateActionItem: (input: FupFormInput) => void | Promise<void>;
   /** Concluir / reabrir. A tela só muda depois do banco confirmar. */
   onSetActionItemStatus: (id: string, concluir: boolean) => void | Promise<void>;
+  /** PATCH parcial — VP responsável, comentários, prazo. */
+  onUpdateActionItem: (id: string, payload: ActionItemPayload) => void | Promise<void>;
   /**
    * O ator pode alterar este FUP?
    *
@@ -51,6 +63,7 @@ export default function FupListView({
   setActionItems,
   onCreateActionItem,
   onSetActionItemStatus,
+  onUpdateActionItem,
   podeGerenciarFup = () => true,
   actionItemsLoading = false,
   actionItemsError = null,
@@ -67,12 +80,40 @@ export default function FupListView({
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newOrigin, setNewOrigin] = useState("");
-  const [newDaysLate, setNewDaysLate] = useState("0");
+  const [newVpResponsavel, setNewVpResponsavel] = useState("");
+  const [newDueDate, setNewDueDate] = useState("");
+  const [newComments, setNewComments] = useState("");
+  const [newStatus, setNewStatus] = useState<"open" | "completed">("open");
   /** Responsável escolhido no diretório corporativo. */
   const [newAssignee, setNewAssignee] = useState<DirectoryUser | null>(null);
 
   // States for simulated actions
   const [escalatedItems, setEscalatedItems] = useState<Record<string, boolean>>({});
+
+  // Edição de um FUP já existente — VP responsável, comentários, prazo e status.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editVp, setEditVp] = useState("");
+  const [editDueDate, setEditDueDate] = useState("");
+  const [editComments, setEditComments] = useState("");
+  const [editStatus, setEditStatus] = useState<"open" | "completed">("open");
+
+  const abrirEdicao = (fup: ActionItem) => {
+    setEditingId(fup.id);
+    setEditVp(fup.vpResponsavel ?? "");
+    setEditDueDate(fup.dueDate ?? "");
+    setEditComments(fup.description ?? "");
+    setEditStatus(fup.apiStatus === "completed" ? "completed" : "open");
+  };
+
+  const salvarEdicao = (fup: ActionItem) => {
+    void onUpdateActionItem(fup.actionItemId ?? fup.id, {
+      vpResponsavel: editVp.trim() || null,
+      dueDate: editDueDate || null,
+      description: editComments.trim() || null,
+      status: editStatus
+    });
+    setEditingId(null);
+  };
 
   // Compute metrics based on live state
   const totalCount = actionItems.length;
@@ -88,17 +129,13 @@ export default function FupListView({
     }
 
     const nome = newAssignee.displayName ?? directoryEmail(newAssignee) ?? "";
-    const daysLateNum = parseInt(newDaysLate) || 0;
-    const isOverdue = daysLateNum > 0;
 
-    /*
-     * O formulário coleta DIAS EM ATRASO; o banco guarda `due_date`, que é uma
-     * data civil. A conversão acontece aqui: `daysLate = 0` significa "vence
-     * hoje". Persistir os dias congelaria um número que muda amanhã.
-     */
     void onCreateActionItem({
       title: newTitle.trim(),
-      dueDate: daysLateToDueDate(daysLateNum),
+      dueDate: newDueDate || undefined,
+      vpResponsavel: newVpResponsavel.trim() || undefined,
+      description: newComments.trim() || undefined,
+      status: newStatus,
       assigneeName: nome,
       // Identidade Microsoft. Escolher alguém do diretório NÃO cria usuário no
       // PGCP: isso continua sendo o JIT, quando a própria pessoa entra.
@@ -110,7 +147,10 @@ export default function FupListView({
     // Reset Form fields
     setNewTitle("");
     setNewOrigin("");
-    setNewDaysLate("0");
+    setNewVpResponsavel("");
+    setNewDueDate("");
+    setNewComments("");
+    setNewStatus("open");
     setNewAssignee(null);
 
     // Toast e auditoria são responsabilidade de quem grava: o handler em
@@ -268,10 +308,10 @@ export default function FupListView({
           </h2>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* Title */}
+            {/* Assunto */}
             <div className="flex flex-col gap-1.5">
               <label className="text-[10.5px] font-bold text-slate-450 uppercase tracking-wide">
-                {language === "en" ? "FUP / Action Deliverable" : "Nome da Ação / Descrição do FUP"} *
+                {language === "en" ? "Subject" : "Assunto"} *
               </label>
               <input
                 type="text"
@@ -300,24 +340,37 @@ export default function FupListView({
               </select>
             </div>
 
-            {/* Days Late */}
+            {/* VP responsável — texto livre, por decisão explícita: não vem do diretório nem de um cadastro. */}
             <div className="flex flex-col gap-1.5">
               <label className="text-[10.5px] font-bold text-slate-450 uppercase tracking-wide">
-                {language === "en" ? "Days Late (0 = Due Today)" : "Dias em Atraso (0 = Vence Hoje)"}
+                {language === "en" ? "Responsible VP" : "VP Responsável"}
               </label>
               <input
-                type="number"
-                min="0"
-                value={newDaysLate}
-                onChange={(e) => setNewDaysLate(e.target.value)}
+                type="text"
+                value={newVpResponsavel}
+                onChange={(e) => setNewVpResponsavel(e.target.value)}
+                placeholder={language === "en" ? "Ex: Jane Doe" : "Ex: Fulano de Tal"}
                 className="bg-white border border-slate-205 rounded-xl px-3 py-2.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#003e58]"
               />
             </div>
 
-            {/* Responsible */}
+            {/* Data para Conclusão */}
             <div className="flex flex-col gap-1.5">
               <label className="text-[10.5px] font-bold text-slate-450 uppercase tracking-wide">
-                {language === "en" ? "Responsible Owner" : "Membro Responsável"} *
+                {language === "en" ? "Due Date" : "Data para Conclusão"}
+              </label>
+              <input
+                type="date"
+                value={newDueDate}
+                onChange={(e) => setNewDueDate(e.target.value)}
+                className="bg-white border border-slate-205 rounded-xl px-3 py-2.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#003e58]"
+              />
+            </div>
+
+            {/* Responsáveis */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[10.5px] font-bold text-slate-450 uppercase tracking-wide">
+                {language === "en" ? "Responsible" : "Responsáveis"} *
               </label>
               {/* Responsável vem do diretório corporativo (Microsoft Graph),
                   não mais de uma lista local. */}
@@ -327,6 +380,35 @@ export default function FupListView({
                 placeholder={language === "en" ? "Search directory by name or e-mail..." : "Buscar no diretório por nome ou e-mail..."}
                 onSelect={setNewAssignee}
                 onClear={() => setNewAssignee(null)}
+              />
+            </div>
+
+            {/* Status — só duas opções, por decisão do produto. "cancelled" existe no banco mas não tem lugar nesta tela. */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[10.5px] font-bold text-slate-450 uppercase tracking-wide">
+                {language === "en" ? "Status" : "Status"}
+              </label>
+              <select
+                value={newStatus}
+                onChange={(e) => setNewStatus(e.target.value as "open" | "completed")}
+                className="bg-white border border-slate-205 rounded-xl px-3 py-2.5 text-xs text-slate-700 focus:outline-none cursor-pointer"
+              >
+                <option value="open">{language === "en" ? "In Progress" : "Em Andamento"}</option>
+                <option value="completed">{language === "en" ? "Completed" : "Concluído"}</option>
+              </select>
+            </div>
+
+            {/* Comentários — campo único, sobrescrito a cada edição (sem histórico). */}
+            <div className="flex flex-col gap-1.5 md:col-span-2 lg:col-span-3">
+              <label className="text-[10.5px] font-bold text-slate-450 uppercase tracking-wide">
+                {language === "en" ? "Comments" : "Comentários"}
+              </label>
+              <textarea
+                rows={2}
+                value={newComments}
+                onChange={(e) => setNewComments(e.target.value)}
+                placeholder={language === "en" ? "Notes about this FUP..." : "Observações sobre este FUP..."}
+                className="bg-white border border-slate-205 rounded-xl px-3 py-2.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#003e58] resize-none"
               />
             </div>
           </div>
@@ -427,24 +509,28 @@ export default function FupListView({
 
         <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-xs">
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse font-sans text-xs min-w-[700px]">
+            <table className="w-full text-left border-collapse font-sans text-xs min-w-[980px]">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider font-extrabold text-[9px] select-none">
-                  <th className="py-3 px-4 w-1/3">Tema / Ação FUP</th>
-                  <th className="py-3 px-3 w-1/5">Colegiado Origem</th>
-                  <th className="py-3 px-3 w-1/5">Membro Responsável</th>
-                  <th className="py-3 px-3 w-1/6">Status Atual</th>
-                  <th className="py-3 px-4 w-1/6 text-right">Controles Operacionais</th>
+                  <th className="py-3 px-4 w-1/4">Assunto</th>
+                  <th className="py-3 px-3">Colegiado Origem</th>
+                  <th className="py-3 px-3">VP Responsável</th>
+                  <th className="py-3 px-3">Responsáveis</th>
+                  <th className="py-3 px-3">Solicitação</th>
+                  <th className="py-3 px-3">Conclusão</th>
+                  <th className="py-3 px-3">Status Atual</th>
+                  <th className="py-3 px-4 text-right">Controles Operacionais</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredActionItems.map((fup) => {
                   const isCompleted = fup.status === "Completed";
                   const isEscalated = escalatedItems[fup.id];
+                  const emEdicao = editingId === fup.id;
 
                   return (
-                    <tr 
-                      key={fup.id} 
+                    <React.Fragment key={fup.id}>
+                    <tr
                       className={`border-b border-slate-100 hover:bg-slate-50/50 transition-colors ${
                         isCompleted ? "opacity-60 bg-slate-50/30" : ""
                       }`}
@@ -454,6 +540,11 @@ export default function FupListView({
                           <p className={`text-slate-900 ${isCompleted ? "line-through text-slate-400" : ""}`}>
                             {fup.title}
                           </p>
+                          {fup.description && (
+                            <p className="text-[10px] text-slate-400 font-semibold truncate max-w-xs" title={fup.description}>
+                              {fup.description}
+                            </p>
+                          )}
                           {isEscalated && (
                             <span className="inline-flex items-center gap-1 px-1.5 py-0.2 bg-red-50 text-red-700 border border-red-150 rounded text-[9px] font-extrabold uppercase animate-pulse">
                               <ArrowUpCircle className="w-3 h-3" />
@@ -467,6 +558,10 @@ export default function FupListView({
                         {fup.origin}
                       </td>
 
+                      <td className="py-3.5 px-3 text-slate-600 font-semibold text-[11px]">
+                        {fup.vpResponsavel || "—"}
+                      </td>
+
                       <td className="py-3.5 px-3">
                         <div className="flex items-center gap-2">
                           <div className="w-5 h-5 rounded-full bg-[#00658d]/10 text-[#00658d] flex items-center justify-center font-bold text-[9px] border border-slate-200">
@@ -474,6 +569,14 @@ export default function FupListView({
                           </div>
                           <span className="font-semibold text-slate-700 text-xs">{fup.assignedUser.name}</span>
                         </div>
+                      </td>
+
+                      <td className="py-3.5 px-3 text-slate-500 font-semibold text-[10.5px]">
+                        {formatarDataBR(fup.createdAt)}
+                      </td>
+
+                      <td className="py-3.5 px-3 text-slate-500 font-semibold text-[10.5px]">
+                        {formatarDataBR(fup.dueDate)}
                       </td>
 
                       <td className="py-3.5 px-3 select-none">
@@ -494,7 +597,18 @@ export default function FupListView({
 
                       <td className="py-3.5 px-4 text-right select-none">
                         <div className="inline-flex gap-1.5 justify-end">
-                          
+
+                          {/* Editar VP responsável, comentários e prazo */}
+                          {podeGerenciarFup(fup) && (
+                            <button
+                              onClick={() => (emEdicao ? setEditingId(null) : abrirEdicao(fup))}
+                              className="p-1.5 text-slate-400 hover:text-[#00658d] bg-white hover:bg-slate-50 rounded-lg border border-slate-205 hover:border-[#00658d]/40 transition cursor-pointer"
+                              title="Editar FUP"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
                           {/* Complete action */}
                           {!isCompleted && podeGerenciarFup(fup) && (
                             <button
@@ -533,12 +647,76 @@ export default function FupListView({
                         </div>
                       </td>
                     </tr>
+
+                    {emEdicao && (
+                      <tr className="border-b border-slate-100 bg-slate-50/70">
+                        <td colSpan={8} className="p-4">
+                          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[9.5px] font-extrabold text-slate-450 uppercase tracking-wide">VP Responsável</label>
+                              <input
+                                type="text"
+                                value={editVp}
+                                onChange={(e) => setEditVp(e.target.value)}
+                                className="bg-white border border-slate-205 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#003e58]"
+                              />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[9.5px] font-extrabold text-slate-450 uppercase tracking-wide">Data para Conclusão</label>
+                              <input
+                                type="date"
+                                value={editDueDate}
+                                onChange={(e) => setEditDueDate(e.target.value)}
+                                className="bg-white border border-slate-205 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#003e58]"
+                              />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[9.5px] font-extrabold text-slate-450 uppercase tracking-wide">Status</label>
+                              <select
+                                value={editStatus}
+                                onChange={(e) => setEditStatus(e.target.value as "open" | "completed")}
+                                className="bg-white border border-slate-205 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 focus:outline-none cursor-pointer"
+                              >
+                                <option value="open">Em Andamento</option>
+                                <option value="completed">Concluído</option>
+                              </select>
+                            </div>
+                            <div className="flex flex-col gap-1 md:col-span-4">
+                              <label className="text-[9.5px] font-extrabold text-slate-450 uppercase tracking-wide">Comentários</label>
+                              <textarea
+                                rows={2}
+                                value={editComments}
+                                onChange={(e) => setEditComments(e.target.value)}
+                                className="bg-white border border-slate-205 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#003e58] resize-none"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex justify-end gap-2 pt-3">
+                            <button
+                              type="button"
+                              onClick={() => setEditingId(null)}
+                              className="px-3 py-1.5 text-[10.5px] font-bold text-slate-500 hover:bg-slate-200/50 rounded-lg transition cursor-pointer"
+                            >
+                              Cancelar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => salvarEdicao(fup)}
+                              className="px-3.5 py-1.5 bg-[#00658d] hover:bg-[#00aeef] text-white rounded-lg text-[10.5px] font-bold transition cursor-pointer"
+                            >
+                              Salvar
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
 
                 {filteredActionItems.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="py-12 text-center text-slate-400 font-semibold">
+                    <td colSpan={8} className="py-12 text-center text-slate-400 font-semibold">
                       <Inbox className="w-8 h-8 mx-auto text-slate-300 mb-2" />
                       Nenhuma pendência ou ação de FUP localizada com os filtros ativos.
                     </td>

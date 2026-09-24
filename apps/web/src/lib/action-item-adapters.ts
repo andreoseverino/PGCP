@@ -35,6 +35,8 @@ export interface ApiActionItem {
   id: string;
   title: string;
   description: string | null;
+  /** VP responsável pelo tema perante a governança. Texto livre. */
+  vpResponsavel: string | null;
   assignee: ApiActionItemAssignee;
   origin: ApiActionItemOrigin;
   /** `YYYY-MM-DD`. Data civil: sem horário, sem fuso. */
@@ -50,6 +52,7 @@ export interface ApiActionItem {
 export interface ActionItemPayload {
   title?: string;
   description?: string | null;
+  vpResponsavel?: string | null;
   dueDate?: string | null;
   assignedUserId?: string | null;
   /** `oid` do Graph. O tenant é acrescentado pelo servidor. */
@@ -106,7 +109,12 @@ export function actionItemFromApi(api: ApiActionItem): ActionItem {
     dueDate: api.dueDate ?? undefined,
     apiStatus: api.status,
     originMeetingId: api.origin.meetingId ?? undefined,
-    originAgendaItemId: api.origin.agendaItemId ?? undefined
+    originAgendaItemId: api.origin.agendaItemId ?? undefined,
+    // "Comentários" da tela: reaproveita `description`, campo que já existia
+    // no banco e não tinha consumidor nenhum na UI.
+    description: api.description ?? undefined,
+    vpResponsavel: api.vpResponsavel ?? undefined,
+    createdAt: api.createdAt
   };
 }
 
@@ -153,24 +161,15 @@ export function ordenarPendencias(itens: ActionItem[]): ActionItem[] {
   });
 }
 
-/**
- * Converte "dias em atraso" — o que o formulário coleta hoje — para a data
- * civil de vencimento.
- *
- * `daysLate = 0` significa "vence hoje". A conta usa a data local de quem
- * preenche, que é a intenção expressa no formulário.
- */
-export function daysLateToDueDate(daysLate: number, hoje = new Date()): string {
-  const alvo = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - daysLate);
-  const doisDigitos = (n: number) => String(n).padStart(2, "0");
-  return `${alvo.getFullYear()}-${doisDigitos(alvo.getMonth() + 1)}-${doisDigitos(alvo.getDate())}`;
-}
-
 export interface FupFormInput {
   title: string;
   description?: string;
+  /** VP responsável pelo tema perante a governança. Texto livre. */
+  vpResponsavel?: string;
   /** Data civil. Quando o formulário só coleta dias, use `daysLateToDueDate`. */
   dueDate?: string;
+  /** "Em andamento" (open) ou "Concluído" (completed). Ausente = nasce aberto. */
+  status?: "open" | "completed";
   assigneeName: string;
   assigneeEntraObjectId?: string;
   originMeetingId?: string;
@@ -195,6 +194,7 @@ export function buildActionItemPayload(input: FupFormInput): ActionItemPayload {
   return {
     title: input.title.trim(),
     description: opcional(input.description) ?? null,
+    vpResponsavel: opcional(input.vpResponsavel) ?? null,
     dueDate: opcional(input.dueDate) ?? null,
     assigneeName: input.assigneeName.trim(),
     assigneeEntraObjectId: opcional(input.assigneeEntraObjectId) ?? null,
@@ -202,7 +202,8 @@ export function buildActionItemPayload(input: FupFormInput): ActionItemPayload {
     // Pauta sem reunião não é origem válida — a API recusa, e com razão.
     originAgendaItemId: input.originMeetingId ? (opcional(input.originAgendaItemId) ?? null) : null,
     governanceBodyId: opcional(input.governanceBodyId) ?? null,
-    originLabel: opcional(input.originLabel) ?? null
+    originLabel: opcional(input.originLabel) ?? null,
+    status: input.status
   };
 }
 

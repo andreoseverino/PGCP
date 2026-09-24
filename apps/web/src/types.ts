@@ -345,5 +345,11 @@ export interface ActionItem {
   /** Origem ESTRUTURAL. O texto de `origin` é só exibição. */
   originMeetingId?: string;
   originAgendaItemId?: string;
+  /** "Comentários" da tela de FUP — campo único, sobrescrito a cada edição. */
+  description?: string;
+  /** VP responsável pelo tema perante a governança. Texto livre. */
+  vpResponsavel?: string;
+  /** "Data da Solicitação" — data de criação do FUP no sistema. ISO-8601. */
+  createdAt?: string;
 }
 
