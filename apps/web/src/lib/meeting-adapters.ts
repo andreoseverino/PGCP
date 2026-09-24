@@ -324,6 +324,7 @@ export function meetingFromApi(api: ApiMeetingSummary | ApiMeetingDetail): Meeti
     // Exibição do órgão. A identidade continua sendo `governanceBody.id`;
     // este campo textual não resolve nada no servidor.
     category: api.governanceBody.name,
+    governanceBodyId: api.governanceBody.id,
     // Presidente da Mesa do ÓRGÃO — alimenta a seção MESA da Ata
     // (`buildMinutesTemplate`). `null` = nenhum presidente cadastrado ainda.
     governanceBodyChairName: api.governanceBody.chairName,

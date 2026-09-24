@@ -855,9 +855,10 @@ export default function App() {
             setSelectedMeeting(null);
           }}
           onUpdateStatus={(meetId, newStatus) => {
-            handleUpdateMeetingStatus(meetId, newStatus);
-            // Sync selectedMeeting state too so sub-tabs update correctly
-            setSelectedMeeting(prev => prev ? { ...prev, status: newStatus } : null);
+            // Sem atualização otimista: `handleUpdateMeetingStatus` já troca
+            // `selectedMeeting` pela resposta do banco. Trocar aqui antes mostraria
+            // a reunião iniciada mesmo quando a API recusa (ex.: pautas não aprovadas).
+            void handleUpdateMeetingStatus(meetId, newStatus);
           }}
           actionItems={actionItems}
           setActionItems={setActionItems}
@@ -875,6 +876,7 @@ export default function App() {
           podeGerenciarFup={podeGerenciarFup}
           pautaTypes={pautaTypes}
           pautaNatures={pautaNatures}
+          governanceBodies={governanceBodies}
         />
       );
     }

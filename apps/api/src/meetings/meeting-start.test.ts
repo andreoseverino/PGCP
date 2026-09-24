@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { PoolClient } from "pg";
+import { HttpError } from "../http-error.js";
 import {
   PRE_START_MEETING_STATUSES,
+  exigirProntaParaIniciar,
+  pendenciasParaIniciar,
   startMeetingWhenAgendaItemCompletes,
 } from "./meeting-start.js";
 
@@ -19,12 +22,26 @@ interface QueryLog {
   params: unknown[];
 }
 
-function clientForStatus(initialStatus: string) {
+/** Por padrao a reuniao esta pronta: pautas aprovadas e convite sincronizado. */
+function clientForStatus(
+  initialStatus: string,
+  preparo: { validacao?: string; convite?: string | null } = {},
+) {
   let status = initialStatus;
   const queries: QueryLog[] = [];
   const client = {
     async query(sql: string, params: unknown[] = []) {
       queries.push({ sql, params });
+      if (sql.includes("agenda_validation_status") && sql.includes("meeting_calendar_integrations")) {
+        return {
+          rows: [{
+            status,
+            agenda_validation_status: preparo.validacao ?? "approved",
+            sync_status: preparo.convite === undefined ? "synced" : preparo.convite,
+          }],
+          rowCount: 1,
+        };
+      }
       if (sql.includes("UPDATE meetings")) {
         if ((PRE_START_MEETING_STATUSES as readonly string[]).includes(status)) {
           status = "in_progress";
@@ -81,6 +98,60 @@ test("duas conclusoes concorrentes produzem uma unica transicao", async () => {
   assert.deepEqual(results.sort(), [false, true]);
   assert.equal(fake.status(), "in_progress");
   assert.equal(fake.queries.filter((q) => q.sql.includes("INSERT INTO audit_logs")).length, 1);
+});
+
+test("pendencias: exige pautas aprovadas e convite com evento", () => {
+  assert.deepEqual(pendenciasParaIniciar({ agendaValidationStatus: "approved", calendarSyncStatus: "synced" }), []);
+  assert.deepEqual(pendenciasParaIniciar({ agendaValidationStatus: "approved", calendarSyncStatus: "stale" }), []);
+  assert.deepEqual(
+    pendenciasParaIniciar({ agendaValidationStatus: "sent", calendarSyncStatus: "synced" }),
+    ["pautas_nao_aprovadas"],
+  );
+  for (const semEvento of ["pending", "failed", null]) {
+    assert.deepEqual(
+      pendenciasParaIniciar({ agendaValidationStatus: "approved", calendarSyncStatus: semEvento }),
+      ["convite_nao_enviado"],
+    );
+  }
+  assert.deepEqual(
+    pendenciasParaIniciar({ agendaValidationStatus: "draft", calendarSyncStatus: null }),
+    ["pautas_nao_aprovadas", "convite_nao_enviado"],
+  );
+});
+
+test("barreira recusa com 409 reuniao pre-inicio sem aprovacao ou convite", async () => {
+  const fake = clientForStatus("scheduled", { validacao: "draft", convite: null });
+  await assert.rejects(exigirProntaParaIniciar(fake.client, MEETING_ID), (error: unknown) => {
+    assert.ok(error instanceof HttpError);
+    assert.equal(error.status, 409);
+    assert.match(error.message, /pautas ainda não foram aprovadas e o convite/);
+    return true;
+  });
+});
+
+test("barreira nao se aplica a reuniao que ja saiu da fase pre-inicio", async () => {
+  for (const atual of ["in_progress", "done", "closed"]) {
+    const fake = clientForStatus(atual, { validacao: "draft", convite: null });
+    await exigirProntaParaIniciar(fake.client, MEETING_ID);
+  }
+});
+
+test("concluir pauta de reuniao nao pronta nao inicia a reuniao", async () => {
+  const fake = clientForStatus("scheduled", { validacao: "sent" });
+  await assert.rejects(
+    startMeetingWhenAgendaItemCompletes(fake.client, MEETING_ID, "Reunião executiva", ACTOR),
+    (error: unknown) => error instanceof HttpError && error.status === 409,
+  );
+  assert.equal(fake.status(), "scheduled");
+  assert.equal(fake.queries.some((q) => q.sql.includes("INSERT INTO audit_logs")), false);
+});
+
+test("PATCH de status passa pela mesma barreira ao iniciar", () => {
+  const source = readFileSync(new URL("./update.ts", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /if \(input\.status === "in_progress"\)\s*{\s*await exigirProntaParaIniciar\(client, meetingId\);/,
+  );
 });
 
 test("helper so e acionado ao concluir, nunca ao reabrir pauta", () => {

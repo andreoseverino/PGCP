@@ -23,7 +23,7 @@ import {
   snapshotTopicParticipantsIntoItem,
   vincularParticipanteNaPauta,
 } from "./agenda-item-participants.js";
-import { startMeetingWhenAgendaItemCompletes } from "./meeting-start.js";
+import { exigirProntaParaIniciar, startMeetingWhenAgendaItemCompletes } from "./meeting-start.js";
 
 /**
  * Mutacoes direcionadas do nucleo da reuniao.
@@ -291,6 +291,11 @@ export async function updateMeeting(
     const fim = input.endAt ? new Date(input.endAt) : atual.rows[0]!.end_at;
     if (fim.getTime() <= inicio.getTime()) {
       throw new HttpError(400, "O horário de término deve ser depois do horário de início.");
+    }
+
+    // Iniciar exige pautas aprovadas e convite enviado. Sob o lock acima.
+    if (input.status === "in_progress") {
+      await exigirProntaParaIniciar(client, meetingId);
     }
 
     if (input.governanceBodyId) {

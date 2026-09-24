@@ -220,6 +220,8 @@ export interface Meeting {
   endTime: string; // e.g. "14:00"
   timeZone: string; // e.g. "EST"
   category: string;
+  /** Identidade do órgão (`category` é só o nome exibido). */
+  governanceBodyId?: string;
   /**
    * Presidente da Mesa cadastrado no ÓRGÃO de governança (não na reunião).
    * Alimenta a seção MESA do esqueleto da Ata. `null`/`undefined` = ninguém

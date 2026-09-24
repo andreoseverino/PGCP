@@ -17,7 +17,6 @@ import {
   GripVertical,
   Info,
   Landmark,
-  Lock,
   MessageSquare,
   Pencil,
   Play,
@@ -33,7 +32,7 @@ import {
   CalendarDays
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
-import { Meeting, ActionItem, StandaloneAgenda, Participant, AgendaItem, SessionUser } from "../types";
+import { Meeting, ActionItem, StandaloneAgenda, Participant, AgendaItem, SessionUser, GovernanceBody } from "../types";
 import { newId } from "../lib/id";
 import { ehEmailValido, pautasSobResponsabilidade } from "../lib/participants";
 import {
@@ -146,6 +145,8 @@ interface MeetingDetailViewProps {
   /** Mesmas fontes de Tipo/Natureza da Biblioteca (cadastros relacionais). */
   pautaTypes?: TaxonomyItem[];
   pautaNatures?: TaxonomyItem[];
+  /** Órgãos para o "Editar Detalhes" — mesma lista da criação. */
+  governanceBodies?: GovernanceBody[];
 }
 
 export default function MeetingDetailView({
@@ -168,7 +169,8 @@ export default function MeetingDetailView({
   canSchedule = false,
   podeGerenciarFup = () => true,
   pautaTypes = [],
-  pautaNatures = []
+  pautaNatures = [],
+  governanceBodies = []
 }: MeetingDetailViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<string>("Overview");
 
@@ -201,7 +203,8 @@ export default function MeetingDetailView({
   const [editedDate, setEditedDate] = useState(meeting.date);
   const [editedStartTime, setEditedStartTime] = useState(meeting.startTime);
   const [editedEndTime, setEditedEndTime] = useState(meeting.endTime);
-  const [editedMeetingLink, setEditedMeetingLink] = useState(meeting.meetingLink || "");
+  const [editedGovernanceBodyId, setEditedGovernanceBodyId] = useState(meeting.governanceBodyId || "");
+  const [editedRecurrence, setEditedRecurrence] = useState(meeting.recurrence || "Single");
 
   // ---------------------------------------------------------------------------
   // STATE MANAGEMENT - ITEM 1 (GERACAO E CICLO DE VIDA DA ATA)
@@ -410,6 +413,19 @@ export default function MeetingDetailView({
   const validacao = meeting.agendaValidation;
   const statusValidacao = validacao?.status ?? "draft";
   const pautasAprovadas = statusValidacao === "approved";
+
+  /*
+   * Pré-requisitos de "Iniciar Reunião": pautas aprovadas e convite enviado
+   * (evento existe no calendário: synced, ou stale após edição). A barreira de
+   * verdade é o backend (`exigirProntaParaIniciar`); aqui só explicamos o porquê.
+   */
+  const conviteEnviado =
+    meeting.calendar?.syncStatus === "synced" || meeting.calendar?.syncStatus === "stale";
+  const pendenciasParaIniciar = [
+    ...(pautasAprovadas ? [] : [language === "en" ? "agenda not approved yet" : "pautas ainda não aprovadas"]),
+    ...(conviteEnviado ? [] : [language === "en" ? "invitation not sent yet" : "convite ainda não enviado"]),
+  ];
+  const podeIniciar = pendenciasParaIniciar.length === 0;
 
   /**
    * Modo da aba Pautas, derivado só de `meetings.status` (sem status novo):
@@ -1691,7 +1707,11 @@ export default function MeetingDetailView({
               ) : meeting.status !== "Done" && meeting.status !== "Closed" ? (
                 <button
                   onClick={() => onUpdateStatus(meeting.id, "In Progress")}
-                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer"
+                  disabled={!podeIniciar}
+                  title={podeIniciar
+                    ? undefined
+                    : (language === "en" ? "Cannot start: " : "Não é possível iniciar: ") + pendenciasParaIniciar.join(language === "en" ? " and " : " e ")}
+                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed disabled:active:scale-100"
                 >
                   <Play className="w-3.5 h-3.5" />
                   {language === "en" ? "Start Meeting" : "Iniciar Reunião"}
@@ -1705,7 +1725,8 @@ export default function MeetingDetailView({
                     setEditedDate(meeting.date || "");
                     setEditedStartTime(meeting.startTime || "");
                     setEditedEndTime(meeting.endTime || "");
-                    setEditedMeetingLink(meeting.meetingLink || "");
+                    setEditedGovernanceBodyId(meeting.governanceBodyId || "");
+                    setEditedRecurrence(meeting.recurrence || "Single");
                     setIsEditingMeeting(true);
                   }}
                   className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer border border-[#00658d]/10"
@@ -2432,7 +2453,7 @@ export default function MeetingDetailView({
 
           {/* Planejamento: agenda (2/3) + Biblioteca (1/3). Execução/Resultado:
               a agenda ocupa a largura toda e a Biblioteca não aparece. */}
-          <div className={`grid grid-cols-1 gap-8 ${modoPlanejamento || modoExecucao ? "lg:grid-cols-3" : ""}`}>
+          <div className={`grid grid-cols-1 gap-8 ${modoPlanejamento ? "lg:grid-cols-3" : ""}`}>
           <div className={modoPlanejamento ? "lg:col-span-2 space-y-6" : "space-y-6"}>
             <div className="bg-white border border-slate-200 p-6 md:p-8 rounded-2xl card-shadow">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 pb-4 border-b border-slate-100">
@@ -2989,173 +3010,6 @@ export default function MeetingDetailView({
             </div>
           </div>
           )}
-
-          {/* Próximas Pautas — Chamar, Mensagem e Concluir durante a reunião ao
-              vivo. Só em Execução: antes da reunião não existe "próxima pauta"
-              no sentido operacional, e depois dela conduzir deixa de fazer
-              sentido. Vivia na antiga aba Anotações; nada aqui lê ou escreve
-              texto livre, então a remoção do editor não tira nada disto. */}
-          {modoExecucao && (
-          <div className="space-y-6">
-            <div className="bg-white border border-slate-200 rounded-2xl p-5 card-shadow">
-              <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider mb-1 flex items-center gap-2">
-                <CheckSquare className="w-4 h-4 text-[#00658d]" />
-                {language === "en" ? "Upcoming topics" : "Próximas Pautas"}
-              </h3>
-              <p className="text-[11px] text-slate-400 font-semibold mb-4 leading-relaxed">
-                {language === "en"
-                  ? "In order of execution. Concluded and postponed topics are grouped separately below."
-                  : "Na ordem de execução. Pautas concluídas e postergadas são organizadas separadamente abaixo."}
-              </p>
-
-              {upcomingTopics.length === 0 && finishedTopics.length === 0 && postponedTopics.length === 0 ? (
-                <p className="text-xs text-slate-400 italic py-6 text-center">
-                  {language === "en" ? "No agenda topics registered." : "Nenhuma pauta registrada nesta reunião."}
-                </p>
-              ) : (
-                <div className="space-y-2.5">
-                  {upcomingTopics.map(({ ag }, ordem) => {
-                    const isNext = ordem === 0;
-                    return (
-                      <div
-                        key={ag.id}
-                        className={`rounded-xl border p-3 transition ${
-                          isNext ? "border-[#00658d]/30 bg-[#c6e7ff]/15" : "border-slate-100 bg-slate-50/40"
-                        }`}
-                      >
-                        {isNext && (
-                          <span className="text-[8.5px] font-extrabold text-[#00658d] uppercase tracking-widest">
-                            {language === "en" ? "Next" : "Próxima"}
-                          </span>
-                        )}
-                        <p className="text-[10px] font-bold text-[#00658d] mt-0.5">{ag.time}</p>
-                        <p className="text-xs font-extrabold text-slate-800 leading-snug mt-0.5">{ag.title}</p>
-                        <p className="text-[10px] text-slate-400 font-medium mt-0.5">
-                          {ag.duration}{ag.author ? ` • ${ag.author}` : ""}
-                        </p>
-
-                        <div className="flex flex-wrap gap-1.5 mt-2.5 pt-2.5 border-t border-slate-100">
-                          <button
-                            type="button"
-                            onClick={() => toggleTopicDone(ag)}
-                            className="px-2 py-1 text-[9.5px] font-extrabold uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-600 hover:text-white hover:border-emerald-600 transition cursor-pointer inline-flex items-center gap-1"
-                          >
-                            <Check className="w-3 h-3" />
-                            {language === "en" ? "Done" : "Concluir"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void handleCallParticipants(ag)}
-                            disabled={callingAgendaItemId !== null}
-                            aria-busy={callingAgendaItemId === ag.id}
-                            className="px-2 py-1 text-[9.5px] font-extrabold uppercase tracking-wider text-slate-600 bg-white border border-slate-200 rounded-lg hover:border-[#00658d] hover:text-[#00658d] transition cursor-pointer inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            <BellRing className={`w-3 h-3 ${callingAgendaItemId === ag.id ? "animate-pulse" : ""}`} />
-                            {callingAgendaItemId === ag.id
-                              ? (language === "en" ? "Calling..." : "Chamando...")
-                              : (language === "en" ? "Call" : "Chamar")}
-                          </button>
-                          {canSchedule && <button
-                            type="button"
-                            onClick={() => handleOpenMessageModal(ag)}
-                            className="px-2 py-1 text-[9.5px] font-extrabold uppercase tracking-wider text-slate-600 bg-white border border-slate-200 rounded-lg hover:border-[#00658d] hover:text-[#00658d] transition cursor-pointer inline-flex items-center gap-1"
-                          >
-                            <MessageSquare className="w-3 h-3" />
-                            {language === "en" ? "Message" : "Mensagem"}
-                          </button>}
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  {finishedTopics.length > 0 && (
-                    <div className="pt-3 mt-2 border-t border-slate-100">
-                      <p className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest mb-2">
-                        {language === "en" ? "Concluded" : "Concluídas"} ({finishedTopics.length})
-                      </p>
-                      <div className="space-y-1">
-                        {finishedTopics.map(({ ag }) => (
-                          <div key={ag.id} className="flex items-center gap-2 px-1 py-0.5 group/done">
-                            <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-emerald-500" />
-                            <span className="text-[10.5px] font-bold text-slate-400 truncate line-through flex-1 min-w-0">
-                              {ag.title}
-                            </span>
-                            {doneTopicIds.includes(ag.id) && (
-                              <button
-                                type="button"
-                                onClick={() => toggleTopicDone(ag)}
-                                title={language === "en" ? "Reopen topic" : "Reabrir pauta"}
-                                className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400 hover:text-[#00658d] transition cursor-pointer shrink-0 inline-flex items-center gap-0.5 opacity-0 group-hover/done:opacity-100 focus:opacity-100"
-                              >
-                                <RotateCcw className="w-2.5 h-2.5" />
-                                {language === "en" ? "Reopen" : "Reabrir"}
-                              </button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* POSTERGADAS — fora do fluxo desta reunião, sem ações
-                      operacionais. Só o caminho de volta: Retomar. */}
-                  {postponedTopics.length > 0 && (
-                    <div className="pt-3 mt-2 border-t border-slate-100">
-                      <p className="text-[9px] font-extrabold text-amber-600/80 uppercase tracking-widest mb-2">
-                        {language === "en" ? "Postponed" : "Postergadas"} ({postponedTopics.length})
-                      </p>
-                      <div className="space-y-1">
-                        {postponedTopics.map(({ ag }) => (
-                          <div key={ag.id} className="flex items-center gap-2 px-1 py-0.5">
-                            <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-amber-500" />
-                            <span className="text-[10.5px] font-bold text-slate-500 truncate flex-1 min-w-0">
-                              {ag.time && <span className="text-amber-700/70">{ag.time} · </span>}
-                              {ag.title}
-                            </span>
-                            {canSchedule && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                /*
-                                 * Retomar — UMA chamada de domínio.
-                                 *
-                                 * O backend devolve a pauta a `pending` E remove
-                                 * a cópia certa na mesma transação, localizando-a
-                                 * pela procedência estrutural. O frontend não
-                                 * procura mais cópia por id construído, por
-                                 * título nem por responsável.
-                                 */
-                                if (!ehReuniaoReal) {
-                                  setTopicState(ag.id, null);
-                                  return;
-                                }
-
-                                void persistir(
-                                  () => apiResumeAgendaItem(meeting.id, ag.id),
-                                  language === "en" ? "Topic resumed." : "Pauta retomada."
-                                ).then((ok) => {
-                                  if (ok) onReloadAgendaTopics?.();
-                                });
-                              }}
-                              title={language === "en"
-                                ? "Return topic to this meeting's flow"
-                                : "Devolver a pauta ao fluxo desta reunião"}
-                              className="text-[9px] font-extrabold uppercase tracking-wider text-amber-600 hover:text-amber-700 transition cursor-pointer shrink-0 inline-flex items-center gap-0.5"
-                            >
-                              <RotateCcw className="w-2.5 h-2.5" />
-                              {language === "en" ? "Resume" : "Retomar"}
-                            </button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-          )}
           </div>
         </div>
       )}
@@ -3372,137 +3226,187 @@ export default function MeetingDetailView({
             </div>
           </div>
 
-          {/* FLUXO DE APROVAÇÃO EM CAMADAS */}
-          <div className="space-y-6 select-none font-sans">
-            <div className="bg-white border border-slate-200 p-5 rounded-2xl card-shadow">
-              <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-widest mb-3 pb-2 border-b">
-                {language === "en" ? "Two-Layer Validation Flow" : "Fluxo de Aprovação em Camadas"}
+          {/* Próximas Pautas — Chamar, Mensagem e Concluir durante a reunião ao
+              vivo. Fica ao lado da Ata porque é onde a condução acontece.
+              Só em Execução: antes da reunião não existe "próxima pauta" no
+              sentido operacional, e depois dela conduzir deixa de fazer sentido.
+              Substituiu o Fluxo de Aprovação em Camadas, que não era usado; o
+              saneamento continua existindo no backend. */}
+          {modoExecucao ? (
+          <div className="space-y-6">
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 card-shadow">
+              <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider mb-1 flex items-center gap-2">
+                <CheckSquare className="w-4 h-4 text-[#00658d]" />
+                {language === "en" ? "Upcoming topics" : "Próximas Pautas"}
               </h3>
+              <p className="text-[11px] text-slate-400 font-semibold mb-4 leading-relaxed">
+                {language === "en"
+                  ? "In order of execution. Concluded and postponed topics are grouped separately below."
+                  : "Na ordem de execução. Pautas concluídas e postergadas são organizadas separadamente abaixo."}
+              </p>
 
-              <div className="space-y-6">
-                {/* Camada 1 — saneamento pela Secretaria */}
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-extrabold ${
-                      minutesCleared ? "bg-emerald-500 text-white" : "bg-[#00658d] text-white"
-                    }`}>
-                      1
-                    </span>
-                    <h4 className="text-xs font-bold text-slate-900">
-                      {language === "en" ? "Layer 1: Governance Clear" : "Camada 1: Validação Interna"}
-                    </h4>
-                  </div>
-                  <p className="text-[10px] text-slate-400 font-semibold leading-relaxed pl-7">
-                    {language === "en"
-                      ? "The Secretariat reviews the content and clears a specific revision of the minutes."
-                      : "A Secretaria realiza o saneamento técnico e libera uma revisão específica da Ata."}
-                  </p>
-                  <div className="pl-7 pt-1 space-y-2">
-                    {minutesCleared ? (
-                      <span className="text-[10px] font-extrabold text-emerald-600 flex items-center gap-1">
-                        <Check className="w-3.5 h-3.5" />
-                        {minutes?.secretariatClearedByName
-                          ? (language === "en"
-                              ? `Cleared by ${minutes.secretariatClearedByName} (revision ${minutes.secretariatClearedRevision})`
-                              : `Saneado por ${minutes.secretariatClearedByName} (revisão ${minutes.secretariatClearedRevision})`)
-                          : (language === "en"
-                              ? `Cleared (revision ${minutes?.secretariatClearedRevision})`
-                              : `Saneado (revisão ${minutes?.secretariatClearedRevision})`)}
-                      </span>
-                    ) : (
-                      <>
-                        {/* Visto anterior que deixou de valer porque o texto mudou.
-                            Não é apagado: registra qual revisão foi conferida. */}
-                        {minutes?.secretariatClearedRevision != null && (
-                          <p className="text-[10px] font-semibold text-amber-700 leading-relaxed">
-                            {language === "en"
-                              ? `Revision ${minutes.secretariatClearedRevision} was cleared, but the content changed since then.`
-                              : `A revisão ${minutes.secretariatClearedRevision} foi saneada, mas o conteúdo mudou desde então.`}
-                          </p>
-                        )}
-                        {canSchedule && (
-                        <button
-                          onClick={handleClearBySecretariat}
-                          disabled={minutesBusy !== "idle" || minutesRevision === 0 || minutesDirty}
-                          title={
-                            minutesDirty
-                              ? (language === "en" ? "Save the minutes before clearing." : "Salve a Ata antes de sanear.")
-                              : undefined
-                          }
-                          className="px-3 py-1.5 bg-white hover:bg-[#00658d] hover:text-white text-[#00658d] border border-slate-205 rounded-xl text-[10px] font-extrabold transition-all cursor-pointer shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {minutesBusy === "clearing"
-                            ? (language === "en" ? "Clearing..." : "Saneando...")
-                            : (language === "en" ? "Clear as Secretariat" : "Liberar Ata Saneada")}
-                        </button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {/*
-                  Camada 2 — assinatura do colegiado.
-
-                  SEM UI POR DECISÃO. O modelo formal existe no banco desde a
-                  4.11 (processo de assinatura + signatários, ligado a UMA
-                  revisão), mas preparar ou cancelar um processo é ato de
-                  governança e o sistema ainda só sabe quem está AUTENTICADO,
-                  não quem pode HOMOLOGAR. Enquanto isso, a tela informa o
-                  estado real e não oferece botão.
-
-                  Antes havia dois assinantes fixos ("M. Davis", "L. Chen") que
-                  não existem em lugar nenhum e cujo clique promovia a Ata a
-                  aprovada. Nada substituiu esse fluxo.
-                */}
-                <div className="space-y-2 pt-2 border-t border-slate-100">
-                  <div className="flex items-center gap-2">
-                    <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-extrabold bg-slate-200 text-slate-500">
-                      2
-                    </span>
-                    <h4 className="text-xs font-bold text-slate-900">
-                      {language === "en" ? "Layer 2: Board Signatures" : "Camada 2: Assinatura do Colegiado"}
-                    </h4>
-                  </div>
-                  <div className="pl-7 space-y-1.5">
-                    {/*
-                      Estado real do lado esquerdo da regra: a revisão saneada é
-                      pré-condição do processo formal. O lado direito — a
-                      integração — não existe, e a tela diz isso.
-                    */}
-                    <p className="text-[10px] font-semibold leading-relaxed text-slate-500">
-                      {minutesCleared
-                        ? (language === "en"
-                            ? `The current revision (${minutesRevision}) has been cleared by the Secretariat.`
-                            : `A revisão atual (${minutesRevision}) foi saneada pela Secretaria.`)
-                        : (language === "en"
-                            ? "The current revision has not been cleared by the Secretariat yet."
-                            : "A revisão atual ainda não foi saneada pela Secretaria.")}
-                    </p>
-                    <p className="text-[10px] text-slate-400 font-semibold leading-relaxed">
-                      {language === "en"
-                        ? "The signature integration is not available yet. Until it exists, the minutes stay under review and the meeting is not marked as finished."
-                        : "A integração de assinatura ainda não está disponível. Enquanto ela não existir, a Ata permanece em revisão e a reunião não é dada por finalizada."}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-slate-50 border border-slate-105 p-4 rounded-2xl flex gap-3">
-              <Lock className="w-5 h-5 text-indigo-650 shrink-0" />
-              <div className="space-y-1">
-                <p className="text-[10px] font-bold text-indigo-950 uppercase tracking-wider">
-                  {language === "en" ? "Audit trail" : "Trilha de auditoria"}
+              {upcomingTopics.length === 0 && finishedTopics.length === 0 && postponedTopics.length === 0 ? (
+                <p className="text-xs text-slate-400 italic py-6 text-center">
+                  {language === "en" ? "No agenda topics registered." : "Nenhuma pauta registrada nesta reunião."}
                 </p>
-                <p className="text-[9px] text-slate-500 font-medium leading-relaxed">
-                  {language === "en"
-                    ? "Clearing by the Secretariat is recorded in the audit trail with author, timestamp and the cleared revision. The minutes content itself is never copied into the trail."
-                    : "O saneamento pela Secretaria é registrado na trilha de auditoria com autor, data e revisão conferida. O conteúdo da Ata nunca é copiado para a trilha."}
-                </p>
-              </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {upcomingTopics.map(({ ag }, ordem) => {
+                    const isNext = ordem === 0;
+                    return (
+                      <div
+                        key={ag.id}
+                        className={`rounded-xl border p-3 transition ${
+                          isNext ? "border-[#00658d]/30 bg-[#c6e7ff]/15" : "border-slate-100 bg-slate-50/40"
+                        }`}
+                      >
+                        {isNext && (
+                          <span className="text-[8.5px] font-extrabold text-[#00658d] uppercase tracking-widest">
+                            {language === "en" ? "Next" : "Próxima"}
+                          </span>
+                        )}
+                        <p className="text-[10px] font-bold text-[#00658d] mt-0.5">{ag.time}</p>
+                        <p className="text-xs font-extrabold text-slate-800 leading-snug mt-0.5">{ag.title}</p>
+                        <p className="text-[10px] text-slate-400 font-medium mt-0.5">
+                          {ag.duration}{ag.author ? ` • ${ag.author}` : ""}
+                        </p>
+
+                        <div className="flex flex-wrap gap-1.5 mt-2.5 pt-2.5 border-t border-slate-100">
+                          <button
+                            type="button"
+                            onClick={() => toggleTopicDone(ag)}
+                            className="px-2 py-1 text-[9.5px] font-extrabold uppercase tracking-wider text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-600 hover:text-white hover:border-emerald-600 transition cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <Check className="w-3 h-3" />
+                            {language === "en" ? "Done" : "Concluir"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleCallParticipants(ag)}
+                            disabled={callingAgendaItemId !== null}
+                            aria-busy={callingAgendaItemId === ag.id}
+                            className="px-2 py-1 text-[9.5px] font-extrabold uppercase tracking-wider text-slate-600 bg-white border border-slate-200 rounded-lg hover:border-[#00658d] hover:text-[#00658d] transition cursor-pointer inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <BellRing className={`w-3 h-3 ${callingAgendaItemId === ag.id ? "animate-pulse" : ""}`} />
+                            {callingAgendaItemId === ag.id
+                              ? (language === "en" ? "Calling..." : "Chamando...")
+                              : (language === "en" ? "Call" : "Chamar")}
+                          </button>
+                          {canSchedule && <button
+                            type="button"
+                            onClick={() => handleOpenMessageModal(ag)}
+                            className="px-2 py-1 text-[9.5px] font-extrabold uppercase tracking-wider text-slate-600 bg-white border border-slate-200 rounded-lg hover:border-[#00658d] hover:text-[#00658d] transition cursor-pointer inline-flex items-center gap-1"
+                          >
+                            <MessageSquare className="w-3 h-3" />
+                            {language === "en" ? "Message" : "Mensagem"}
+                          </button>}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {finishedTopics.length > 0 && (
+                    <div className="pt-3 mt-2 border-t border-slate-100">
+                      <p className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest mb-2">
+                        {language === "en" ? "Concluded" : "Concluídas"} ({finishedTopics.length})
+                      </p>
+                      <div className="space-y-1">
+                        {finishedTopics.map(({ ag }) => (
+                          <div key={ag.id} className="flex items-center gap-2 px-1 py-0.5 group/done">
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-emerald-500" />
+                            <span className="text-[10.5px] font-bold text-slate-400 truncate line-through flex-1 min-w-0">
+                              {ag.title}
+                            </span>
+                            {doneTopicIds.includes(ag.id) && (
+                              <button
+                                type="button"
+                                onClick={() => toggleTopicDone(ag)}
+                                title={language === "en" ? "Reopen topic" : "Reabrir pauta"}
+                                className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400 hover:text-[#00658d] transition cursor-pointer shrink-0 inline-flex items-center gap-0.5 opacity-0 group-hover/done:opacity-100 focus:opacity-100"
+                              >
+                                <RotateCcw className="w-2.5 h-2.5" />
+                                {language === "en" ? "Reopen" : "Reabrir"}
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* POSTERGADAS — fora do fluxo desta reunião, sem ações
+                      operacionais. Só o caminho de volta: Retomar. */}
+                  {postponedTopics.length > 0 && (
+                    <div className="pt-3 mt-2 border-t border-slate-100">
+                      <p className="text-[9px] font-extrabold text-amber-600/80 uppercase tracking-widest mb-2">
+                        {language === "en" ? "Postponed" : "Postergadas"} ({postponedTopics.length})
+                      </p>
+                      <div className="space-y-1">
+                        {postponedTopics.map(({ ag }) => (
+                          <div key={ag.id} className="flex items-center gap-2 px-1 py-0.5">
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0 bg-amber-500" />
+                            <span className="text-[10.5px] font-bold text-slate-500 truncate flex-1 min-w-0">
+                              {ag.time && <span className="text-amber-700/70">{ag.time} · </span>}
+                              {ag.title}
+                            </span>
+                            {canSchedule && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                /*
+                                 * Retomar — UMA chamada de domínio.
+                                 *
+                                 * O backend devolve a pauta a `pending` E remove
+                                 * a cópia certa na mesma transação, localizando-a
+                                 * pela procedência estrutural. O frontend não
+                                 * procura mais cópia por id construído, por
+                                 * título nem por responsável.
+                                 */
+                                if (!ehReuniaoReal) {
+                                  setTopicState(ag.id, null);
+                                  return;
+                                }
+
+                                void persistir(
+                                  () => apiResumeAgendaItem(meeting.id, ag.id),
+                                  language === "en" ? "Topic resumed." : "Pauta retomada."
+                                ).then((ok) => {
+                                  if (ok) onReloadAgendaTopics?.();
+                                });
+                              }}
+                              title={language === "en"
+                                ? "Return topic to this meeting's flow"
+                                : "Devolver a pauta ao fluxo desta reunião"}
+                              className="text-[9px] font-extrabold uppercase tracking-wider text-amber-600 hover:text-amber-700 transition cursor-pointer shrink-0 inline-flex items-center gap-0.5"
+                            >
+                              <RotateCcw className="w-2.5 h-2.5" />
+                              {language === "en" ? "Resume" : "Retomar"}
+                            </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
+          ) : (
+          <div className="space-y-6">
+            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5">
+              <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider mb-1 flex items-center gap-2">
+                <CheckSquare className="w-4 h-4 text-[#00658d]" />
+                {language === "en" ? "Upcoming topics" : "Próximas Pautas"}
+              </h3>
+              <p className="text-[11px] text-slate-400 font-semibold leading-relaxed">
+                {language === "en"
+                  ? "Call, Message and Done are available while the meeting is in progress."
+                  : "Chamar, Mensagem e Concluir ficam disponíveis com a reunião em andamento."}
+              </p>
+            </div>
+          </div>
+          )}
         </div>
       )}
 
@@ -4007,20 +3911,6 @@ export default function MeetingDetailView({
                 />
               </div>
 
-              {/* Description / Objective */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                  {language === "en" ? "Objective / Summary" : "Objetivo / Resumo"}
-                </label>
-                <textarea 
-                  value={editedDescription}
-                  onChange={(e) => setEditedDescription(e.target.value)}
-                  rows={4}
-                  className="w-full text-sm font-medium text-slate-800 placeholder-slate-400 bg-slate-50/50 hover:bg-slate-50/80 focus:bg-white border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-[#00658d]/10 resize-none"
-                  placeholder={language === "en" ? "Enter meeting description..." : "Cole ou digite o objetivo desta sessão..."}
-                />
-              </div>
-
               {/* Date, Start Time, End Time Row */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.55">
@@ -4058,44 +3948,85 @@ export default function MeetingDetailView({
                 </div>
               </div>
 
-              {/* Organizer Row */}
-              <div className="grid grid-cols-1 gap-4">
+              {/* Órgão / Recorrência / Organizador — mesmos campos da criação
+                  (ScheduleMeetingModal). O link do Teams não é digitado: vem do
+                  próprio evento do calendário. */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="space-y-1.5">
+                  <label htmlFor="editGovernanceBody" className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
+                    {language === "en" ? "Governance body" : "Órgão de Governança"}
+                  </label>
+                  <select
+                    id="editGovernanceBody"
+                    value={editedGovernanceBodyId}
+                    onChange={(e) => setEditedGovernanceBodyId(e.target.value)}
+                    className="w-full text-sm font-bold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-3 py-2.5 outline-none focus:bg-white transition-all focus:ring-2 focus:ring-[#00658d]/10 cursor-pointer"
+                  >
+                    {/* Inativos só aparecem se forem o órgão atual: trocar para
+                        um deles não é permitido na criação, nem aqui. */}
+                    {governanceBodies
+                      .filter((body) => body.isActive || body.id === meeting.governanceBodyId)
+                      .map((body) => (
+                        <option key={body.id} value={body.id}>{body.name}</option>
+                      ))}
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="editRecurrence" className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
+                    {language === "en" ? "Recurrence" : "Recorrência"}
+                  </label>
+                  <select
+                    id="editRecurrence"
+                    value={editedRecurrence}
+                    onChange={(e) => setEditedRecurrence(e.target.value)}
+                    className="w-full text-sm font-bold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-3 py-2.5 outline-none focus:bg-white transition-all focus:ring-2 focus:ring-[#00658d]/10 cursor-pointer"
+                  >
+                    <option value="Single">{language === "en" ? "Does not repeat" : "Não se repete (Única)"}</option>
+                    <option value="Semanal">{language === "en" ? "Weekly" : "Semanal"}</option>
+                    <option value="Quinzenal">{language === "en" ? "Biweekly" : "Quinzenal"}</option>
+                    <option value="Mensal">{language === "en" ? "Monthly" : "Mensal"}</option>
+                    <option value="Trimestral">{language === "en" ? "Quarterly" : "Trimestral"}</option>
+                    {/* Valor legado fora da lista: mantido para não trocar em silêncio. */}
+                    {!["Single", "Semanal", "Quinzenal", "Mensal", "Trimestral"].includes(editedRecurrence) && (
+                      <option value={editedRecurrence}>{editedRecurrence}</option>
+                    )}
+                  </select>
+                </div>
                 <div className="space-y-1.5">
                   <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
                     {language === "en" ? "Organizer" : "Organizador"}
                   </label>
                   {/*
-                    Somente leitura: `meetings` guarda `organizer_user_id` — a
-                    pessoa que agendou — e não tem coluna para rótulo textual.
-                    Deixar o campo editável faria a tela aceitar um valor que a
-                    gravação descarta em silêncio.
+                    Somente leitura: o convite mora no calendário do organizador.
+                    Trocá-lo exigiria mover o evento de caixa, e o PATCH recusa o
+                    campo (`organizerUserId` fica fora por decisão).
                   */}
                   <input
                     type="text"
-                    value={meeting.organizer}
+                    value={meeting.organizer || (language === "en" ? "Not informed" : "Não informado")}
                     readOnly
                     aria-describedby="organizerHint"
-                    className="w-full text-sm font-bold text-slate-500 bg-slate-100 border border-slate-200 rounded-xl px-4 py-2.5 outline-none cursor-not-allowed"
+                    className="w-full text-sm font-bold text-slate-500 bg-slate-100 border border-slate-200 rounded-xl px-3 py-2.5 outline-none cursor-not-allowed"
                   />
                   <p id="organizerHint" className="text-[10px] text-slate-400 font-semibold">
                     {language === "en"
-                      ? "Defined by whoever scheduled the meeting."
-                      : "Definido por quem agendou a reunião."}
+                      ? "Defined when the meeting is scheduled."
+                      : "Definido no agendamento da reunião."}
                   </p>
                 </div>
               </div>
 
-              {/* Teams link */}
+              {/* Description / Objective */}
               <div className="space-y-1.5">
                 <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                  Teams / Webex Link
+                  {language === "en" ? "Objective / Summary" : "Objetivo / Resumo"}
                 </label>
-                <input 
-                  type="text"
-                  value={editedMeetingLink}
-                  onChange={(e) => setEditedMeetingLink(e.target.value)}
-                  placeholder="https://teams.microsoft.com/..."
-                  className="w-full text-sm font-semibold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-2.5 outline-none focus:bg-white transition-all focus:ring-2 focus:ring-[#00658d]/10"
+                <textarea
+                  value={editedDescription}
+                  onChange={(e) => setEditedDescription(e.target.value)}
+                  rows={4}
+                  className="w-full text-sm font-medium text-slate-800 placeholder-slate-400 bg-slate-50/50 hover:bg-slate-50/80 focus:bg-white border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-[#00658d]/10 resize-none"
+                  placeholder={language === "en" ? "Enter meeting description..." : "Cole ou digite o objetivo desta sessão..."}
                 />
               </div>
             </form>
@@ -4113,9 +4044,9 @@ export default function MeetingDetailView({
                 type="button"
                 onClick={() => {
                   /*
-                   * PATCH do cabeçalho. `organizer` NÃO vai junto: `meetings`
-                   * só tem `organizer_user_id`, sem coluna de rótulo textual, e
-                   * o campo passou a ser somente leitura no formulário.
+                   * PATCH do cabeçalho. `organizer` NÃO vai junto (somente
+                   * leitura). `meetingLink` também não: o campo saiu do
+                   * formulário e omiti-lo preserva o valor legado gravado.
                    */
                   void persistir(
                     () =>
@@ -4124,7 +4055,8 @@ export default function MeetingDetailView({
                         description: editedDescription,
                         startAt: localToInstant(editedDate, editedStartTime, meeting.timeZone),
                         endAt: localToInstant(editedDate, editedEndTime, meeting.timeZone),
-                        meetingLink: editedMeetingLink || null
+                        recurrence: editedRecurrence,
+                        ...(editedGovernanceBodyId ? { governanceBodyId: editedGovernanceBodyId } : {})
                       }),
                     language === "en" ? "Meeting updated successfully" : "Dados da reunião atualizados com sucesso"
                   ).then((ok) => {
