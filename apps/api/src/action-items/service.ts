@@ -1,4 +1,3 @@
-import type { PoolClient } from "pg";
 import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 import {
@@ -301,12 +300,6 @@ export async function findActionItem(id: string, viewer: EspectadorPgcp): Promis
  */
 export async function findActionItemAposEscrita(id: string): Promise<ActionItem> {
   const { rows } = await pool.query<Row>(`${SELECT} WHERE ai.id = $1`, [id]);
-  if (rows.length === 0) throw new HttpError(404, "Ação de acompanhamento não encontrada.");
-  return toActionItem(rows[0]!);
-}
-
-export async function findActionItemIn(client: PoolClient, id: string): Promise<ActionItem> {
-  const { rows } = await client.query<Row>(`${SELECT} WHERE ai.id = $1`, [id]);
   if (rows.length === 0) throw new HttpError(404, "Ação de acompanhamento não encontrada.");
   return toActionItem(rows[0]!);
 }

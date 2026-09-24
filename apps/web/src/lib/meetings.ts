@@ -137,9 +137,6 @@ export const updateMeeting = (id: string, payload: UpdateMeetingPayload) =>
 export const addParticipant = (meetingId: string, payload: CreateParticipantPayload) =>
   mutar(`/meetings/${meetingId}/participants`, "POST", payload);
 
-export const removeParticipant = (meetingId: string, participantId: string) =>
-  mutar(`/meetings/${meetingId}/participants/${participantId}`, "DELETE");
-
 export const addAgendaItem = (meetingId: string, payload: CreateAgendaItemPayload) =>
   mutar(`/meetings/${meetingId}/agenda-items`, "POST", payload);
 

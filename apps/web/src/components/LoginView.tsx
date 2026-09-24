@@ -1,5 +1,4 @@
 import React, { useState } from "react";
-import { motion } from "motion/react";
 import { CieloLogo } from "./CieloLogo";
 import { ShieldCheck, FlaskConical, AlertCircle, Loader2 } from "lucide-react";
 import { TestProfile } from "../types";
@@ -115,11 +114,8 @@ export default function LoginView({
         className="pointer-events-none absolute -bottom-48 -left-40 w-[32rem] h-[32rem] rounded-full bg-[#00658d]/10 blur-3xl"
       />
 
-      <motion.main
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
-        className="relative w-full max-w-sm"
+      <main
+        className="animate-fade-in relative w-full max-w-sm"
       >
         <div className="bg-white border border-slate-200 rounded-2xl shadow-xl shadow-slate-900/5 overflow-hidden">
           {/* Faixa superior nas cores da marca */}
@@ -235,7 +231,7 @@ export default function LoginView({
         <p className="mt-5 text-center text-[10.5px] text-slate-400 font-semibold leading-relaxed px-4">
           {entraEnabled ? t.entraNote : t.devNote}
         </p>
-      </motion.main>
+      </main>
     </div>
   );
 }

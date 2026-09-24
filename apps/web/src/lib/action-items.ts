@@ -42,9 +42,6 @@ export async function listActionItems(
   return actionItems;
 }
 
-export const getActionItem = (id: string, signal?: AbortSignal) =>
-  apiRequest<ApiActionItem>(`/action-items/${id}`, { auth: true, signal });
-
 const comCorpo = (path: string, method: string, body: unknown) =>
   apiRequest<ApiActionItem>(path, {
     auth: true,

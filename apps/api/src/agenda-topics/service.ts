@@ -1,4 +1,3 @@
-import type { PoolClient } from "pg";
 import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 
@@ -295,17 +294,6 @@ export async function listLinkedMeetings(topicId: string): Promise<LinkedMeeting
     startAt: r.start_at.toISOString(),
     executionStatus: r.execution_status,
   }));
-}
-
-/** Le o detalhe usando um cliente de transacao (para responder apos mutacao). */
-export async function findAgendaTopicIn(
-  client: PoolClient,
-  id: string,
-): Promise<AgendaTopicDetail> {
-  const { rows } = await client.query<TopicRow>(`${SUMMARY_SELECT} WHERE t.id = $1`, [id]);
-  const row = rows[0];
-  if (!row) throw new HttpError(404, "Pauta não encontrada na biblioteca.");
-  return { ...toSummary(row), participants: [], linkedMeetings: [] };
 }
 
 // -----------------------------------------------------------------------------

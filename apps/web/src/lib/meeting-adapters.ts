@@ -422,25 +422,6 @@ export interface CreateMeetingPayload {
   agendaItems: CreateAgendaItemPayload[];
 }
 
-/**
- * Traduz `userType` do Microsoft Graph para o vocabulário do schema.
- *
- * O Graph responde "Member" ou "Guest"; o CHECK de `meeting_participants`
- * aceita 'internal' ou 'external'. Quando o Graph não informa — e
- * `directoryUserKind` devolve `null` justamente para não adivinhar — deixamos
- * o campo de fora e o servidor aplica a derivação dele, que está documentada.
- */
-export function participantTypeFromGraph(userType: string | null | undefined):
-  | "internal"
-  | "external"
-  | undefined {
-  if (typeof userType !== "string") return undefined;
-  const normalizado = userType.trim().toLowerCase();
-  if (normalizado === "member") return "internal";
-  if (normalizado === "guest") return "external";
-  return undefined;
-}
-
 /** Texto vazio não vira campo: `undefined` diz "não informado", "" não diz nada. */
 const opcional = (valor: string | undefined | null): string | undefined => {
   const limpo = valor?.trim();

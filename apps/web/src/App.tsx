@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { motion, AnimatePresence } from "motion/react";
 import { mockTestPeople } from "./auth/mock-login-people";
 import { Meeting, AuditLog, ActionItem, StandaloneAgenda, GovernanceBody, GovernanceBodyChairInput, SessionUser, TestProfile } from "./types";
 import { ApiError, apiRequest } from "./lib/api";
@@ -1072,27 +1071,23 @@ export default function App() {
     <div className="min-h-screen bg-[#eaedf1] text-[#191c1e] flex font-sans antialiased selection:bg-[#c6e7ff]/60 selection:text-slate-900">
       
       {/* Toast banner notifier */}
-      <AnimatePresence>
-        {toastMessage && (
-          <motion.div
-            initial={{ opacity: 0, y: -50, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            className="fixed top-5 left-1/2 -translate-x-1/2 z-50 p-4 bg-slate-900/95 backdrop-blur-md text-white rounded-xl shadow-2xl flex items-center gap-3.5 border border-white/10 max-w-md w-[90vw] select-none text-xs"
+      {toastMessage && (
+        <div
+          key={toastMessage}
+          className="animate-fade-in fixed top-5 left-1/2 -translate-x-1/2 z-50 p-4 bg-slate-900/95 backdrop-blur-md text-white rounded-xl shadow-2xl flex items-center gap-3.5 border border-white/10 max-w-md w-[90vw] select-none text-xs"
+        >
+          <div className="w-7 h-7 rounded-full bg-[#00aeef]/20 flex items-center justify-center shrink-0">
+            <span className="material-symbols-outlined text-[15px] text-[#00aeef]">verified</span>
+          </div>
+          <p className="font-semibold flex-1 leading-snug">{toastMessage}</p>
+          <button
+            onClick={() => setToastMessage(null)}
+            className="text-slate-400 hover:text-white transition p-1"
           >
-            <div className="w-7 h-7 rounded-full bg-[#00aeef]/20 flex items-center justify-center shrink-0">
-              <span className="material-symbols-outlined text-[15px] text-[#00aeef]">verified</span>
-            </div>
-            <p className="font-semibold flex-1 leading-snug">{toastMessage}</p>
-            <button
-              onClick={() => setToastMessage(null)}
-              className="text-slate-400 hover:text-white transition p-1"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Main Sidebar Drawer component */}
       <Sidebar

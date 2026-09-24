@@ -74,15 +74,3 @@ export function getEntraConfig(): EntraConfig | null {
     metadataUrl: `https://login.microsoftonline.com/${tenantId}/v2.0/.well-known/openid-configuration`,
   };
 }
-
-/** Application ID URI. Documentacao e construcao do scope; nunca validacao. */
-export function getApiAppIdUri(): string | undefined {
-  return read("ENTRA_API_APP_ID_URI");
-}
-
-/** Scope completo que o frontend deve pedir. Util no painel e na documentacao. */
-export function getFullApiScope(): string | undefined {
-  const uri = getApiAppIdUri();
-  if (!uri) return undefined;
-  return `${uri.replace(/\/+$/, "")}/${read("ENTRA_API_SCOPE_NAME") ?? DEFAULT_SCOPE_NAME}`;
-}

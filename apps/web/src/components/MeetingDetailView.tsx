@@ -31,7 +31,6 @@ import {
   X,
   CalendarDays
 } from "lucide-react";
-import { PieChart, Pie, Cell, ResponsiveContainer } from "recharts";
 import { Meeting, ActionItem, StandaloneAgenda, Participant, AgendaItem, SessionUser, GovernanceBody } from "../types";
 import { newId } from "../lib/id";
 import { ehEmailValido, pautasSobResponsabilidade } from "../lib/participants";
@@ -53,7 +52,6 @@ import type { FupFormInput } from "../lib/action-items";
 import {
   MinutesConflictError,
   buildMinutesTemplate,
-  clearMinutesBySecretariat,
   describeMinutesError,
   downloadMeetingMinutesPdf,
   getMeetingMinutes,
@@ -329,38 +327,6 @@ export default function MeetingDetailView({
     setMinutesText(buildMinutesTemplate(meeting, language));
   };
 
-  /**
-   * Saneamento pela Secretaria — ato de governança, não edição de campo.
-   *
-   * O servidor define quem saneou, quando e qual revisão foi conferida. A tela
-   * envia apenas a revisão que tem em mãos, para não dar visto em texto que já
-   * mudou em outra sessão.
-   */
-  const handleClearBySecretariat = () => {
-    if (minutesBusy !== "idle" || !minutes || minutes.revision === 0) return;
-
-    setMinutesBusy("clearing");
-    setMinutesError(null);
-
-    clearMinutesBySecretariat(meeting.id, minutes.revision)
-      .then((doc) => {
-        aplicarMinutes(doc);
-        triggerToast(
-          language === "en"
-            ? "Minutes cleared by the Secretariat."
-            : "Ata saneada pela Secretaria."
-        );
-      })
-      .catch((erro) => {
-        if (erro instanceof MinutesConflictError) {
-          setMinutesConflict(erro.current);
-          return;
-        }
-        setMinutesError(describeMinutesError(erro, language));
-      })
-      .finally(() => setMinutesBusy("idle"));
-  };
-
   /** Descarta o texto local e adota a versão do servidor. Ação explícita. */
   const recarregarMinutes = () => {
     if (!minutesConflict) return;
@@ -438,9 +404,6 @@ export default function MeetingDetailView({
   const modoPlanejamento = pautasMode === "planning";
   const modoExecucao = pautasMode === "execution";
   const modoResultado = pautasMode === "result";
-  // "Notificar Teams" é stub (só toast, não envia nada) — não oferecer ação que
-  // não funciona. Código da função preservado; apenas não renderizamos o botão.
-  const MOSTRAR_NOTIFICAR_TEAMS = false;
 
   const [modalValidacaoAberto, setModalValidacaoAberto] = useState(false);
   const [emailAprovador, setEmailAprovador] = useState("");
@@ -840,10 +803,14 @@ export default function MeetingDetailView({
  *                              `handleCreateMinutes`, que monta um esqueleto só
  *                              com fatos já registrados.
  *
- *   handleApproveSecretariat   marcava um boolean no navegador. Trocado por
- *                              `handleClearBySecretariat`, operação de domínio
- *                              onde ator, data e revisão conferida saem do
- *                              servidor.
+ *   handleApproveSecretariat   marcava um boolean no navegador. O saneamento
+ *                              real (`POST .../minutes/clear-by-secretariat`)
+ *                              segue no backend; a tela deixou de oferecê-lo
+ *                              quando o Fluxo em Camadas saiu da aba Ata.
+ *
+ *   handleNotifyTeams          só mostrava toast ("enviado via Adaptive Card")
+ *                              sem enviar nada. O envio real é Chamar/Mensagem
+ *                              em Próximas Pautas.
  *
  *   handleSignMinutes          assinava por duas pessoas inexistentes
  *                              ("M. Davis", "L. Chen") e promovia a Ata a
@@ -1256,14 +1223,6 @@ export default function MeetingDetailView({
     onReloadAgendaTopics?.();
   };
 
-  const handleNotifyTeams = (topicTitle: string, author: string) => {
-    triggerToast(
-      language === "en" 
-        ? `Teams notification sent via Adaptive Card to users linked to pauta: "${topicTitle}"!` 
-        : `Notificação enviada via Adaptive Card no Teams para os usuários vinculados à pauta: "${topicTitle}"!`
-    );
-  };
-
   // Import standalones or pending FUPs into this meeting's agenda
   const handleImportAgendaItem = (ag: StandaloneAgenda | ActionItem, type: "standalone" | "fup") => {
     const defaultDuration = "00:30";
@@ -1430,11 +1389,9 @@ export default function MeetingDetailView({
   // Adiadas ficam fora do denominador; ver `getAgendaProgress`.
   const completionPercentage = agendaProgress.percentage;
 
-  const pieData = [
-    { name: "Completed", value: completionPercentage ?? 0 },
-    { name: "Remaining", value: 100 - (completionPercentage ?? 0) }
-  ];
-  const COLORS = ['#10b981', '#f1f5f9'];
+  // Anel de progresso: raio no meio do antigo donut (interno 30, externo 40).
+  const ANEL_RAIO = 35;
+  const ANEL_CIRCUNFERENCIA = 2 * Math.PI * ANEL_RAIO;
 
   // --- Derivados de Próximas Pautas (aba Pautas, execução) -----------------
   const notesTopics = (meeting.agenda || []).map((ag, index) => ({
@@ -1921,25 +1878,19 @@ export default function MeetingDetailView({
                 {/* Progress side */}
                 <div className="flex-shrink-0 flex items-center justify-center border-b md:border-b-0 md:border-r border-slate-100 pb-4 md:pb-0 md:pr-6">
                     <div className="w-24 h-24 relative">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <PieChart>
-                                <Pie
-                                    data={pieData}
-                                    cx="50%"
-                                    cy="50%"
-                                    innerRadius={30}
-                                    outerRadius={40}
-                                    paddingAngle={0}
-                                    dataKey="value"
-                                    startAngle={90}
-                                    endAngle={-270}
-                                >
-                                    {pieData.map((entry, index) => (
-                                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                    ))}
-                                </Pie>
-                            </PieChart>
-                        </ResponsiveContainer>
+                        {/* Começa no topo e cresce no sentido horário. */}
+                        <svg viewBox="0 0 96 96" className="w-full h-full -rotate-90" aria-hidden="true">
+                            <circle cx="48" cy="48" r={ANEL_RAIO} fill="none" stroke="#f1f5f9" strokeWidth="10" />
+                            <circle
+                                cx="48"
+                                cy="48"
+                                r={ANEL_RAIO}
+                                fill="none"
+                                stroke="#10b981"
+                                strokeWidth="10"
+                                strokeDasharray={`${((completionPercentage ?? 0) / 100) * ANEL_CIRCUNFERENCIA} ${ANEL_CIRCUNFERENCIA}`}
+                            />
+                        </svg>
                         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none w-full h-full">
                             {currentStage === "validation" ? (
                               /* Etapa Validação: mostra o ESTADO (derivado) no
@@ -2627,21 +2578,6 @@ export default function MeetingDetailView({
                                 <Pencil className="w-4 h-4" />
                               </button>
                             )}
-
-                              {/* Notificar Teams — HOJE é stub (só toast, não envia
-                                  nada). Escondido nesta rodada para não oferecer uma
-                                  ação que não funciona; `handleNotifyTeams` fica no
-                                  código, intacto, para quando houver envio real. */}
-                              {canSchedule && MOSTRAR_NOTIFICAR_TEAMS && (
-                              <button
-                                type="button"
-                                onClick={() => handleNotifyTeams(ag.title, ag.author)}
-                                className="p-1.5 text-slate-400 hover:text-[#464eb8] hover:bg-indigo-50 rounded transition-all cursor-pointer"
-                                title={language === "en" ? "Notify via Microsoft Teams" : "Notificar via Teams"}
-                              >
-                                <Send className="w-4 h-4" />
-                              </button>
-                              )}
 
                               {/*
                                 CONDUZIR A PAUTA — iniciar, aprovar, postergar,

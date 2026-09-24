@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./env.js";
 import express from "express";
 import { assertSafeProductionConfig } from "./config/production-guard.js";
 import { requestId } from "./security/request-id.js";

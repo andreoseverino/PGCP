@@ -87,11 +87,6 @@ export function fetchIntegrations(): Promise<IntegrationsResponse> {
   return apiRequest<IntegrationsResponse>("/integrations", { auth: true });
 }
 
-/** Estado de UMA integração, sem disparar verificação. */
-export function fetchIntegrationStatus(id: IntegrationId): Promise<IntegrationStatus> {
-  return apiRequest<IntegrationStatus>(`/integrations/${id}/status`, { auth: true });
-}
-
 /** Dispara a verificacao real e devolve o status atualizado. */
 export function testIntegration(id: IntegrationId): Promise<IntegrationStatus> {
   return apiRequest<IntegrationStatus>(`/integrations/${id}/test`, {

@@ -1,5 +1,4 @@
 import React from "react";
-import { motion } from "motion/react";
 import { CieloLogo } from "./CieloLogo";
 import {
   LayoutDashboard,

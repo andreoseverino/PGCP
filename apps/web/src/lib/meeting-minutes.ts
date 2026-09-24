@@ -77,32 +77,6 @@ export async function saveMeetingMinutes(
   }
 }
 
-/**
- * Saneamento pela Secretaria.
- *
- * O corpo carrega no máximo `expectedRevision`. Ator, data e status são
- * definidos pelo servidor — o navegador não escolhe quem saneou nem quando.
- *
- * NÃO é assinatura e não aprova a Ata.
- */
-export async function clearMinutesBySecretariat(
-  meetingId: string,
-  expectedRevision: number,
-  signal?: AbortSignal
-): Promise<MeetingMinutes> {
-  try {
-    return await apiRequest<MeetingMinutes>(`/meetings/${meetingId}/minutes/clear-by-secretariat`, {
-      auth: true,
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ expectedRevision }),
-      signal
-    });
-  } catch (error) {
-    traduzirConflito(error, "A Ata foi alterada em outra sessão.");
-  }
-}
-
 export function describeMinutesError(error: unknown, language: "en" | "pt"): string {
   const pt = language === "pt";
   const status = (error as { status?: number } | null)?.status;
