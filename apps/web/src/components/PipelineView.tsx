@@ -2,6 +2,8 @@ import React, { useMemo, useState } from "react";
 import { Columns3, List, MapPin, MonitorSmartphone, RefreshCw, Search, Users, Workflow } from "lucide-react";
 import type { GovernanceBody, Meeting } from "../types";
 import { groupByStage, originLabel, PIPELINE_STAGES, type PipelineStage } from "../lib/pipeline";
+import GovernanceBodyFilter from "./GovernanceBodyFilter";
+import { filtrarPorOrgao, TODOS_OS_ORGAOS } from "../lib/governance-filter";
 
 /**
  * PIPELINE — espaço operacional de PREPARAÇÃO.
@@ -22,8 +24,8 @@ interface PipelineViewProps {
   governanceBodies: GovernanceBody[];
   onReload: () => void;
   onMeetingClick: (meeting: Meeting) => void;
-  /** Tela de lista existente, renderizada no modo "Lista". */
-  renderList: () => React.ReactNode;
+  /** Tela de lista existente, renderizada no modo "Lista", já filtrada por órgão. */
+  renderList: (meetings: Meeting[]) => React.ReactNode;
 }
 
 const COR_DA_ETAPA: Record<PipelineStage, string> = {
@@ -54,16 +56,16 @@ export default function PipelineView({
   const pt = language === "pt";
   const [modo, setModo] = useState<"board" | "list">("board");
   const [busca, setBusca] = useState("");
-  const [orgao, setOrgao] = useState("");
+  const [orgao, setOrgao] = useState(TODOS_OS_ORGAOS);
 
+  // Órgão vale para Quadro e Lista; a busca textual é do Quadro.
+  const doOrgao = useMemo(() => filtrarPorOrgao(meetings, orgao), [meetings, orgao]);
   const filtradas = useMemo(() => {
     const termo = busca.trim().toLowerCase();
-    return meetings.filter(
-      (m) =>
-        (!orgao || m.governanceBodyId === orgao) &&
-        (!termo || m.title.toLowerCase().includes(termo) || m.category.toLowerCase().includes(termo))
+    return doOrgao.filter(
+      (m) => !termo || m.title.toLowerCase().includes(termo) || m.category.toLowerCase().includes(termo)
     );
-  }, [meetings, busca, orgao]);
+  }, [doOrgao, busca]);
 
   const grupos = useMemo(() => groupByStage(filtradas), [filtradas]);
 
@@ -102,8 +104,18 @@ export default function PipelineView({
         </div>
       </div>
 
+      <div className="sm:w-64">
+        <GovernanceBodyFilter
+          language={language}
+          id="pipeline-orgao"
+          governanceBodies={governanceBodies}
+          value={orgao}
+          onChange={setOrgao}
+        />
+      </div>
+
       {modo === "list" ? (
-        renderList()
+        renderList(doOrgao)
       ) : (
         <>
           <div className="flex flex-col sm:flex-row gap-3">
@@ -116,16 +128,6 @@ export default function PipelineView({
                 className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-[#00658d]"
               />
             </div>
-            <select
-              value={orgao}
-              onChange={(e) => setOrgao(e.target.value)}
-              className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer"
-            >
-              <option value="">{pt ? "Todos os órgãos" : "All bodies"}</option>
-              {governanceBodies.map((b) => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
             <button type="button" onClick={onReload} className="px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer">
               <RefreshCw className={`w-3.5 h-3.5 ${meetingsLoading ? "animate-spin" : ""}`} />
               {pt ? "Atualizar" : "Refresh"}

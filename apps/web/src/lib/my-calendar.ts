@@ -60,24 +60,3 @@ export function fetchMyCalendar(range: MyCalendarRange, signal?: AbortSignal): P
 export function podeIngressar(evento: MyCalendarEvent): boolean {
   return typeof evento.joinUrl === "string" && evento.joinUrl.startsWith("http");
 }
-
-export function describeMyCalendarError(error: unknown, language: "en" | "pt"): string {
-  const pt = language === "pt";
-  const status = (error as { status?: number } | null)?.status;
-  const code = (error as { body?: { code?: string } } | null)?.body?.code;
-
-  if (code === "consent_required") {
-    return pt
-      ? "A leitura do calendário ainda não foi autorizada nesta instalação."
-      : "Calendar access has not been authorised in this installation yet.";
-  }
-  if (status === 0) return pt ? "Sem conexão com o servidor." : "No connection to the server.";
-  if (status === 401) return pt ? "Sua sessão expirou." : "Your session expired.";
-  if (status === 503) {
-    return pt
-      ? "Integração com o Microsoft 365 não configurada."
-      : "Microsoft 365 integration is not configured.";
-  }
-
-  return pt ? "Não foi possível carregar seu calendário." : "Could not load your calendar.";
-}

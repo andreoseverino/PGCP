@@ -36,6 +36,8 @@ import {
   type AnnualAgendaSummary
 } from "../lib/annual-agendas";
 import type { Modality } from "../lib/new-meeting";
+import GovernanceBodyFilter from "./GovernanceBodyFilter";
+import { anosDasAgendas, filtrarAgendasAnuais, TODOS_OS_ORGAOS } from "../lib/governance-filter";
 import {
   ModalityDisclaimer,
   ModalityFields,
@@ -97,6 +99,14 @@ export default function AnnualAgendaView({
   const [selecionada, setSelecionada] = useState<AnnualAgendaDetail | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
+  // Filtros da LISTAGEM. Dentro de uma agenda o órgão já é o dela: sem filtro.
+  const [filtroAno, setFiltroAno] = useState<number | null>(null);
+  const [filtroOrgao, setFiltroOrgao] = useState(TODOS_OS_ORGAOS);
+  const anos = useMemo(() => anosDasAgendas(lista), [lista]);
+  const visiveis = useMemo(
+    () => filtrarAgendasAnuais(lista, filtroAno, filtroOrgao),
+    [lista, filtroAno, filtroOrgao]
+  );
 
   // Nova agenda
   const [criando, setCriando] = useState(false);
@@ -193,7 +203,9 @@ export default function AnnualAgendaView({
             <label className={LABEL}>{pt ? "Órgão / comitê" : "Body"} *</label>
             <select required value={novoOrgao} onChange={(e) => setNovoOrgao(e.target.value)} className={`${INPUT} cursor-pointer`}>
               <option value="">{pt ? "Selecione..." : "Select..."}</option>
-              {governanceBodies.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              {/* Nova agenda: só órgãos ativos. O filtro da lista usa todos — agenda
+                  de órgão inativado continua acessível. */}
+              {governanceBodies.filter((b) => b.isActive).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
           </div>
           <div className="flex flex-col gap-1">
@@ -220,13 +232,30 @@ export default function AnnualAgendaView({
 
       <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-6 items-start">
         <aside className="space-y-2">
+          <div className="grid grid-cols-[100px_1fr] gap-2 bg-white border border-slate-200 rounded-2xl p-3">
+            <div className="flex flex-col gap-1">
+              <label htmlFor="agenda-ano" className={LABEL}>{pt ? "Ano" : "Year"}</label>
+              <select id="agenda-ano" value={filtroAno ?? ""} onChange={(e) => setFiltroAno(e.target.value ? Number(e.target.value) : null)}
+                className="bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs text-slate-700 cursor-pointer">
+                <option value="">{pt ? "Todos" : "All"}</option>
+                {anos.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </div>
+            <GovernanceBodyFilter language={language} id="agenda-orgao" governanceBodies={governanceBodies}
+              value={filtroOrgao} onChange={setFiltroOrgao} />
+          </div>
           {carregando && <p className="text-[11px] text-slate-400 font-semibold">{pt ? "Carregando..." : "Loading..."}</p>}
           {!carregando && lista.length === 0 && (
             <p className="text-[11px] text-slate-400 font-semibold bg-white border border-dashed border-slate-200 rounded-2xl p-4">
               {pt ? "Nenhuma Agenda Anual cadastrada." : "No annual plans yet."}
             </p>
           )}
-          {lista.map((a) => (
+          {!carregando && lista.length > 0 && visiveis.length === 0 && (
+            <p className="text-[11px] text-slate-400 font-semibold px-1">
+              {pt ? "Nenhuma Agenda Anual para este filtro." : "No annual plan for this filter."}
+            </p>
+          )}
+          {visiveis.map((a) => (
             <button
               key={a.id}
               type="button"

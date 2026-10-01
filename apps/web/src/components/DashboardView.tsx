@@ -1,10 +1,10 @@
 import React, { useState, useMemo, useEffect } from "react";
 import {
-  describeMyCalendarError,
   fetchMyCalendar,
   podeIngressar,
   type MyCalendarEvent
 } from "../lib/my-calendar";
+import { classificarErroAgenda, type EstadoAgendaIndisponivel } from "../lib/my-calendar-status";
 import {
   Calendar,
   ChevronLeft,
@@ -122,7 +122,7 @@ export default function DashboardView({
    */
   const [outlookEvents, setOutlookEvents] = useState<MyCalendarEvent[]>([]);
   const [outlookState, setOutlookState] = useState<"loading" | "ready" | "error">("loading");
-  const [outlookError, setOutlookError] = useState<string | null>(null);
+  const [outlookError, setOutlookError] = useState<EstadoAgendaIndisponivel | null>(null);
 
   useEffect(() => {
     let cancelado = false;
@@ -145,7 +145,7 @@ export default function DashboardView({
         if (cancelado || (erro as Error)?.name === "AbortError") return;
         // Sem massa demo, sem evento inventado: o quadro diz o que houve.
         setOutlookEvents([]);
-        setOutlookError(describeMyCalendarError(erro, language));
+        setOutlookError(classificarErroAgenda(erro, language));
         setOutlookState("error");
       });
 
@@ -540,9 +540,10 @@ export default function DashboardView({
                   <span className="flex items-center gap-1 text-[9px] font-bold text-slate-400 uppercase tracking-wider">
                     <span className="w-2 h-2 rounded-full bg-violet-500" />
                     {language === "en" ? "Your Outlook agenda" : "Sua agenda do Outlook"}
-                    {outlookState === "error" && (
-                      <span className="text-amber-600 normal-case">
-                        {language === "en" ? " (unavailable)" : " (indisponível)"}
+                    {/* Motivo já na legenda (antes só aparecia ao clicar num dia). */}
+                    {outlookState === "error" && outlookError && (
+                      <span className="text-amber-600 normal-case" title={outlookError.mensagem}>
+                        {` (${outlookError.rotulo})`}
                       </span>
                     )}
                   </span>
@@ -732,9 +733,11 @@ export default function DashboardView({
               {selectedDayStr && outlookState === "error" && (
                 <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl">
                   <p className="text-[11px] font-bold text-amber-800">
-                    {language === "en" ? "Outlook agenda unavailable" : "Agenda do Outlook indisponível"}
+                    {outlookError?.motivo === "nao_configurado"
+                      ? language === "en" ? "Outlook agenda not configured in this environment" : "Agenda do Outlook não configurada neste ambiente"
+                      : language === "en" ? "Outlook agenda unavailable" : "Agenda do Outlook indisponível"}
                   </p>
-                  <p className="text-[10px] text-amber-700 font-medium mt-0.5">{outlookError}</p>
+                  <p className="text-[10px] text-amber-700 font-medium mt-0.5">{outlookError?.mensagem}</p>
                 </div>
               )}
 

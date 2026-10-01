@@ -62,7 +62,11 @@ export default function MeetingsView({
   const [activeTab, setActiveTab] = useState<"Upcoming" | "Past">("Upcoming");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedStatus, setSelectedStatus] = useState("All Statuses");
-  const [selectedCategory, setSelectedCategory] = useState("Category");
+  /*
+   * Sem filtro de "Categoria": `category` é o NOME do órgão colegiado, e esta
+   * lista é o modo Lista do Pipeline, que já recebe as reuniões filtradas pelo
+   * filtro comum de Órgão colegiado. Dois filtros do mesmo conceito confundiam.
+   */
   const [selectedMonth, setSelectedMonth] = useState("All Months");
   const [currentPage, setCurrentPage] = useState(1);
   /*
@@ -80,8 +84,6 @@ export default function MeetingsView({
     tabPast: language === "en" ? "Past" : "Concluídas",
     searchPlaceholder: language === "en" ? "Search meetings..." : "Buscar reuniões...",
     optAllStatuses: language === "en" ? "All Statuses" : "Todos os Status",
-    optCategory: language === "en" ? "Category" : "Categoria",
-    optAllCategories: language === "en" ? "All Categories" : "Todas as Categorias",
     labelExpected: language === "en" ? "Expected" : "Confirmados",
     labelAgendaItems: language === "en" ? "Agenda Items" : "Itens de Pauta",
     btnViewDetails: language === "en" ? "View Details" : "Ver Detalhes",
@@ -140,13 +142,6 @@ export default function MeetingsView({
    * texto de protótipo em inglês que nunca batia com `m.category` (nome do
    * órgão de governança, em português): o filtro nunca filtrava nada.
    */
-  const availableCategories = useMemo(() => {
-    const set = new Set<string>();
-    meetings.forEach((m) => {
-      if (m.category) set.add(m.category);
-    });
-    return Array.from(set).sort((a, b) => a.localeCompare(b, "pt-BR"));
-  }, [meetings]);
 
   // Filter meetings based on tab, search, status, category, and selected month
   const filteredMeetings = useMemo(() => {
@@ -169,11 +164,6 @@ export default function MeetingsView({
         if (m.status !== selectedStatus) return false;
       }
 
-      // 4. Category check:
-      if (selectedCategory !== "Category" && selectedCategory !== "All Categories" && selectedCategory !== "Todas as Categorias") {
-        if (m.category !== selectedCategory) return false;
-      }
-
       // 5. Month-Year limit filter check:
       if (selectedMonth !== "All Months" && selectedMonth !== "Todos os Meses") {
         const d = new Date(m.date + "T10:00:00");
@@ -184,7 +174,7 @@ export default function MeetingsView({
 
       return true;
     });
-  }, [meetings, activeTab, searchQuery, selectedStatus, selectedCategory, selectedMonth, language]);
+  }, [meetings, activeTab, searchQuery, selectedStatus, selectedMonth, language]);
 
   /** Rótulo do mês da reunião, no mesmo formato usado pelo filtro de mês. */
   const monthLabelOf = (m: Meeting) => {
@@ -366,20 +356,6 @@ export default function MeetingsView({
               <option value="Draft">{language === "en" ? "Draft" : "Rascunho"}</option>
               <option value="Needs Approval">{language === "en" ? "Needs Approval" : "Requer Aprovação"}</option>
               <option value="In Progress">{language === "en" ? "In Progress" : "Iniciação"}</option>
-            </select>
-          </div>
-
-          {/* Category selection selector */}
-          <div className="relative">
-            <select
-              value={selectedCategory}
-              onChange={(e) => { setSelectedCategory(e.target.value); setCurrentPage(1); }}
-              className="appearance-none bg-slate-50 hover:bg-slate-100/50 text-slate-600 font-semibold text-xs border border-slate-200 rounded-xl pl-4 pr-9 py-2 cursor-pointer focus:ring-1 focus:ring-[#00658d] focus:bg-white focus:outline-none transition-all"
-            >
-              <option value="Category">{t.optCategory}</option>
-              {availableCategories.map((cat) => (
-                <option key={cat} value={cat}>{cat}</option>
-              ))}
             </select>
           </div>
 

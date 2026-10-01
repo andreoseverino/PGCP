@@ -957,6 +957,7 @@ export default function App() {
             language={language}
             meetings={meetings}
             meetingsLoading={meetingsLoading}
+            governanceBodies={governanceBodies}
             canSchedule={usuarioPodeAgendar}
             onNewMeeting={(date) => setNewMeetingDate(date)}
             onMeetingClick={abrirNoPipeline}
@@ -966,7 +967,7 @@ export default function App() {
         return (
           <AnnualAgendaView
             language={language}
-            governanceBodies={governanceBodies.filter((b) => b.isActive)}
+            governanceBodies={governanceBodies}
             canManage={usuarioPodeAgendar}
             onOpenMeeting={(id) => void openMeetingById(id)}
             onMeetingsChanged={() => void loadMeetings()}
@@ -985,10 +986,10 @@ export default function App() {
             governanceBodies={governanceBodies}
             onReload={() => void loadMeetings()}
             onMeetingClick={(meet) => void openMeeting(meet)}
-            renderList={() => (
+            renderList={(filtradas) => (
               <MeetingsView
                 language={language}
-                meetings={meetings}
+                meetings={filtradas}
                 meetingsLoading={meetingsLoading}
                 meetingsError={meetingsError}
                 onReloadMeetings={() => void loadMeetings()}
