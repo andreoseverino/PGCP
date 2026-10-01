@@ -13,9 +13,10 @@
 
 import { ApiError, apiRequest } from "./api";
 import { enderecoDoDiretorio } from "./corporate-email";
+import { ENTRA_MIN_QUERY } from "./participant-search";
 
 /** Tamanho mínimo do termo. Espelha a validação da API; evita ida inútil. */
-export const DIRECTORY_MIN_QUERY = 3;
+export const DIRECTORY_MIN_QUERY = ENTRA_MIN_QUERY;
 
 export interface DirectoryUser {
   /** `id` do Graph — é o `entra_object_id` da pessoa. */

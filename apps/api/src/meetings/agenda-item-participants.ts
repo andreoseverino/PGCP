@@ -93,13 +93,20 @@ export async function findOrCreateMeetingParticipant(
 ): Promise<{ id: string; criado: boolean }> {
   const [preparado] = await prepararParticipantes(client, [input], actor.entraTenantId);
 
+  /*
+   * Convidado SEM identidade (externo do PGCP) e reconhecido pelo e-mail —
+   * mesma chave do indice parcial de convidados (001). Sem isto, vincular a
+   * um tema um externo que ja esta na reuniao violaria o indice (409).
+   */
   const { rows } = await client.query<{ id: string }>(
     `SELECT id FROM meeting_participants
       WHERE meeting_id = $1
         AND ( ($2::uuid IS NOT NULL AND user_id = $2)
-           OR ($3::uuid IS NOT NULL AND entra_object_id = $3) )
+           OR ($3::uuid IS NOT NULL AND entra_object_id = $3)
+           OR ($2::uuid IS NULL AND $3::uuid IS NULL AND $4::text IS NOT NULL
+               AND user_id IS NULL AND lower(email) = lower($4)) )
       LIMIT 1`,
-    [meetingId, preparado!.userId, preparado!.entraObjectId],
+    [meetingId, preparado!.userId, preparado!.entraObjectId, preparado!.email],
   );
   if (rows[0]) return { id: rows[0].id, criado: false };
 
@@ -134,7 +141,8 @@ export async function excluirMeetingParticipant(
     await recordAuditIn(client, {
       actorUserId: actor.userId,
       actorName: actor.name,
-      action: "Participante removido",
+      // Distinto de "Participante removido do tema": aqui a pessoa DEIXA a reunião.
+      action: "Participante removido da reunião",
       entityType: "meeting_participant",
       entityId: participantId,
       entityLabel: titulo,
@@ -302,6 +310,63 @@ export async function garantirResponsavelComoParticipante(
  * O casamento é por IDENTIDADE (par tenant+oid), nunca por nome: só pessoa
  * identificável entra pela regra, então só ela pode ser retida por ela.
  */
+/**
+ * Remove a pessoa de UM tema — só o vínculo (regra vigente desde a revisão de
+ * 025, substitui a Opção A da 020). A pessoa continua em `meeting_participants`
+ * e nos demais temas; o convite do calendário não muda. Sair da reunião
+ * inteira é `excluirMeetingParticipant` (aba Participantes).
+ *
+ * O responsável PESSOA continua obrigatoriamente participante do próprio tema:
+ * desvinculá-lo exige trocar o responsável antes.
+ *
+ * `meeting_id` + item no WHERE: id de outra reunião/tema não remove nada.
+ * Devolve o `rowCount` para o chamador decidir o 404.
+ */
+export async function desvincularParticipanteDoTema(
+  client: PoolClient,
+  meetingId: string,
+  agendaItemId: string,
+  participantId: string,
+  actor: MeetingActor,
+  titulo: string,
+): Promise<number> {
+  const { rows: responsavel } = await client.query(
+    `SELECT 1
+       FROM meeting_agenda_items ai
+       JOIN meeting_participants mp
+         ON mp.meeting_id = ai.meeting_id
+        AND mp.entra_object_id = ai.responsible_entra_object_id
+        AND mp.entra_tenant_id = ai.responsible_entra_tenant_id
+      WHERE ai.id = $1 AND ai.meeting_id = $2 AND mp.id = $3`,
+    [agendaItemId, meetingId, participantId],
+  );
+  if (responsavel.length > 0) {
+    throw new HttpError(409, "Esta pessoa é a responsável por este tema. Troque o responsável antes de removê-la do tema.");
+  }
+
+  const { rowCount } = await client.query(
+    `DELETE FROM meeting_agenda_item_participants aip
+      USING meeting_agenda_items ai
+      WHERE aip.meeting_agenda_item_id = $1
+        AND aip.meeting_participant_id = $2
+        AND ai.id = aip.meeting_agenda_item_id
+        AND ai.meeting_id = $3`,
+    [agendaItemId, participantId, meetingId],
+  );
+  if ((rowCount ?? 0) > 0) {
+    await recordAuditIn(client, {
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      action: "Participante removido do tema",
+      entityType: "meeting_agenda_item",
+      entityId: agendaItemId,
+      entityLabel: titulo,
+      status: "success",
+    });
+  }
+  return rowCount ?? 0;
+}
+
 async function recusarRemocaoDeResponsavel(
   client: PoolClient,
   meetingId: string,

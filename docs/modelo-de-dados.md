@@ -426,10 +426,15 @@ São editáveis pelo usuário em Administração → tabela, não enum.
 | `pending_requirements` | text | não | ← `missingRequirementText` |
 | `created_at` / `updated_at` | timestamptz | sim | |
 
-**Sem local físico.** A coluna `location` existiu até a migration `021`, que a
-removeu: o PGCP não solicita, não exibe, não persiste nem envia ao Graph o
-endereço/sala da reunião. Onde se entra é o `joinUrl` do Teams, provisionado no
-próprio evento (`online_meeting_provider`).
+**Local físico por catálogo (025).** A coluna livre `location` foi removida na
+`021` e **não voltou**. A `025` acrescentou `modality` (`online` | `in_person`,
+default `online`) e `physical_location_key` — chave do catálogo da aplicação
+(`meetings/locations.ts`), obrigatória só no presencial (CHECK
+`(modality = 'in_person') = (physical_location_key IS NOT NULL)`). Endereço
+oficial vem de configuração (`MEETING_LOCATIONS_ADDRESSES`), nunca digitado.
+Toda reunião continua com Teams (`online_meeting_provider`); no presencial ele é
+contingência. A `025` também acrescentou `origin` (`manual` | `annual_agenda`) e
+`annual_agenda_id` (FK `ON DELETE SET NULL`) — ver 5.14.
 
 **Status:** `draft`, `scheduled`, `needs_approval`, `in_progress`, `done`, `approved`,
 `closed` — os 7 valores atuais, normalizados.
@@ -530,6 +535,11 @@ sem remover participantes existentes e sem correspondência por nome.
 
 ### 5.8 `meeting_agenda_items` — pauta **dentro** de uma reunião
 
+> **Terminologia desde a 025:** esta tabela representa o **TEMA** (assunto
+> específico). A **PAUTA** passou a ser o agrupador `meeting_agendas` (5.14), e
+> o tema aponta para ela por `meeting_agenda_id` (anulável; FK composta com
+> `meeting_id`). Nome da tabela e colunas **não** foram renomeados.
+
 | Campo | Tipo | Obrig. | Observação |
 |---|---|---|---|
 | `id` | uuid | PK | |
@@ -610,7 +620,10 @@ UNIQUE (meeting_agenda_item_id) WHERE is_lead
 
 Nunca criar usuário nem participante fictício para representar um coletivo.
 
-### 5.9.1 `meeting_agenda_item_participants` — participantes POR PAUTA (Opção A, 020)
+### 5.9.1 `meeting_agenda_item_participants` — participantes POR TEMA (020; regra de remoção revista na 025)
+
+> Desde a 025, `meeting_agenda_items` é o **TEMA** (5.8/5.14); "pauta" abaixo, no
+> texto histórico da 020, designa o mesmo item.
 
 Relaciona `meeting_agenda_items` a **`meeting_participants`** — **não** ao diretório/Entra.
 Assim a invariante "quem participa de uma pauta participa da reunião" é **estrutural**
@@ -638,12 +651,26 @@ legados já identificáveis, sem remover dados existentes.
 
 - **Adicionar** alguém a uma pauta: se já é participante da reunião, **reutiliza** o
   `meeting_participant` (deduplicação pela lógica da aplicação — por `entra_object_id`/`user_id`,
-  **nunca** por `display_name`; sem `UNIQUE` novo sobre dados legados). Se ainda não é, ele é
+  **nunca** por `display_name`; para convidado sem identidade — externo do PGCP — pelo e-mail,
+  a mesma chave do índice parcial de convidados). Se ainda não é, ele é
   **adicionado à reunião** pelo MESMO fluxo da aba Participantes — passa a constar na lista
   geral e a integração de calendário fica `stale` (5.11 / ver §Calendário).
-- **Remover** alguém de uma pauta: ele é **removido de `meeting_participants`** — deixa a
-  reunião inteira. Pelo `ON DELETE CASCADE`, os vínculos dele com as **demais pautas** da mesma
-  reunião também somem. Mesma remoção da aba Participantes (calendário `stale` + auditoria).
+- **Remover de um Tema (regra vigente).** Remover um participante de um Tema remove somente o
+  vínculo daquele participante com o Tema. O participante permanece na reunião e em outros
+  Temas aos quais esteja associado. O convite do calendário não muda. O responsável pessoa
+  não pode ser desvinculado do próprio Tema (409 — troca-se o responsável antes). Trilha:
+  "Participante removido do tema".
+- **Remover da reunião.** Para remover a pessoa da reunião inteira, a ação deve ser realizada
+  na aba Participantes da reunião. Antes da confirmação, a interface informa que a pessoa será
+  removida da reunião e de todos os Temas aos quais esteja vinculada, apresentando os Temas
+  afetados quando houver. Apaga o `meeting_participant`; o `ON DELETE CASCADE` remove os
+  vínculos com todos os Temas; calendário `stale`. Trilha: "Participante removido da reunião".
+- A exclusão de um participante da reunião não exclui seu cadastro administrativo de
+  participante externo no PGCP (5.15) — nem a remoção de um Tema.
+- Toda remoção (de Tema ou da reunião) exige **confirmação explícita** na interface; a
+  confirmação é UX — o backend aplica a regra sobre o estado atual do banco.
+- *Regra anterior, SUBSTITUÍDA (Opção A da 020): remover de uma pauta removia a pessoa da
+  reunião inteira e, pelo cascade, das demais pautas. Não é mais o comportamento.*
 
 **Snapshot Biblioteca → reunião.** Ao vincular uma pauta da Biblioteca que tem participantes
 (`agenda_topic_participants`), cada pessoa é **localizada/criada** em `meeting_participants` e
@@ -786,6 +813,66 @@ externa real.
 `actor_name` como snapshot atende `"System Sync API"`, que não é pessoa.
 
 ---
+
+### 5.14 Revisão 025 — Pauta → Tema e Agenda Anual
+
+Estrutura conceitual: **Reunião → Pauta → Tema**. Não existe nível
+intermediário ("bloco").
+
+| Tabela | Papel | Pontos-chave |
+|---|---|---|
+| `meeting_agendas` | **Pauta** da reunião (ex.: Finanças) | `meeting_id` `CASCADE`; `title`; `position`; `UNIQUE (id, meeting_id)` como alvo da FK composta |
+| `meeting_agenda_items.meeting_agenda_id` | **Tema** → Pauta | Anulável (itens anteriores = "temas sem pauta", sem backfill); FK composta `(meeting_agenda_id, meeting_id)` impede apontar para pauta de outra reunião; excluir pauta com temas é recusado (409) |
+| `annual_agendas` | Planejamento anual de um órgão | `governance_body_id`, `year`, `title`; `status` `draft` → `pending_approval` → `approved` com CHECK de coerência (mesmo padrão da 016); **independente da reserva** |
+| `annual_agenda_items` | Data planejada | `start_at`/`end_at`/`timezone` planejados; `meeting_id UNIQUE` `ON DELETE SET NULL` = reserva (uma data vira no máximo uma reunião) |
+| `meetings.origin` / `annual_agenda_id` | Procedência | Definidas pelo servidor, nunca pelo corpo |
+
+**Reserva antes da aprovação.** `POST /annual-agendas/:id/reserve` cria, numa
+transação com a agenda travada, as reuniões das datas sem `meeting_id` (mesmo
+caminho da criação manual, `inserirReuniao`) e, depois do COMMIT, envia os
+convites. Repetir é inofensivo. Depois de reservada, a data é alterada pelo
+Pipeline (`PATCH /meetings/:id`), que atualiza o **mesmo** evento; a Agenda
+Anual exibe a data vigente da reunião. Alterar datas depois de pedir aprovação
+devolve a agenda para `draft`.
+
+**Pipeline — sem status novo.** As etapas (Agendada, Em preparação, Pronta para
+reunião, Realizada) são derivadas de `meetings.status`,
+`agenda_validation_status` e da contagem de temas (`apps/web/src/lib/pipeline.ts`).
+
+Migration aditiva, com SQL de reversão documentado no cabeçalho de
+`025_calendar_pipeline_annual_agenda.sql`.
+
+### 5.15 Revisão 026 — Participantes externos
+
+**Usuário ≠ participante.** `users` é pessoa AUTENTICADA (Entra + App Roles,
+provisionada no login). `external_participants` é o cadastro local de quem só
+PARTICIPA de reuniões e não existe no Entra: sem login, sem App Role, sem par
+`(tenant, oid)`. Pessoas do Entra não são copiadas para cá — continuam vindo do
+diretório sob demanda.
+
+| Tela | Origem |
+|---|---|
+| Administração → Participantes | **somente** externos cadastrados no PGCP (sem busca no Entra) |
+| Seleção de participantes (reunião, tema, reserva anual) | **Entra ID + externos do PGCP**, separados por origem; e-mail repetido é omitido do lado PGCP |
+
+Cadastro exige comprovar que o e-mail **não** é corporativo: consulta ao Entra
+por e-mail na gravação, **fail closed** (sem verificação, não grava).
+
+| Campo | Tipo | Obrig. | Observação |
+|---|---|---|---|
+| `id` | uuid | PK | |
+| `full_name` | text | sim | 2–200 |
+| `email` | text | sim | **único case-insensitive** (`UNIQUE (lower(email))`) |
+| `phone` | text | sim | TEXTO (preserva DDI/DDD); dígitos, espaço, `+ ( ) -` |
+| `governance_body_id` | uuid FK → `governance_bodies` | não | `RESTRICT`; **um** órgão colegiado (limitação: não há N:N pessoa↔órgão no modelo) |
+| `created_by_user_id` / `updated_by_user_id` | uuid FK → `users` | | autoria |
+| `created_at` / `updated_at` | timestamptz | sim | |
+
+Uso em reunião: a pessoa vira uma linha comum de `meeting_participants`
+(`user_id` NULL, sem par Entra, `participant_type='external'`, nome e e-mail
+como snapshot) — o convidado externo que o modelo já suportava. Sem FK de
+`meeting_participants` para cá: remover o cadastro não altera reuniões. O
+convite do Outlook usa só o e-mail. Migration aditiva; reversão no cabeçalho.
 
 ## 6. Relacionamentos e cardinalidades
 

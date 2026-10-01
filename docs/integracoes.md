@@ -160,6 +160,7 @@ segredo no cliente.
 | `ENTRA_API_CLIENT_SECRET` | **segredo** | **Etapa 5 (OBO)** | Não é necessário para validar token — o JWKS é público. |
 | `GRAPH_BASE_URL` | pública | opcional | Padrão `https://graph.microsoft.com/v1.0`. |
 | `MAIL_SENDER_ADDRESS` | pública | E-mail | Caixa remetente institucional. |
+| `MEETING_LOCATIONS_ADDRESSES` | pública | Reunião presencial | JSON opcional com o endereço **oficial** de cada sede do catálogo. Sem valor, o convite leva só o nome da sede. |
 | `DOCUSIGN_CLIENT_ID` | pública | DocuSign | Integration Key. |
 | `DOCUSIGN_CLIENT_SECRET` | **segredo** | DocuSign | Secret Key. |
 | `DOCUSIGN_ACCOUNT_ID` | pública | DocuSign | API Account ID. |
@@ -480,8 +481,22 @@ estar aberta naquele instante. Retry, reconciliação e qualquer processamento
 assíncrono ficariam impossíveis sempre que a pessoa não estivesse logada — e é
 justamente no retry que a integração precisa funcionar.
 
-A caixa alvo vem de `meetings.organizer_user_id` → `users.entra_object_id`, e as
-chamadas usam `/users/{oid}/events`. **Não existe `/me` em app-only.**
+A caixa alvo vem de `meetings.organizer_entra_object_id` (par
+`organizer_entra_tenant_id` + `organizer_entra_object_id`, migration 012 — o
+organizador não precisa ter conta no PGCP), e as chamadas usam
+`/users/{oid}/events`. **Não existe `/me` em app-only.**
+
+#### Resumo verificado no código (revisão 025)
+
+| Fluxo | OAuth | Token | Tipo de permissão | Identidade / caixa | Permissão Graph | Código |
+|---|---|---|---|---|---|---|
+| Convite Outlook + Teams (criar/atualizar evento, inclusive reserva da Agenda Anual) | Client credentials | App-only, escopo `https://graph.microsoft.com/.default` | **Application** | Caixa do **organizador** (`/users/{organizer_entra_object_id}/events`) | `Calendars.ReadWrite` via **Exchange RBAC for Applications** (Resource Scope) | `graph/client.ts` (`acquireTokenByClientCredential`), `calendar/service.ts` |
+| Teams meeting | — (mesmo PATCH/POST do evento) | idem | idem | idem | idem (`isOnlineMeeting` + `onlineMeetingProvider=teamsForBusiness` no evento) | `calendar/mapper.ts` |
+| Diretório (busca / checagem de e-mail duplicado) | Client credentials | App-only | **Application** | — | `User.Read.All` | `graph/client.ts` |
+| E-mail de validação de pautas e da Agenda Anual | **On-Behalf-Of** | Delegado, escopo `https://graph.microsoft.com/Mail.Send` | **Delegated** | Caixa de **quem está na sessão** (`/me/sendMail`) | `Mail.Send` | `mail/send.ts` |
+
+Nenhum dos fluxos usa `Mail.Send` Application. O convite em si não é e-mail do
+PGCP: é o Exchange que notifica os `attendees` do evento.
 
 O SPA continua sem nenhuma permissão do Graph; o navegador só envia o token da
 API do PGCP. Token e segredo do Graph nunca saem do backend.
@@ -502,12 +517,13 @@ API do PGCP. Token e segredo do Graph nunca saem do backend.
 
 ### Outlook — organizador
 
-`meetings.organizer_user_id` → `users.id` → `users.entra_object_id` +
-`entra_tenant_id`. A caixa de destino é resolvida por essa identidade, nunca por
-nome, por `organizer` textual ou por e-mail digitado.
+`meetings.organizer_entra_tenant_id` + `organizer_entra_object_id` (012). A
+caixa de destino é resolvida por essa identidade, nunca por nome, por
+`organizer` textual ou por e-mail digitado. `organizer_user_id` só enriquece o
+vínculo quando o organizador também tem conta no PGCP.
 
-`organizer_user_id` é **anulável**: reunião sem organizador resolvido não pode
-sincronizar. Não escolher uma caixa substituta.
+Sem `organizer_entra_object_id` a reunião não pode sincronizar
+(`organizer_without_entra_identity`). Não escolher uma caixa substituta.
 
 ### Outlook — fonte de verdade
 
@@ -522,12 +538,28 @@ Sincronização bidirecional só com requisito funcional explícito.
 
 ### Outlook — campos que sincronizam
 
-`title`, `description`, `start_at`, `end_at`, `timezone`, `meeting_link` e o
-conjunto de participantes.
+`title`, `description`, `start_at`, `end_at`, `timezone`, `meeting_link`,
+`modality`, `physical_location_key` (025) e o conjunto de participantes.
 
-**Local físico não existe mais** no PGCP (migration 021): o payload do Graph não
-carrega `location`, e eventos criados antes disso mantêm no Outlook o valor que
-já estava lá — omitir a propriedade num PATCH não a apaga.
+**Modalidade e local físico (migration 025).** Toda reunião tem Teams no próprio
+evento; a modalidade só muda o que acompanha o convite:
+
+| Modalidade | Teams (`isOnlineMeeting`) | `location` do evento | Corpo do convite |
+|---|---|---|---|
+| `online` | sim | **omitido** (igual ao comportamento anterior) | descrição |
+| `in_person` | **sim, como contingência** | nome da sede + endereço **se configurado** | "Reunião presencial — Local: …" + aviso de contingência do Teams |
+
+O local é **chave de catálogo** (`sede-matriz`, `sede-leopoldo` em
+`apps/api/src/meetings/locations.ts`), nunca texto livre. O **endereço oficial não
+existe no repositório** e não é presumido: vem de `MEETING_LOCATIONS_ADDRESSES`
+(JSON por chave, `apps/api/.env`). Sem ele o convite leva só o nome da sede.
+
+Presencial → online **depois** do convite: o PATCH no mesmo evento envia
+`location: { displayName: "" }` e `locations: []`, o que apaga o local físico
+anterior no Outlook (omitir a propriedade não apagaria). Vale para todo PATCH de
+reunião online — inclusive eventos legados que ainda tinham `location` da época
+anterior à 021. Mesmo `provider_event_id`, mesmo Teams; POST de reunião online
+não envia remoção (não há local anterior).
 
 **Não** sincronizam: pautas, estado de execução, FUP, Anotações, Ata, processo de
 assinatura, Biblioteca. São conteúdo de governança, não do compromisso.
@@ -646,8 +678,12 @@ momentos, e `pending` os separa: o **primeiro envio** (a reunião foi preparada 
 ainda não convidou ninguém) e o **reenvio** (falhou, ou a reunião mudou e o
 convite desatualizou).
 
-O botão fica **desabilitado enquanto a pauta não estiver aprovada** — cortesia; a
-barreira real é o **409** `agenda_not_approved` do backend.
+**Desde a migration 025 o convite NÃO depende de pauta aprovada.** Agendar é
+reservar: o Calendário chama `POST /meetings` e, em seguida,
+`POST /meetings/:id/calendar-sync`; a Agenda Anual faz o mesmo na reserva
+(`POST /annual-agendas/:id/reserve`), antes da aprovação do planejamento. O
+gate `agenda_not_approved` (409) foi retirado; a aprovação das pautas continua
+exigida para **iniciar** a reunião (`meetings/meeting-start.ts`).
 
 ### Outlook — idempotência
 

@@ -25,7 +25,7 @@ Auditoria de código              ✅ concluída
 Hardening PostgreSQL             ✅ concluído
 Hardening de produção no código  ✅ concluído
 npm audit                        ✅ 0 vulnerabilidades
-Build / typecheck / testes       ✅ verdes (263 testes)
+Build / typecheck / testes       ✅ verdes (API 264 + web 81)
 Pré-go-live local                ✅ concluído
 Mail.Send Delegated / OBO        ✅ validado no tenant real (envio e recebimento)
 Validação de pautas — pós-envio  ⚠️ revalidar após a correção do 202 (ver §9)
@@ -358,21 +358,34 @@ quem precisa das duas recebe as duas atribuições no Entra. Exceção deliberad
 cadastros funcionais (órgãos, tipos, naturezas) aceitam `PGCP.Assessoria` **OU**
 `PGCP.Admin`.
 
-### Ciclo de vida da reunião — três eixos independentes
+### Ciclo de vida da reunião — eixos independentes (revisado na migration 025)
 
-Criar reunião **não envia nada à Microsoft**. O convite é um ato próprio,
-liberado só depois que as pautas voltam aprovadas:
+**Mudança de regra de produto (025).** Até a 024 o convite só saía depois das
+pautas aprovadas (409 `agenda_not_approved`). O fluxo principal foi
+reestruturado para **reservar a agenda de executivos cedo**:
 
 ```
-Preparação → validação das pautas (PDF por e-mail) → aprovação → convite Outlook/Teams
+Calendário ──► Nova reunião ──► convite Outlook/Teams ──► Pipeline (preparação)
+Agenda Anual ─► reservar datas ─► convites (ANTES da aprovação do planejamento) ─► Pipeline
+Pipeline: Pautas → Temas → validação das pautas → aprovação → INICIAR a reunião
 ```
+
+O gate do convite foi **retirado deliberadamente** de `POST /:id/calendar-sync`;
+o de **início** da reunião foi mantido (pautas aprovadas + convite enviado,
+`exigirProntaParaIniciar`). O que continua barrando o convite: App Role
+`PGCP.Assessoria`, organizador com identidade Microsoft, participantes com
+endereço (422 nominal) e a idempotência (`transactionId` fixo + PATCH no
+`provider_event_id` — no máximo um evento por reunião, inclusive nas reuniões
+reservadas pela Agenda Anual e depois editadas pelo Pipeline).
 
 | Etapa | Onde vive o estado | Quem pode |
 | --- | --- | --- |
-| Preparação | `meetings.agenda_validation_status = 'draft'` | `PGCP.Assessoria` |
-| Enviar pautas para validação | `… = 'sent'` + `agenda_validation_sent_to` | `PGCP.Assessoria` |
-| Marcar pautas como aprovadas | `… = 'approved'` + `agenda_approved_by_user_id` | `PGCP.Assessoria` |
+| Agendar (Calendário) / reservar (Agenda Anual) | `meetings` (+ `origin`) e `annual_agenda_items.meeting_id` | `PGCP.Assessoria` |
 | Enviar convite Outlook/Teams | `meeting_calendar_integrations.sync_status` | `PGCP.Assessoria` |
+| Preparação (pautas e temas) | `meeting_agendas` / `meeting_agenda_items` | `PGCP.Assessoria` |
+| Enviar pautas para validação | `meetings.agenda_validation_status = 'sent'` | `PGCP.Assessoria` |
+| Marcar pautas como aprovadas | `… = 'approved'` + `agenda_approved_by_user_id` | `PGCP.Assessoria` |
+| Aprovação da Agenda Anual | `annual_agendas.status` (independente da reserva) | `PGCP.Assessoria` |
 
 **Três eixos que não se confundem** e por isso não compartilham coluna:
 
@@ -385,10 +398,39 @@ Aprovar a pauta **não** altera `meetings.status`. "Convite enviado" não ganhou
 coluna própria: já é `sync_status = 'synced'`, e uma segunda fonte poderia
 discordar dela.
 
-**A barreira do convite está no backend.** `POST /meetings/:id/calendar-sync`
-confere `agenda_validation_status` **antes de qualquer chamada ao Graph** e
-responde **409** `agenda_not_approved` quando a pauta não está aprovada.
-Desabilitar o botão na tela é cortesia — convidar é irreversível para terceiros.
+**A barreira que resta no convite é o papel.** Com o gate de aprovação retirado,
+`requirePgcpAssessoria` em `calendar-sync` e em `annual-agendas/:id/reserve` é o
+que impede usuário comum de criar eventos na agenda de terceiros (testado em
+`authz/route-guards.test.ts`). Esconder botão continua sendo cortesia.
+
+**IDOR em pautas/temas.** Toda operação de pauta (`/meetings/:id/agendas/:agendaId`)
+e de tema filtra por `meeting_id`; vincular tema a pauta confere a pauta **na
+mesma reunião** (404 caso contrário) e o banco reforça com **FK composta**
+`(meeting_agenda_id, meeting_id)` — um tema não consegue apontar para pauta de
+outra reunião nem por chamada direta. Itens de Agenda Anual são sempre
+consultados com `annual_agenda_id` no `WHERE`.
+
+**Participantes externos (026).** `/external-participants` tem
+`requireAssessoriaOuAdmin` **no router** (mesma política dos cadastros
+funcionais; nenhuma App Role nova) — inclusive a leitura, porque a lista expõe
+e-mail e telefone de terceiros. Allowlist fechada (`fullName`, `email`, `phone`,
+`governanceBodyId`); identidade Entra, `userId`, origem e id são recusados. E-mail
+único case-insensitive (índice), telefone por allowlist de caracteres, nome
+2–200, órgão conferido no banco. Antes de gravar: recusa e-mail já usado por
+participante PGCP, por conta em `users` (e-mail/UPN) e — uma chamada Graph
+**só na gravação**, `User.Read.All` já concedida — por pessoa do diretório.
+**Fail closed:** se o Graph não puder verificar, o cadastro é recusado (503,
+mensagem simples, sem detalhe do Graph) e nada é gravado. A consulta é só de
+integridade — o resultado nunca é devolvido; a API administrativa lista apenas
+registros locais. A busca combinada Entra + PGCP existe só nos seletores de
+participantes de reunião (`/directory/users` já existente + lista local).
+Participante externo **não** cria linha em `users`, não recebe App Role e não
+autentica. Trilha: "Participante criado/atualizado/removido", com nome e id —
+sem e-mail nem telefone.
+
+**Mass assignment.** `origin`, `annualAgendaId`, `status` da Agenda Anual,
+`meeting_id` do item e tenant não são aceitos do corpo (allowlists fechadas,
+testadas). Local físico só por chave do catálogo — texto livre é recusado.
 
 A **aprovação acontece fora do sistema**: o aprovador responde por e-mail e
 alguém da Secretaria registra o fato no PGCP. Não há leitura automática de
@@ -420,6 +462,7 @@ e `apps/api/src/graph/client.ts`.
 | Meu calendário | Delegated (OBO) | `Calendars.Read` | `GET /me/calendarView` | App Registration da API (Entra) |
 | Sincronizar reunião / Teams / Outlook | Application | `Calendars.ReadWrite` | `POST/PATCH /users/{id}/events` (com `isOnlineMeeting`) | **Exchange Online RBAC for Applications** (Resource Scope de mailbox) |
 | Enviar pautas para validação | **Delegated (OBO)** | `Mail.Send` | `POST /me/sendMail` | App Registration da API (Entra) — ✅ **concedida e validada** |
+| Enviar Agenda Anual para aprovação (PDF) | **Delegated (OBO)** | `Mail.Send` (a MESMA) | `POST /me/sendMail` | Reusa `mail/send.ts`; nenhuma permissão nova. ⚠️ envio real deste fluxo ainda não exercitado no tenant |
 | Mensagem individual ou chamada por pauta | **Delegated (OBO)** | `Chat.Create` + `ChatMessage.Send` | `POST /chats` + `POST /chats/{id}/messages` | App Registration da API (Entra) — ✅ **concedidas e validadas no tenant real** |
 | SPA (navegador) | — | **nenhuma** | — | zero permissão de Graph |
 

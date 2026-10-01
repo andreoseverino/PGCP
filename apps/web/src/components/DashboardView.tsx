@@ -49,14 +49,9 @@ interface DashboardViewProps {
   podeGerenciarFup?: (item: ActionItem) => boolean;
   /** Órgãos vindos da API. Alimentam o filtro do cabeçalho. */
   governanceBodies: GovernanceBody[];
-  onScheduleClick: () => void;
-  /**
-   * Mostrar a ação de agendar.
-   *
-   * Cortesia com quem não pode, não controle de acesso: o servidor
-   * revalida `PGCP.Assessoria` em toda mutação de reunião.
+  /*
+   * SEM "Nova reunião" aqui (025): agendar é exclusivo do Calendário.
    */
-  canSchedule?: boolean;
   onMeetingClick: (meet: Meeting) => void;
   onViewAllMeetings: () => void;
   /** Abre a página de FUPs, onde vive a gestão detalhada. */
@@ -73,8 +68,6 @@ export default function DashboardView({
   myActionItems = [],
   podeGerenciarFup = () => true,
   governanceBodies = [],
-  onScheduleClick,
-  canSchedule = false,
   onMeetingClick,
   onViewAllMeetings,
   onViewAllActionItems,
@@ -221,7 +214,6 @@ export default function DashboardView({
   // Translation Dictionaries
   const t = {
     dashboardTitle: language === "en" ? "Dashboard Portal" : "Plataforma de Governança Corporativa",
-    btnNewMeeting: language === "en" ? "New Meeting" : "Nova Reunião",
     
     // KPI Cards
     activeCouncils: language === "en" ? "Active Councils" : "Conselhos & Comitês",
@@ -468,16 +460,6 @@ export default function DashboardView({
             </select>
           </div>
 
-          {/* Só para quem agenda. O servidor revalida de qualquer forma. */}
-          {canSchedule && (
-            <button
-              onClick={onScheduleClick}
-              className="bg-[#00aeef] hover:bg-[#009bd4] text-white transition-all duration-200 px-4 py-2 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer shrink-0 sm:self-end sm:mb-px"
-            >
-              <span className="material-symbols-outlined text-[16px] text-white">add</span>
-              {t.btnNewMeeting}
-            </button>
-          )}
         </div>
       </div>
 

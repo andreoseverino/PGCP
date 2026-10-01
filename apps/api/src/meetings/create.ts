@@ -10,6 +10,7 @@ import {
   garantirResponsavelComoParticipante,
   snapshotTopicParticipantsIntoItem,
 } from "./agenda-item-participants.js";
+import { localFisicoExiste } from "./locations.js";
 
 /**
  * Criacao de reuniao — reuniao, participantes e pautas em UMA transacao.
@@ -70,6 +71,11 @@ export interface ParticipantInput {
 export interface AgendaItemInput {
   title: string;
   /**
+   * PAUTA (agrupador, 025) a que este TEMA pertence. Precisa ser da MESMA
+   * reuniao — conferido na gravacao e pela FK composta. Ausente = sem pauta.
+   */
+  agendaId?: string;
+  /**
    * Pauta da Biblioteca que originou este item. Preserva a IDENTIDADE da pauta
    * ao importa-la: sem isso, duas pautas homonimas ficariam indistinguiveis e o
    * vinculo teria de ser adivinhado pelo titulo.
@@ -120,8 +126,19 @@ export interface OrganizerInput {
   email?: string;
 }
 
+/**
+ * Modalidade da reuniao. So duas — nao existe "hibrida": toda reuniao tem Teams
+ * (ver `PROVIDER_REUNIAO_ONLINE`), e no presencial ele e a contingencia.
+ */
+export const MODALIDADES = ["online", "in_person"] as const;
+export type Modalidade = (typeof MODALIDADES)[number];
+
 export interface CreateMeetingInput {
   governanceBodyId: string;
+  /** Ausente no corpo = `online` (clientes anteriores a 025). */
+  modality: Modalidade;
+  /** Chave do catalogo (`locations.ts`). Obrigatoria so no presencial. */
+  physicalLocationKey?: string;
   /** Ausente = o proprio ator organiza. Ver `parseCreateInput`. */
   organizer?: OrganizerInput;
   title: string;
@@ -135,6 +152,10 @@ export interface CreateMeetingInput {
   recurrence?: string;
   pendingRequirements?: string;
   participants: ParticipantInput[];
+  /**
+   * Mantido por compatibilidade de contrato. O agendamento pelo Calendario NAO
+   * envia temas: pautas e temas entram depois, pela preparacao (Pipeline).
+   */
   agendaItems: AgendaItemInput[];
 }
 
@@ -394,6 +415,7 @@ export function parseAgendaItemInput(bruto: unknown, onde = "agendaItem"): Agend
 
   return {
     title: textoObrigatorio(dados.title, `${onde}.title`, 300),
+    agendaId: uuidOpcional(dados.agendaId, `${onde}.agendaId`),
     agendaTopicId: uuidOpcional(dados.agendaTopicId, `${onde}.agendaTopicId`),
     durationMinutes,
     scheduledStartTime,
@@ -469,6 +491,48 @@ export function parseOrganizerInput(valor: unknown): OrganizerInput | undefined 
  */
 export const PROVIDER_REUNIAO_ONLINE = "teamsForBusiness" as const;
 
+/**
+ * Modalidade + local fisico, com a mesma regra do CHECK da 025:
+ * presencial exige local do catalogo; online nao carrega local.
+ *
+ * Recusar local no online (em vez de descartar) e deliberado: aceitar em
+ * silencio faria a tela acreditar que gravou um endereco que o servidor jogou
+ * fora. A chave e validada contra o catalogo — texto livre nao vira endereco.
+ *
+ * `padrao` = modalidade assumida quando o corpo nao informa. Na criacao e
+ * `online` (clientes anteriores a 025); no PATCH e a modalidade ATUAL da
+ * reuniao, resolvida por quem chama.
+ */
+export function parseModalidade(
+  dados: Record<string, unknown>,
+  padrao: Modalidade = "online",
+): { modality: Modalidade; physicalLocationKey: string | null } {
+  let modality: Modalidade = padrao;
+  if (dados.modality !== undefined) {
+    if (!(MODALIDADES as readonly unknown[]).includes(dados.modality)) {
+      throw new HttpError(400, "O campo 'modality' aceita apenas 'online' ou 'in_person'.");
+    }
+    modality = dados.modality as Modalidade;
+  }
+
+  let physicalLocationKey: string | undefined;
+  if (dados.physicalLocationKey !== undefined && dados.physicalLocationKey !== null) {
+    physicalLocationKey = textoOpcional(dados.physicalLocationKey, "physicalLocationKey", 64);
+    if (physicalLocationKey && !localFisicoExiste(physicalLocationKey)) {
+      throw new HttpError(400, "O local físico informado não existe no catálogo de locais.");
+    }
+  }
+
+  if (modality === "in_person" && !physicalLocationKey) {
+    throw new HttpError(400, "Reunião presencial exige o local físico ('physicalLocationKey').");
+  }
+  if (modality === "online" && physicalLocationKey) {
+    throw new HttpError(400, "Reunião online não tem local físico: remova 'physicalLocationKey'.");
+  }
+
+  return { modality, physicalLocationKey: modality === "online" ? null : physicalLocationKey! };
+}
+
 export function parseCreateInput(body: unknown): CreateMeetingInput {
   const dados = objeto(body, "O corpo da requisição");
 
@@ -495,8 +559,12 @@ export function parseCreateInput(body: unknown): CreateMeetingInput {
     return valor;
   };
 
+  const { modality, physicalLocationKey } = parseModalidade(dados);
+
   return {
     governanceBodyId,
+    modality,
+    physicalLocationKey: physicalLocationKey ?? undefined,
     organizer: parseOrganizerInput(dados.organizer),
     title: textoObrigatorio(dados.title, "title", 300),
     description: textoOpcional(dados.description, "description", 5000),
@@ -722,6 +790,12 @@ export async function prepararParticipantes(
 // Criacao
 // -----------------------------------------------------------------------------
 
+/** Procedencia da reuniao (025). Definida pelo servidor, nunca pelo corpo. */
+export interface OrigemDaReuniao {
+  origin: "manual" | "annual_agenda";
+  annualAgendaId: string | null;
+}
+
 export async function createMeeting(
   input: CreateMeetingInput,
   actor: MeetingActor,
@@ -731,10 +805,47 @@ export async function createMeeting(
 
   try {
     await client.query("BEGIN");
+    meetingId = await inserirReuniao(client, input, actor, { origin: "manual", annualAgendaId: null });
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {
+      // A conexao pode ja ter caido; o servidor descarta a transacao sozinho.
+    });
+    throw traduzirErroDeBanco(error);
+  } finally {
+    client.release();
+  }
 
+  // Fonte unica de representacao: a resposta do POST e literalmente o que o
+  // GET /meetings/:id devolve. Duas montagens divergiriam com o tempo.
+  return findMeeting(meetingId);
+}
+
+/**
+ * Grava reuniao, participantes, temas, auditoria e o vinculo de calendario
+ * `pending` DENTRO da transacao de quem chama. Nenhuma chamada externa.
+ *
+ * Separada de `createMeeting` para a reserva da Agenda Anual criar varias
+ * reunioes numa transacao so, pelo MESMO caminho da criacao manual — duas
+ * copias da regra divergiriam na primeira correcao.
+ */
+export async function inserirReuniao(
+  client: PoolClient,
+  input: CreateMeetingInput,
+  actor: MeetingActor,
+  origem: OrigemDaReuniao,
+): Promise<string> {
+  let meetingId: string;
+  {
     // Toda pauta da Biblioteca informada precisa existir. A FK sozinha
     // devolveria 23503, e o cliente receberia 500 no lugar de uma resposta que
     // explica o problema.
+    // Reuniao nova nao tem pauta nenhuma: um `agendaId` aqui so poderia
+    // apontar para pauta de OUTRA reuniao. Pautas entram depois, no Pipeline.
+    if (input.agendaItems.some((item) => item.agendaId)) {
+      throw new HttpError(400, "Uma reunião nova ainda não tem pautas: crie as pautas depois do agendamento.");
+    }
+
     const topicosInformados = input.agendaItems
       .map((item) => item.agendaTopicId)
       .filter((id): id is string => Boolean(id));
@@ -786,8 +897,10 @@ export async function createMeeting(
                title, description,
                start_at, end_at, timezone, meeting_link,
                online_meeting_provider,
-               status, recurrence, pending_requirements)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+               status, recurrence, pending_requirements,
+               modality, physical_location_key, origin, annual_agenda_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                    $18, $19, $20, $21)
          RETURNING id`,
       [
         input.governanceBodyId,
@@ -809,6 +922,12 @@ export async function createMeeting(
         INITIAL_STATUS,
         input.recurrence ?? null,
         input.pendingRequirements ?? null,
+        // Presencial continua com Teams (acima): o local e informacao a mais,
+        // nunca substituto do link.
+        input.modality,
+        input.modality === "in_person" ? input.physicalLocationKey ?? null : null,
+        origem.origin,
+        origem.annualAgendaId,
       ],
     );
 
@@ -914,7 +1033,7 @@ export async function createMeeting(
     await recordAuditIn(client, {
       actorUserId: actor.userId,
       actorName: actor.name,
-      action: "Reunião criada",
+      action: origem.origin === "annual_agenda" ? "Reunião reservada pela Agenda Anual" : "Reunião criada",
       entityType: "meeting",
       entityId: meetingId,
       entityLabel: input.title,
@@ -938,20 +1057,9 @@ export async function createMeeting(
      * identidade Microsoft, o que a tela nao permite hoje.
      */
     await prepararIntegracao(client, meetingId, organizador.entraObjectId);
-
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK").catch(() => {
-      // A conexao pode ja ter caido; o servidor descarta a transacao sozinho.
-    });
-    throw traduzirErroDeBanco(error);
-  } finally {
-    client.release();
   }
 
-  // Fonte unica de representacao: a resposta do POST e literalmente o que o
-  // GET /meetings/:id devolve. Duas montagens divergiriam com o tempo.
-  return findMeeting(meetingId);
+  return meetingId;
 }
 
 /**
@@ -962,7 +1070,7 @@ export async function createMeeting(
  * resto. Qualquer outro erro sobe intacto para virar 500 — sem SQL, sem nome de
  * constraint e sem stack chegando ao navegador.
  */
-function traduzirErroDeBanco(error: unknown): unknown {
+export function traduzirErroDeBanco(error: unknown): unknown {
   if (error instanceof HttpError) return error;
 
   const codigo = (error as { code?: string } | null)?.code;

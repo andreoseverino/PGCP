@@ -24,9 +24,18 @@ import { LOGO, LOGO_LADO, MARCA } from "./brand.js";
 // Entrada
 // ---------------------------------------------------------------------------
 
+/**
+ * Um TEMA da reuniao no documento. O nome do tipo e anterior a 025, quando
+ * "pauta" designava o assunto especifico; `pauta` abaixo e o agrupador.
+ */
 export interface PautaDoDocumento {
   posicao: number;
   titulo: string;
+  /**
+   * PAUTA (agrupador, 025) a que o tema pertence. `null` = tema sem pauta.
+   * Ausente em todos => documento sem cabecalhos de pauta (formato anterior).
+   */
+  pauta?: string | null;
   /** De `agenda_topics.description`. Nulo quando a pauta nao veio da Biblioteca. */
   descricao: string | null;
   responsavel: string | null;
@@ -370,7 +379,7 @@ function desenharPauta(doc: Doc, pauta: PautaDoDocumento, total: number): void {
   // Cabecalho da pauta e a primeira linha da ficha precisam caber juntos.
   garantirEspaco(doc, 90);
 
-  rotulo(doc, `Pauta ${pauta.posicao} de ${total}`);
+  rotulo(doc, `Tema ${pauta.posicao} de ${total}`);
 
   doc
     .font("Helvetica-Bold")
@@ -454,7 +463,26 @@ export function gerarPdfDePautas(reuniao: ReuniaoDoDocumento): Promise<Buffer> {
             width: larguraUtil(doc),
           });
       } else {
+        // Reuniao -> Pauta -> Tema: cabecalho a cada troca de pauta, so quando
+        // alguma pauta existe (reuniao so com temas soltos fica como antes).
+        const agrupa = reuniao.pautas.some((tema) => tema.pauta);
+        let pautaAtual: string | null | undefined;
         for (const pauta of reuniao.pautas) {
+          if (agrupa && pauta.pauta !== pautaAtual) {
+            pautaAtual = pauta.pauta;
+            garantirEspaco(doc, 110);
+            doc
+              .font("Helvetica-Bold")
+              .fontSize(13.5)
+              .fillColor(CORES.destaque)
+              .text(
+                pautaAtual ? `Pauta: ${limitar(pautaAtual, 200)}` : "Temas sem pauta",
+                MARGEM,
+                doc.y,
+                { width: larguraUtil(doc) },
+              );
+            doc.moveDown(0.6);
+          }
           desenharPauta(doc, pauta, reuniao.pautas.length);
         }
       }

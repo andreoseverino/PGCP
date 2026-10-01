@@ -24,9 +24,10 @@ import {
 import {
   aprovarPautas,
   enviarPautasParaValidacao,
-  lerStatusDeValidacao,
   parseEmailDoAprovador,
 } from "./agenda-validation.js";
+import { addAgenda, parseAgendaInput, removeAgenda, updateAgenda } from "./agendas.js";
+import { listarLocaisFisicos } from "./locations.js";
 import {
   clearMinutesHandler,
   getMinutesHandler,
@@ -114,6 +115,17 @@ meetingsRouter.get("/", requireActivePgcpUser, async (req: Request, res: Respons
 });
 
 /**
+ * GET /meetings/locations
+ *
+ * Catalogo de locais fisicos para reuniao presencial. Nomes do produto;
+ * endereco so quando configurado no ambiente (nunca inventado). Registrada
+ * ANTES de `/:id` para "locations" nao ser lido como identificador.
+ */
+meetingsRouter.get("/locations", requireActivePgcpUser, (_req: Request, res: Response) => {
+  res.json({ locations: listarLocaisFisicos() });
+});
+
+/**
  * GET /meetings/:id
  *
  * Devolve o nucleo da reuniao, participantes, pautas e o estado da integracao
@@ -171,18 +183,14 @@ meetingsRouter.post("/", requirePgcpAssessoria, async (req: Request, res: Respon
     const criada = await createMeeting(input, ator);
 
     /*
-     * NADA SAI PARA A MICROSOFT AQUI.
+     * NADA SAI PARA A MICROSOFT DENTRO DESTA ROTA.
      *
-     * Criar reuniao e um ato INTERNO do PGCP. Ate a 5.5 esta rota chamava
-     * `syncMeetingCalendar` logo apos o commit, e o convite chegava na caixa
-     * dos participantes antes de existir uma unica pauta — corrigir a pauta
-     * depois significava reenviar convite a executivos.
-     *
-     * Agora a reuniao nasce em preparacao. O convite e um ATO PROPRIO e
-     * explicito (`POST /:id/calendar-sync`), liberado so depois que as pautas
-     * forem aprovadas. A linha de integracao continua sendo criada na mesma
-     * transacao da reuniao, em `pending`, com a `idempotency_key` que o envio
-     * vai reusar.
+     * A reuniao commita aqui; o convite Outlook/Teams e o passo seguinte,
+     * `POST /:id/calendar-sync`, que a tela do Calendario dispara logo depois
+     * (025: agendar = reservar a agenda, sem esperar pautas). Continuam dois
+     * atos com resultado proprio: falha do Graph nao pode parecer falha da
+     * reuniao. A linha de integracao nasce na mesma transacao, em `pending`,
+     * com a `idempotency_key` que o envio reusa.
      */
     res.status(201).json(await findMeeting(criada.id));
   } catch (error) {
@@ -316,6 +324,23 @@ meetingsRouter.delete("/:id/participants/:participantId", requirePgcpAssessoria,
   { sincroniza: true },
 ));
 
+/**
+ * PAUTAS (025) — agrupadores de temas: Reuniao -> Pauta -> Tema.
+ * Excluir pauta com temas responde 409. Ver `agendas.ts`.
+ */
+meetingsRouter.post("/:id/agendas", requirePgcpAssessoria, mutacao("criar pauta", (req, ator) =>
+  addAgenda(req.params.id as string, parseAgendaInput(req.body), ator),
+));
+
+meetingsRouter.patch("/:id/agendas/:agendaId", requirePgcpAssessoria, mutacao("renomear pauta", (req, ator) =>
+  updateAgenda(req.params.id as string, req.params.agendaId as string, parseAgendaInput(req.body), ator),
+));
+
+meetingsRouter.delete("/:id/agendas/:agendaId", requirePgcpAssessoria, mutacao("excluir pauta", (req, ator) =>
+  removeAgenda(req.params.id as string, req.params.agendaId as string, ator),
+));
+
+/** TEMAS da reuniao (`agenda-items`, nome tecnico anterior a 025). */
 meetingsRouter.post("/:id/agenda-items", requirePgcpAssessoria, mutacao("adicionar pauta", (req, ator) =>
   addAgendaItem(req.params.id as string, parseAgendaItemInput(req.body), ator),
 ));
@@ -408,7 +433,7 @@ meetingsRouter.post("/:id/agenda-items/:agendaItemId/resume", requirePgcpAssesso
 ));
 
 /**
- * Sincroniza a reuniao com o calendario externo.
+ * Sincroniza a reuniao com o calendario externo (cria ou atualiza o evento).
  *
  * EXPLICITA, e nao automatica dentro do POST /meetings: PostgreSQL e Graph nao
  * compartilham transacao, e esconder a chamada distribuida dentro da criacao
@@ -429,26 +454,18 @@ meetingsRouter.post("/:id/calendar-sync", requirePgcpAssessoria, async (req, res
 
   try {
     /*
-     * PRE-CONDICAO NO BACKEND, nao so na tela.
+     * SEM PRE-CONDICAO DE PAUTA APROVADA (025).
      *
-     * Esconder o botao enquanto a pauta nao foi aprovada e cortesia; a barreira
-     * e esta. Enviar convite e IRREVERSIVEL para terceiros — o e-mail entra na
-     * caixa de executivos e cancelar depois custa mais do que nunca ter
-     * enviado. Por isso a checagem vem antes de qualquer chamada ao Graph.
+     * Regra de produto: agendar RESERVA a agenda de executivos de baixa
+     * disponibilidade — pela Agenda Anual antes mesmo da aprovacao do
+     * planejamento, e pelo Calendario antes de existir pauta. O gate
+     * `agenda_not_approved` (016) foi retirado daqui; a aprovacao das pautas
+     * continua exigida para INICIAR a reuniao (`meeting-start.ts`).
+     *
+     * O que continua barrando: papel (`PGCP.Assessoria`), pre-condicoes do
+     * convite (organizador Microsoft, participantes com endereco — 422) e a
+     * idempotencia de `syncMeetingCalendar` (no maximo um evento por reuniao).
      */
-    const validacao = await lerStatusDeValidacao(req.params.id as string);
-    if (validacao !== "approved") {
-      res.status(409).json({
-        error:
-          validacao === "sent"
-            ? "As pautas foram enviadas para validação, mas ainda não foram marcadas como aprovadas. O convite só pode ser enviado após a aprovação."
-            : "As pautas ainda não foram validadas. Envie-as para validação e registre a aprovação antes de enviar o convite.",
-        code: "agenda_not_approved",
-        agendaValidationStatus: validacao,
-      });
-      return;
-    }
-
     res.json(await syncMeetingCalendar(req.params.id as string, { id: usuario.id, name: usuario.name }));
   } catch (error) {
     if (error instanceof CalendarPreconditionError) {

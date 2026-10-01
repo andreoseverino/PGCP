@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { GovernanceBody, GovernanceBodyChairInput } from "../types";
 import DirectoryUserPicker from "./DirectoryUserPicker";
+import ParticipantsPanel from "./ParticipantsPanel";
 import type { DirectoryUser } from "../lib/directory";
 
 interface AdministrationViewProps {
@@ -66,7 +67,7 @@ export default function AdministrationView({
    * Aba inicial depende de quem entrou: a Assessoria não tem a aba de usuários,
    * e abrir numa aba inexistente deixaria a tela vazia.
    */
-  const [activeTab, setActiveTab] = useState<"organs" | "pautaTypes" | "pautaNatures">("organs");
+  const [activeTab, setActiveTab] = useState<"organs" | "pautaTypes" | "pautaNatures" | "participants">("organs");
 
   // Simple list string items state
   const [newStringItem, setNewStringItem] = useState("");
@@ -296,9 +297,24 @@ export default function AdministrationView({
         >
           {language === "en" ? "Debate Natures" : "Naturezas de Pauta"}
         </button>
+
+        {/* Participantes: Microsoft (leitura) + externos do PGCP (cadastro). */}
+        <button
+          onClick={() => { setActiveTab("participants"); setSearchQuery(""); resetGovernanceBodyForm(); }}
+          className={`px-4 py-2.5 rounded-t-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+            activeTab === "participants"
+              ? "bg-[#00658d]/5 text-[#00658d] border-b-2 border-b-[#00658d]"
+              : "text-slate-450 hover:bg-slate-50 border-b-2 border-b-transparent"
+          }`}
+        >
+          {language === "en" ? "Participants" : "Participantes"}
+        </button>
       </div>
 
-      {/* TWO-COLUMN GRID */}
+      {activeTab === "participants" ? (
+        <ParticipantsPanel language={language} governanceBodies={governanceBodies.filter((b) => b.isActive)} />
+      ) : (
+      /* TWO-COLUMN GRID */
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         
         {/* LEFT COLUMN: ACTIVE REGISTER FORM */}
@@ -542,6 +558,7 @@ export default function AdministrationView({
         </section>
 
       </div>
+      )}
     </div>
   );
 }

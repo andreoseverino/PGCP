@@ -1,7 +1,7 @@
 import { parseDurationMinutes } from "./agenda-time";
 import type { AgendaValidation } from "./agenda-validation";
 import { getInitials } from "./user";
-import type { AgendaItem, Meeting, Participant } from "../types";
+import type { AgendaItem, Meeting, MeetingAgenda, Participant, PhysicalLocation } from "../types";
 
 /**
  * Tradução entre o contrato da API de reuniões e o modelo que as telas usam.
@@ -53,6 +53,11 @@ export interface ApiMeetingSummary {
   timezone: string;
   meetingLink: string | null;
   onlineMeetingProvider: "teamsForBusiness" | null;
+  modality: "online" | "in_person";
+  physicalLocation: PhysicalLocation | null;
+  origin: "manual" | "annual_agenda";
+  annualAgendaId: string | null;
+  calendarSyncStatus: "pending" | "synced" | "failed" | "stale" | null;
   status: ApiMeetingStatus;
   /** Ciclo da PAUTA. Eixo separado de `status` e do estado do convite. */
   agendaValidation: AgendaValidation;
@@ -92,6 +97,8 @@ export interface ApiMeetingParticipant {
 
 export interface ApiMeetingAgendaItem {
   id: string;
+  /** Pauta (agrupador) do tema. `null` = sem pauta. */
+  agendaId: string | null;
   title: string;
   position: number;
   scheduledStartTime: string | null;
@@ -113,6 +120,7 @@ export interface ApiMeetingAgendaItem {
 
 export interface ApiMeetingDetail extends ApiMeetingSummary {
   participants: ApiMeetingParticipant[];
+  agendas: MeetingAgenda[];
   agendaItems: ApiMeetingAgendaItem[];
   calendar: ApiCalendarIntegration | null;
 }
@@ -298,7 +306,8 @@ export function agendaItemFromApi(item: ApiMeetingAgendaItem): AgendaItem {
     pautaNature: item.nature?.name,
     description: item.description ?? undefined,
     generatesActionItem: item.generatesActionItem,
-    participants: item.participants ?? []
+    participants: item.participants ?? [],
+    agendaId: item.agendaId ?? undefined
   };
 }
 
@@ -339,6 +348,12 @@ export function meetingFromApi(api: ApiMeetingSummary | ApiMeetingDetail): Meeti
     recurrence: api.recurrence ?? undefined,
     missingRequirementText: api.pendingRequirements ?? undefined,
     agenda: detalhe ? detalhe.agendaItems.map(agendaItemFromApi) : undefined,
+    agendas: detalhe ? detalhe.agendas ?? [] : undefined,
+    modality: api.modality ?? "online",
+    physicalLocation: api.physicalLocation ?? null,
+    origin: api.origin ?? "manual",
+    annualAgendaId: api.annualAgendaId ?? null,
+    calendarSyncStatus: api.calendarSyncStatus ?? null,
     participants: detalhe ? detalhe.participants.map(participantFromApi) : undefined,
     // Passa adiante como veio: o estado da sincronização é do servidor, e
     // convertê-lo aqui abriria espaço para a tela "melhorar" um `failed`.
@@ -368,6 +383,8 @@ export interface CreateParticipantPayload {
 
 export interface CreateAgendaItemPayload {
   title: string;
+  /** Pauta (agrupador) da MESMA reunião. Ausente = tema sem pauta. */
+  agendaId?: string;
   /** Vínculo com a Biblioteca. Identidade, nunca título. */
   agendaTopicId?: string;
   durationMinutes?: number;
@@ -413,6 +430,10 @@ export interface CreateMeetingPayload {
   meetingLink?: string;
   recurrence?: string;
   pendingRequirements?: string;
+  /** Modalidade (025). Ausente = online. */
+  modality?: "online" | "in_person";
+  /** Chave do catálogo de locais. Só no presencial. */
+  physicalLocationKey?: string;
   /*
    * SEM `onlineMeetingProvider`. Toda reunião do PGCP é um evento do Outlook
    * com reunião do Teams, e quem afirma isso é o servidor — não o navegador.
@@ -478,8 +499,14 @@ export interface BuildPayloadInput {
  *   notes / minutes        outras ondas
  *   members / authorId     campos legados já removidos do modelo
  */
-export function buildCreatePayload(input: BuildPayloadInput): CreateMeetingPayload {
-  const participants = input.participants
+/**
+ * Participantes do formulário -> contrato da API. Compartilhado pelo
+ * agendamento do Calendário e pela reserva da Agenda Anual.
+ */
+export function participantsPayload(
+  lista: BuildPayloadInput["participants"]
+): CreateParticipantPayload[] {
+  return lista
     .filter((p) => p.name.trim().length > 0)
     .map((p) => {
       const email = opcional(p.email);
@@ -496,6 +523,10 @@ export function buildCreatePayload(input: BuildPayloadInput): CreateMeetingPaylo
         isConfirmed: p.confirmed
       };
     });
+}
+
+export function buildCreatePayload(input: BuildPayloadInput): CreateMeetingPayload {
+  const participants = participantsPayload(input.participants);
 
   const agendaItems = input.agendaItems
     .filter((item) => item.title.trim().length > 0)

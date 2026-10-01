@@ -661,3 +661,29 @@ export async function searchDirectoryUsers(
     truncated: havia_mais || encontrados.length > limit,
   };
 }
+
+/** Literal de string OData: aspa simples duplicada, sem outra transformacao. */
+export function odataString(valor: string): string {
+  return `'${valor.replace(/'/g, "''")}'`;
+}
+
+type DirectoryGetter = (config: GraphConfig, url: string) => Promise<GraphSearchResponse>;
+
+/**
+ * Pessoas do diretorio com ESTE e-mail (`mail` ou `userPrincipalName`).
+ *
+ * Uma chamada, feita so ao GRAVAR um participante externo — nunca ao renderizar
+ * lista. Usa a mesma permissao do diretorio (`User.Read.All`, Application).
+ * `getter` existe para o teste nao tocar o Graph real.
+ */
+export async function findDirectoryUsersByEmail(
+  config: GraphConfig,
+  email: string,
+  getter: DirectoryGetter = (c, url) => graphGet<GraphSearchResponse>(c, url),
+): Promise<DirectoryUser[]> {
+  const literal = odataString(email.trim());
+  const filtro = `mail eq ${literal} or userPrincipalName eq ${literal}`;
+  const url = `/users?$filter=${encodeURIComponent(filtro)}&$select=${DIRECTORY_SELECT}&$top=5`;
+  const pagina = await getter(config, url);
+  return pagina.value ?? [];
+}

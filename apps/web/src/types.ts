@@ -89,6 +89,19 @@ export interface Participant {
 import type { CalendarIntegration } from "./lib/calendar-sync";
 import type { AgendaValidation } from "./lib/agenda-validation";
 
+/**
+ * PAUTA da reunião (025) — agrupa temas. Reunião -> Pauta -> Tema.
+ */
+export interface MeetingAgenda {
+  id: string;
+  title: string;
+  position: number;
+}
+
+/**
+ * TEMA da reunião (`meeting_agenda_items`). O nome do tipo é anterior a 025,
+ * quando "pauta" designava o assunto específico.
+ */
 export interface AgendaItem {
   /**
    * Identidade estável da pauta dentro da reunião (UUID).
@@ -153,6 +166,18 @@ export interface AgendaItem {
    * `participantId` é a participação na reunião (para desvincular); `name` exibe.
    */
   participants?: { participantId: string; name: string }[];
+  /** PAUTA (agrupador) a que este tema pertence. Ausente = tema sem pauta. */
+  agendaId?: string;
+}
+
+/** Local físico do catálogo. Endereço `null` enquanto não configurado. */
+export interface PhysicalLocation {
+  id: string;
+  name: string;
+  address: string | null;
+  complement: string | null;
+  city: string | null;
+  state: string | null;
 }
 
 /**
@@ -253,8 +278,19 @@ export interface Meeting {
    * e vem em `calendar.joinUrl` — nunca aqui.
    */
   onlineMeetingProvider?: "teamsForBusiness";
+  /** TEMAS da reunião. */
   agenda?: AgendaItem[];
+  /** PAUTAS (agrupadores). Só no detalhe. */
+  agendas?: MeetingAgenda[];
   participants?: Participant[];
+  /** Modalidade (025). Presencial continua com Teams, como contingência. */
+  modality?: "online" | "in_person";
+  physicalLocation?: PhysicalLocation | null;
+  /** Origem: Calendário (manual) ou reserva da Agenda Anual. */
+  origin?: "manual" | "annual_agenda";
+  annualAgendaId?: string | null;
+  /** Estado do convite também no resumo (Pipeline). */
+  calendarSyncStatus?: "pending" | "synced" | "failed" | "stale" | null;
   missingRequirementText?: string;
   recurrence?: string;
   /**

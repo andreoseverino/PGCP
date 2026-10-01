@@ -10,6 +10,8 @@ import {
   Menu,
   X,
   ListTodo,
+  CalendarRange,
+  Workflow,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -59,17 +61,38 @@ export default function Sidebar({
           icon: LayoutDashboard,
           badge: null,
         },
+        /*
+         * Fluxo principal (025): Calendário agenda, Agenda Anual planeja e
+         * reserva, Pipeline prepara. "Reuniões" virou o modo Lista do
+         * Pipeline — duas entradas para as mesmas reuniões seriam duplicidade.
+         */
         {
-          id: "meetings",
-          labelEn: "Meetings",
-          labelPt: "Reuniões",
+          id: "calendar",
+          labelEn: "Calendar",
+          labelPt: "Calendário",
           icon: CalendarDays,
           badge: null,
         },
         {
+          id: "annual-agenda",
+          labelEn: "Annual plan",
+          labelPt: "Agenda Anual",
+          icon: CalendarRange,
+          badge: null,
+        },
+        {
+          id: "pipeline",
+          labelEn: "Pipeline",
+          labelPt: "Pipeline",
+          icon: Workflow,
+          badge: null,
+        },
+        {
+          // Biblioteca de TEMAS reutilizáveis (`agenda_topics`). Reunião ->
+          // Pauta -> Tema: o que a biblioteca guarda são temas.
           id: "unlinked-agendas",
-          labelEn: "Agendas",
-          labelPt: "Pautas",
+          labelEn: "Topic library",
+          labelPt: "Biblioteca de Temas",
           icon: ListTodo,
           badge: null,
         },

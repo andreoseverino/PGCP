@@ -12,6 +12,8 @@ import { governanceBodiesRouter } from "../governance-bodies/routes.js";
 import { integrationsRouter } from "../integrations/routes.js";
 import { meRouter } from "../me/routes.js";
 import { meetingsRouter } from "../meetings/routes.js";
+import { annualAgendasRouter } from "../annual-agendas/routes.js";
+import { externalParticipantsRouter } from "../external-participants/routes.js";
 import { usersRouter } from "../users/routes.js";
 
 /**
@@ -91,6 +93,8 @@ const GUARDS = [
 
 const ROUTERS: Array<[string, unknown]> = [
   ["meetings", meetingsRouter],
+  ["annual-agendas", annualAgendasRouter],
+  ["external-participants", externalParticipantsRouter],
   ["agenda-topics", agendaTopicsRouter],
   ["action-items", actionItemsRouter],
   ["audit-logs", auditLogsRouter],
@@ -158,9 +162,13 @@ test("meetings: as rotas de maior risco estao individualmente protegidas", () =>
     ["POST", "/"],
     ["PATCH", "/:id"],
     ["POST", "/:id/participants"],
-    // Rota sem consumidor na tela — a autorizacao dela e testada aqui de todo
-    // jeito, porque a API a expoe independentemente do frontend.
+    // "Remover da reuniao" (aba Participantes): unico caminho para a pessoa
+    // deixar a reuniao inteira.
     ["DELETE", "/:id/participants/:participantId"],
+    // Pautas (agrupadores de temas, 025).
+    ["POST", "/:id/agendas"],
+    ["PATCH", "/:id/agendas/:agendaId"],
+    ["DELETE", "/:id/agendas/:agendaId"],
     ["POST", "/:id/agenda-items"],
     ["PATCH", "/:id/agenda-items/:agendaItemId"],
     ["DELETE", "/:id/agenda-items/:agendaItemId"],
@@ -171,12 +179,12 @@ test("meetings: as rotas de maior risco estao individualmente protegidas", () =>
     ["PUT", "/:id/agenda-items/order"],
     ["POST", "/:id/agenda-items/:agendaItemId/postpone"],
     ["POST", "/:id/agenda-items/:agendaItemId/resume"],
-    // Alcanca o Exchange e reescreve o convite de terceiros.
+    // Alcanca o Exchange e reescreve o convite de terceiros. Desde a 025 nao
+    // exige pauta aprovada, entao o papel e a barreira que resta — e fica.
     ["POST", "/:id/calendar-sync"],
     // Envia e-mail em nome de quem esta na sessao, com anexo.
     ["POST", "/:id/agenda-validation"],
-    // Libera o envio do convite: quem pode marcar aprovado decide quando o
-    // convite pode sair.
+    // Libera o INICIO da reuniao (025: o convite ja nao depende dela).
     ["POST", "/:id/agenda-approval"],
     ["PUT", "/:id/minutes"],
     ["POST", "/:id/minutes/clear-by-secretariat"],
@@ -201,6 +209,47 @@ test("meetings: Ata e legivel por usuario ativo e escrita pela Assessoria", () =
     assert.ok(leitura.handlers.includes(requireActivePgcpUser));
     assert.ok(!leitura.handlers.includes(requirePgcpAssessoria));
   }
+});
+
+// --- /annual-agendas -----------------------------------------------------------
+
+test("annual-agendas: TODA mutacao exige PGCP.Assessoria (reserva cria eventos de terceiros)", () => {
+  const rotas = rotasDe(annualAgendasRouter);
+  const semGuarda = rotas
+    .filter((r) => MUTANTES.includes(r.metodo))
+    .filter((r) => !r.handlers.includes(requirePgcpAssessoria))
+    .map(rotulo);
+  assert.deepEqual(semGuarda, [], `mutacao da Agenda Anual sem PGCP.Assessoria: ${semGuarda.join(", ")}`);
+
+  for (const [metodo, caminho] of [
+    ["POST", "/"],
+    ["POST", "/:id/items"],
+    ["POST", "/:id/reserve"],
+    ["POST", "/:id/approval-request"],
+    ["POST", "/:id/approval"],
+    ["DELETE", "/:id"],
+  ] as const) {
+    const rota = rotas.find((r) => r.metodo === metodo && r.caminho === caminho);
+    assert.ok(rota, `rota ${metodo} ${caminho} deveria existir`);
+    assert.ok(rota.handlers.includes(requirePgcpAssessoria), `${metodo} ${caminho} deveria exigir PGCP.Assessoria`);
+  }
+});
+
+test("annual-agendas: leitura (inclusive PDF) exige usuario ativo, e nao papel", () => {
+  const leituras = rotasDe(annualAgendasRouter).filter((r) => r.metodo === "GET");
+  assert.ok(leituras.length >= 3);
+  for (const rota of leituras) {
+    assert.ok(rota.handlers.includes(requireActivePgcpUser), `${rotulo(rota)} deveria exigir usuario ativo`);
+    assert.ok(!rota.handlers.includes(requirePgcpAssessoria), `${rotulo(rota)} nao deveria exigir papel`);
+  }
+});
+
+test("meetings: catalogo de locais e leitura, registrado antes de /:id", () => {
+  const rotas = rotasDe(meetingsRouter).filter((r) => r.metodo === "GET");
+  const indiceLocais = rotas.findIndex((r) => r.caminho === "/locations");
+  const indiceId = rotas.findIndex((r) => r.caminho === "/:id");
+  assert.ok(indiceLocais >= 0, "GET /locations deveria existir");
+  assert.ok(indiceLocais < indiceId, "/locations precisa vir antes de /:id");
 });
 
 // --- /integrations -----------------------------------------------------------

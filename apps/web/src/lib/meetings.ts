@@ -1,4 +1,5 @@
 import { apiRequest } from "./api";
+import type { PhysicalLocation } from "../types";
 import type {
   ApiMeetingDetail,
   ApiMeetingSummary,
@@ -120,6 +121,9 @@ export interface UpdateMeetingPayload {
   pendingRequirements?: string | null;
   /** Só as transições que o produto executa hoje. */
   status?: "scheduled" | "in_progress" | "done";
+  /** Modalidade/local (025). Trocar atualiza o MESMO evento no Outlook. */
+  modality?: "online" | "in_person";
+  physicalLocationKey?: string | null;
 }
 
 const mutar = (path: string, method: string, body?: unknown) =>
@@ -137,11 +141,43 @@ export const updateMeeting = (id: string, payload: UpdateMeetingPayload) =>
 export const addParticipant = (meetingId: string, payload: CreateParticipantPayload) =>
   mutar(`/meetings/${meetingId}/participants`, "POST", payload);
 
+/**
+ * Remove a pessoa DA REUNIÃO (aba Participantes). O cascade da 020 apaga os
+ * vínculos dela com todos os temas. Não toca no cadastro de participante externo.
+ */
+export const removeParticipant = (meetingId: string, participantId: string) =>
+  mutar(`/meetings/${meetingId}/participants/${participantId}`, "DELETE");
+
+/**
+ * PAUTAS (025) — agrupadores de temas. Reunião -> Pauta -> Tema.
+ * Excluir pauta com temas responde 409 (mova ou exclua os temas antes).
+ */
+export const addAgenda = (meetingId: string, title: string) =>
+  mutar(`/meetings/${meetingId}/agendas`, "POST", { title });
+
+export const renameAgenda = (meetingId: string, agendaId: string, title: string) =>
+  mutar(`/meetings/${meetingId}/agendas/${agendaId}`, "PATCH", { title });
+
+export const removeAgenda = (meetingId: string, agendaId: string) =>
+  mutar(`/meetings/${meetingId}/agendas/${agendaId}`, "DELETE");
+
+/** Catálogo de locais físicos. Endereço só quando configurado no servidor. */
+export async function listMeetingLocations(signal?: AbortSignal): Promise<PhysicalLocation[]> {
+  const { locations } = await apiRequest<{ locations: PhysicalLocation[] }>("/meetings/locations", {
+    auth: true,
+    signal
+  });
+  return locations;
+}
+
+/** TEMAS da reunião (endpoint técnico `agenda-items`). */
 export const addAgendaItem = (meetingId: string, payload: CreateAgendaItemPayload) =>
   mutar(`/meetings/${meetingId}/agenda-items`, "POST", payload);
 
 /** PATCH parcial: envia só o que mudou. */
-export type AgendaItemPatchPayload = Partial<CreateAgendaItemPayload> & {
+export type AgendaItemPatchPayload = Omit<Partial<CreateAgendaItemPayload>, "agendaId"> & {
+  /** Move o tema de pauta; `null` = sem pauta. */
+  agendaId?: string | null;
   executionStatus?: "pending" | "completed" | "postponed";
 };
 
@@ -162,10 +198,9 @@ export const removeAgendaItem = (meetingId: string, itemId: string) =>
   mutar(`/meetings/${meetingId}/agenda-items/${itemId}`, "DELETE");
 
 /**
- * Participantes POR PAUTA (020, Opção A). Vincular usa o MESMO payload de
- * participante — se a pessoa não estiver na reunião, o backend a adiciona.
- * Remover da pauta REMOVE a pessoa da reunião inteira (cascade elimina os
- * vínculos com as demais pautas).
+ * Participantes POR TEMA. Vincular usa o MESMO payload de participante — se a
+ * pessoa não estiver na reunião, o backend a adiciona. Remover do tema desfaz
+ * SÓ o vínculo com aquele tema: a pessoa segue na reunião e nos demais temas.
  */
 export const addAgendaItemParticipant = (meetingId: string, itemId: string, payload: CreateParticipantPayload) =>
   mutar(`/meetings/${meetingId}/agenda-items/${itemId}/participants`, "POST", payload);

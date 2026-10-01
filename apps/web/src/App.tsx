@@ -70,7 +70,10 @@ import AuditLogsView from "./components/AuditLogsView";
 import SystemSettingsView from "./components/SystemSettingsView";
 import AdministrationView from "./components/AdministrationView";
 import QuickSearchView from "./components/QuickSearchView";
-import ScheduleMeetingModal from "./components/ScheduleMeetingModal";
+import NewMeetingModal from "./components/NewMeetingModal";
+import CalendarView from "./components/CalendarView";
+import PipelineView from "./components/PipelineView";
+import AnnualAgendaView from "./components/AnnualAgendaView";
 import UnlinkedAgendasView from "./components/UnlinkedAgendasView";
 import FupListView from "./components/FupListView";
 import LoginView from "./components/LoginView";
@@ -177,7 +180,11 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
-  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  /**
+   * Data sugerida para a Nova reunião. `null` = modal fechado. Só o Calendário
+   * abre este modal (025): é o único ponto de criação de reunião individual.
+   */
+  const [newMeetingDate, setNewMeetingDate] = useState<string | null>(null);
   /** Reunião com exclusão pendente de confirmação. `null` = modal fechado. */
   const [meetingParaExcluir, setMeetingParaExcluir] = useState<Meeting | null>(null);
 
@@ -541,11 +548,31 @@ export default function App() {
    * Não fabrica reunião local: recarrega a lista do banco. O `id` que chega é
    * o UUID gerado pelo PostgreSQL — nada de `meet-<random>`.
    */
-  const handleMeetingCreated = (meetId: string, title: string) => {
-    setIsScheduleModalOpen(false);
+  const handleMeetingCreated = (_meetId: string, title: string, inviteMessage: string) => {
+    setNewMeetingDate(null);
     void loadMeetings();
 
-    triggerToast(`Sucesso: Sessão corporativa "${title}" registrada e auditada.`);
+    triggerToast(`Reunião "${title}" agendada. ${inviteMessage}`);
+  };
+
+  /**
+   * Calendário -> reunião -> Pipeline -> detalhe. Mesmo detalhe/edição do
+   * Pipeline: o Calendário não tem tela de edição própria. "Voltar" retorna
+   * ao Pipeline.
+   */
+  const abrirNoPipeline = (meet: Meeting) => {
+    setActiveTab("pipeline");
+    void openMeeting(meet);
+  };
+
+  /** Abre pelo id (Agenda Anual -> reunião reservada no Pipeline). */
+  const openMeetingById = async (meetingId: string) => {
+    try {
+      setSelectedMeeting(meetingFromApi(await getMeeting(meetingId)));
+      setActiveTab("pipeline");
+    } catch (error) {
+      triggerToast(describeMeetingError(error, language));
+    }
   };
 
   // Handler: Complete An Overdue Task Action
@@ -917,27 +944,59 @@ export default function App() {
             myActionItems={myActionItems}
             podeGerenciarFup={podeGerenciarFup}
             governanceBodies={governanceBodies}
-            onScheduleClick={() => setIsScheduleModalOpen(true)}
-            canSchedule={usuarioPodeAgendar}
             onMeetingClick={(meet) => void openMeeting(meet)}
-            onViewAllMeetings={() => setActiveTab("meetings")}
+            onViewAllMeetings={() => setActiveTab("pipeline")}
             onViewAllActionItems={() => setActiveTab("fup")}
             onCompleteAction={handleCompleteActionTask}
             triggerToast={triggerToast}
           />
         );
-      case "meetings":
+      case "calendar":
         return (
-          <MeetingsView
+          <CalendarView
+            language={language}
+            meetings={meetings}
+            meetingsLoading={meetingsLoading}
+            canSchedule={usuarioPodeAgendar}
+            onNewMeeting={(date) => setNewMeetingDate(date)}
+            onMeetingClick={abrirNoPipeline}
+          />
+        );
+      case "annual-agenda":
+        return (
+          <AnnualAgendaView
+            language={language}
+            governanceBodies={governanceBodies.filter((b) => b.isActive)}
+            canManage={usuarioPodeAgendar}
+            onOpenMeeting={(id) => void openMeetingById(id)}
+            onMeetingsChanged={() => void loadMeetings()}
+            triggerToast={triggerToast}
+          />
+        );
+      // "meetings" era a aba de lista; continua alcançável como Pipeline.
+      case "meetings":
+      case "pipeline":
+        return (
+          <PipelineView
             language={language}
             meetings={meetings}
             meetingsLoading={meetingsLoading}
             meetingsError={meetingsError}
-            onReloadMeetings={() => void loadMeetings()}
+            governanceBodies={governanceBodies}
+            onReload={() => void loadMeetings()}
             onMeetingClick={(meet) => void openMeeting(meet)}
-            onScheduleClick={() => setIsScheduleModalOpen(true)}
-            canSchedule={usuarioPodeAgendar}
-            onDeleteMeeting={handleDeleteMeeting}
+            renderList={() => (
+              <MeetingsView
+                language={language}
+                meetings={meetings}
+                meetingsLoading={meetingsLoading}
+                meetingsError={meetingsError}
+                onReloadMeetings={() => void loadMeetings()}
+                onMeetingClick={(meet) => void openMeeting(meet)}
+                canSchedule={usuarioPodeAgendar}
+                onDeleteMeeting={handleDeleteMeeting}
+              />
+            )}
           />
         );
       case "search":
@@ -947,7 +1006,7 @@ export default function App() {
             meetings={meetings}
             onNavigateToMeeting={(meet) => {
               setSelectedMeeting(meet);
-              setActiveTab("meetings");
+              setActiveTab("pipeline");
             }}
             onNavigateToTab={(tab) => setActiveTab(tab)}
             query={globalSearchQuery}
@@ -1094,7 +1153,7 @@ export default function App() {
         // No detalhe de uma reunião, "Reuniões" segue destacado. Derivado em
         // vez de gravado no estado: assim o botão Voltar continua devolvendo
         // à tela de origem (Dashboard, Reuniões ou Busca).
-        activeTab={selectedMeeting ? "meetings" : activeTab}
+        activeTab={selectedMeeting ? "pipeline" : activeTab}
         setActiveTab={(tab) => {
           setSelectedMeeting(null);
           setActiveTab(tab);
@@ -1156,7 +1215,7 @@ export default function App() {
                           onMouseDown={(e) => e.preventDefault()}
                           onClick={() => {
                             setSelectedMeeting(m);
-                            setActiveTab("meetings");
+                            setActiveTab("pipeline");
                             setGlobalSearchQuery("");
                             setIsGlobalSearchFocused(false);
                           }}
@@ -1209,16 +1268,13 @@ export default function App() {
       </main>
 
       {/* Slide Modal popup scheduler for compiling new meetings dynamically */}
-      {isScheduleModalOpen && (
-        <ScheduleMeetingModal
+      {newMeetingDate !== null && (
+        <NewMeetingModal
           language={language}
-          standaloneAgendas={standaloneAgendas}
-          onClose={() => setIsScheduleModalOpen(false)}
+          initialDate={newMeetingDate}
+          onClose={() => setNewMeetingDate(null)}
           governanceBodies={governanceBodies.filter((b) => b.isActive)}
           onCreated={handleMeetingCreated}
-          onAddStandaloneAgenda={handleRegisterStandaloneAgenda}
-          pautaTypes={pautaTypes}
-          pautaNatures={pautaNatures}
         />
       )}
 

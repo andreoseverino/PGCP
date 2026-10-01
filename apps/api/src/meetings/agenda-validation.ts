@@ -133,6 +133,7 @@ async function carregarReuniao(meetingId: string) {
     type_name: string | null;
     nature_name: string | null;
     generates_action_item: boolean;
+    agenda_title: string | null;
   }>(
     // SNAPSHOT primeiro (019); fallback ao tema mestre por compatibilidade nos
     // campos nulos de itens antigos (Tipo/Natureza/Descrição). "Tema de FUP" usa
@@ -144,15 +145,18 @@ async function carregarReuniao(meetingId: string) {
             ai.duration_minutes, ai.is_circular_theme,
             COALESCE(itt.name, ttt.name)                     AS type_name,
             COALESCE(itn.name, ttn.name)                     AS nature_name,
-            ai.generates_action_item
+            ai.generates_action_item,
+            ma.title                                         AS agenda_title
        FROM meeting_agenda_items ai
+       LEFT JOIN meeting_agendas ma       ON ma.id  = ai.meeting_agenda_id
        LEFT JOIN agenda_topics t         ON t.id   = ai.agenda_topic_id
        LEFT JOIN agenda_topic_types    itt ON itt.id = ai.agenda_topic_type_id
        LEFT JOIN agenda_topic_types    ttt ON ttt.id = t.agenda_topic_type_id
        LEFT JOIN agenda_topic_natures  itn ON itn.id = ai.agenda_topic_nature_id
        LEFT JOIN agenda_topic_natures  ttn ON ttn.id = t.agenda_topic_nature_id
       WHERE ai.meeting_id = $1
-      ORDER BY ai.position`,
+      -- Agrupado por pauta (025); temas sem pauta ao final.
+      ORDER BY ma.position NULLS LAST, ai.position`,
     [meetingId],
   );
 
@@ -189,9 +193,12 @@ async function carregarReuniao(meetingId: string) {
   return {
     reuniao,
     pautas: pautas.map(
-      (p): PautaDoDocumento => ({
-        posicao: p.position,
+      (p, indice): PautaDoDocumento => ({
+        // Sequencia do documento (ja agrupado por pauta), nao `position` cru:
+        // com agrupamento, a ordem global poderia sair salteada.
+        posicao: indice + 1,
         titulo: p.title,
+        pauta: p.agenda_title,
         descricao: p.description,
         responsavel: p.responsible_label,
         apresentador: p.presenter_label,
@@ -544,14 +551,4 @@ export async function reabrirValidacaoSePreReuniao(
   });
 
   return true;
-}
-
-/** Estado da validacao, para a rota do convite conferir a pre-condicao. */
-export async function lerStatusDeValidacao(meetingId: string): Promise<AgendaValidationStatus> {
-  const { rows } = await pool.query<{ agenda_validation_status: AgendaValidationStatus }>(
-    `SELECT agenda_validation_status FROM meetings WHERE id = $1`,
-    [meetingId],
-  );
-  if (!rows[0]) throw new HttpError(404, "Reunião não encontrada.");
-  return rows[0].agenda_validation_status;
 }

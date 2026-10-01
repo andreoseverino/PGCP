@@ -29,7 +29,9 @@ import {
   Users,
   Video,
   X,
-  CalendarDays
+  CalendarDays,
+  MapPin,
+  FolderPlus
 } from "lucide-react";
 import { Meeting, ActionItem, StandaloneAgenda, Participant, AgendaItem, SessionUser, GovernanceBody } from "../types";
 import { newId } from "../lib/id";
@@ -81,8 +83,27 @@ import {
   TEAMS_MESSAGE_MAX_LENGTH,
   updateAgendaItem as apiUpdateAgendaItem,
   updateMeeting as apiUpdateMeeting,
+  removeParticipant as apiRemoveParticipant,
+  addAgenda as apiAddAgenda,
+  renameAgenda as apiRenameAgenda,
+  removeAgenda as apiRemoveAgenda,
   type AgendaItemPatchPayload
 } from "../lib/meetings";
+import { locationLabel, ModalityFields } from "./MeetingInviteFields";
+import ParticipantPicker from "./ParticipantPicker";
+import ConfirmRemovalDialog from "./ConfirmRemovalDialog";
+import {
+  confirmacaoRemoverDaReuniao,
+  confirmacaoRemoverDoTema,
+  temasDoParticipante,
+  type ConfirmacaoRemocao
+} from "../lib/participant-removal";
+import {
+  nomeDoSelecionado,
+  selecionadoParaPayload,
+  type ParticipanteSelecionado
+} from "../lib/participant-search";
+import { temasPorPauta } from "../lib/pipeline";
 import { getInitials } from "../lib/user";
 import { hrefSeguro } from "../lib/safe-url";
 import DirectoryUserPicker from "./DirectoryUserPicker";
@@ -203,6 +224,8 @@ export default function MeetingDetailView({
   const [editedEndTime, setEditedEndTime] = useState(meeting.endTime);
   const [editedGovernanceBodyId, setEditedGovernanceBodyId] = useState(meeting.governanceBodyId || "");
   const [editedRecurrence, setEditedRecurrence] = useState(meeting.recurrence || "Single");
+  const [editedModality, setEditedModality] = useState<"online" | "in_person">(meeting.modality ?? "online");
+  const [editedLocationKey, setEditedLocationKey] = useState(meeting.physicalLocation?.id ?? "");
 
   // ---------------------------------------------------------------------------
   // STATE MANAGEMENT - ITEM 1 (GERACAO E CICLO DE VIDA DA ATA)
@@ -367,14 +390,11 @@ export default function MeetingDetailView({
   const estadoDoCalendario = calendarVisualState(meeting.calendar);
 
   /*
-   * VALIDAÇÃO DE PAUTAS — o passo entre preparar a reunião e convidar.
+   * VALIDAÇÃO DE PAUTAS — preparação da reunião já agendada (025).
    *
-   * Criar reunião não envia mais nada à Microsoft. A sequência é:
-   *
-   *   em preparação -> enviada para validação -> pautas aprovadas -> convite
-   *
-   * A tela usa o estado para habilitar cada ação; a barreira está no backend,
-   * que recusa o convite enquanto a pauta não estiver aprovada.
+   * O convite Outlook/Teams sai no AGENDAMENTO (Calendário ou reserva da
+   * Agenda Anual), sem esperar pauta. A validação continua exigida para
+   * INICIAR a reunião — barreira no backend (`exigirProntaParaIniciar`).
    */
   const validacao = meeting.agendaValidation;
   const statusValidacao = validacao?.status ?? "draft";
@@ -584,6 +604,9 @@ export default function MeetingDetailView({
       () =>
         apiAddAgendaItem(meeting.id, {
           title: item.title,
+          // Pauta (agrupador, 025) de destino. Validada no servidor: precisa
+          // ser DESTA reunião.
+          agendaId: item.agendaId ?? (pautaDestinoId || undefined),
           // Preserva a identidade da pauta da Biblioteca.
           agendaTopicId: item.agendaTopicId,
           durationMinutes: item.duration?.trim() ? parseDurationMinutes(item.duration) : undefined,
@@ -600,8 +623,67 @@ export default function MeetingDetailView({
           description: item.description?.trim() ? item.description.trim() : undefined,
           generatesActionItem: item.generatesActionItem
         }),
-      language === "en" ? "Agenda item added." : "Pauta incluída na reunião."
+      language === "en" ? "Topic added." : "Tema incluído na reunião."
     );
+
+  /*
+   * PAUTAS (025) — agrupadores de temas. Reunião -> Pauta -> Tema.
+   * Criar/renomear/excluir pauta é estrutural: o servidor reabre a validação
+   * se ela já tinha saído, e o aviso abaixo diz isso.
+   */
+  const [novaPautaTitulo, setNovaPautaTitulo] = useState("");
+  /** Pauta que recebe o próximo tema criado ou vinculado da Biblioteca. */
+  const [pautaDestinoId, setPautaDestinoId] = useState("");
+  const [novoTemaTitulo, setNovoTemaTitulo] = useState("");
+  const [novoTemaDuracao, setNovoTemaDuracao] = useState("00:15");
+
+  const criarPauta = async () => {
+    const titulo = novaPautaTitulo.trim();
+    if (!titulo) return;
+    const ok = await persistir(
+      () => apiAddAgenda(meeting.id, titulo),
+      language === "en" ? "Agenda created." : `Pauta "${titulo}" criada.`
+    );
+    if (ok) setNovaPautaTitulo("");
+  };
+
+  const renomearPauta = (agendaId: string, atual: string) => {
+    const titulo = window.prompt(language === "en" ? "Agenda title" : "Título da pauta", atual)?.trim();
+    if (!titulo || titulo === atual) return;
+    void persistir(
+      () => apiRenameAgenda(meeting.id, agendaId, titulo),
+      language === "en" ? "Agenda renamed." : "Pauta renomeada."
+    );
+  };
+
+  const excluirPauta = (agendaId: string) => {
+    if (!window.confirm(language === "en" ? "Delete this empty agenda?" : "Excluir esta pauta (sem temas)?")) return;
+    if (pautaDestinoId === agendaId) setPautaDestinoId("");
+    void persistir(
+      () => apiRemoveAgenda(meeting.id, agendaId),
+      language === "en" ? "Agenda deleted." : "Pauta excluída."
+    );
+  };
+
+  const moverTemaDePauta = (tema: AgendaItem, agendaId: string) =>
+    void persistir(
+      () => apiUpdateAgendaItem(meeting.id, tema.id, { agendaId: agendaId || null }),
+      language === "en" ? "Topic moved." : "Tema movido de pauta."
+    );
+
+  const criarTema = async () => {
+    const titulo = novoTemaTitulo.trim();
+    if (!titulo) return;
+    const ok = await persistirNovaPauta({
+      id: newId(),
+      title: titulo,
+      time: "",
+      duration: novoTemaDuracao,
+      author: "",
+      agendaId: pautaDestinoId || undefined
+    });
+    if (ok) setNovoTemaTitulo("");
+  };
 
   const handleTabAddParticipant = async () => {
     const nome = newTabPartName.trim();
@@ -984,7 +1066,7 @@ export default function MeetingDetailView({
   const [extraFichaAberta, setExtraFichaAberta] = useState(false);
   // Participantes da extraordinária: coletados aqui e VINCULADOS após criar o
   // item (o item precisa existir para receber o vínculo).
-  const [extraParticipants, setExtraParticipants] = useState<DirectoryUser[]>([]);
+  const [extraParticipants, setExtraParticipants] = useState<ParticipanteSelecionado[]>([]);
 
   /** Recalcula os horários em cascata a partir do início da reunião. */
   const recalculateAgendaTimes = (agendaArray: AgendaItem[]): AgendaItem[] => {
@@ -1170,25 +1252,62 @@ export default function MeetingDetailView({
    * reabertura da validação quando for o caso. Vincular alguém novo o adiciona à
    * reunião no backend (mesmo caminho da aba Participantes).
    */
-  const vincularParticipantePauta = (itemId: string, user: DirectoryUser) =>
+  // Entra ID ou externo do PGCP (só nome + e-mail, sem identidade Microsoft).
+  const vincularParticipantePauta = (itemId: string, sel: ParticipanteSelecionado) =>
     persistir(
-      () =>
-        apiAddAgendaItemParticipant(meeting.id, itemId, {
-          entraObjectId: user.id,
-          displayName: user.displayName ?? directoryEmail(user) ?? "",
-          email: directoryEmail(user),
-          isConfirmed: false,
-        }),
+      () => apiAddAgendaItemParticipant(meeting.id, itemId, selecionadoParaPayload(sel)),
       language === "en" ? "Participant linked to the topic." : "Participante vinculado à pauta.",
     );
 
-  const desvincularParticipantePauta = (itemId: string, participantId: string) =>
-    persistir(
-      () => apiRemoveAgendaItemParticipant(meeting.id, itemId, participantId),
-      language === "en"
-        ? "Participant removed from the topic and the meeting."
-        : "Participante removido da pauta e da reunião.",
-    );
+  /*
+   * REMOÇÃO DE PARTICIPANTE — sempre com confirmação explícita.
+   *
+   *   do tema     só o vínculo com aquele tema (segue na reunião e nos demais)
+   *   da reunião  aba Participantes; o cascade tira de todos os temas
+   *
+   * A chamada à API só acontece em `confirmarRemocao`. Cancelar apenas limpa o
+   * estado. O backend aplica a regra sobre o estado atual do banco.
+   */
+  type RemocaoPendente =
+    | { tipo: "tema"; itemId: string; participantId: string; confirmacao: ConfirmacaoRemocao }
+    | { tipo: "reuniao"; participantId: string; confirmacao: ConfirmacaoRemocao };
+  const [remocaoPendente, setRemocaoPendente] = useState<RemocaoPendente | null>(null);
+
+  const pedirRemocaoDoTema = (itemId: string, tema: string, participantId: string, nome: string) =>
+    setRemocaoPendente({
+      tipo: "tema",
+      itemId,
+      participantId,
+      confirmacao: confirmacaoRemoverDoTema(nome, tema, language === "en" ? "en" : "pt"),
+    });
+
+  const pedirRemocaoDaReuniao = (participantId: string, nome: string) =>
+    setRemocaoPendente({
+      tipo: "reuniao",
+      participantId,
+      // Temas a partir do detalhe já carregado (mesma relação do servidor).
+      confirmacao: confirmacaoRemoverDaReuniao(
+        nome,
+        temasDoParticipante(meeting.agenda || [], participantId),
+        language === "en" ? "en" : "pt",
+      ),
+    });
+
+  const confirmarRemocao = async () => {
+    const pendente = remocaoPendente;
+    if (!pendente) return;
+    const ok =
+      pendente.tipo === "tema"
+        ? await persistir(
+            () => apiRemoveAgendaItemParticipant(meeting.id, pendente.itemId, pendente.participantId),
+            language === "en" ? "Participant removed from the topic." : "Participante removido do tema.",
+          )
+        : await persistir(
+            () => apiRemoveParticipant(meeting.id, pendente.participantId),
+            language === "en" ? "Participant removed from the meeting." : "Participante removido da reunião.",
+          );
+    if (ok) setRemocaoPendente(null);
+  };
 
   /**
    * Postergar retira a pauta do fluxo desta reunião sem tê-la concluído.
@@ -1265,7 +1384,7 @@ export default function MeetingDetailView({
     /** Tema circular desta pauta. Só um fato; não altera o fluxo [EXTRA]. */
     circular = false,
     /** Ficha complementar (019/020). Sem tema mestre: gravada direto na pauta. */
-    ficha?: { typeId?: string; natureId?: string; fup?: boolean; description?: string; participants?: DirectoryUser[] }
+    ficha?: { typeId?: string; natureId?: string; fup?: boolean; description?: string; participants?: ParticipanteSelecionado[] }
   ) => {
     if (!titleText.trim()) return;
 
@@ -1291,14 +1410,9 @@ export default function MeetingDetailView({
         //    este título). Cada um entra também na reunião (Opção A).
         const novo = [...(atualizada.agenda || [])].reverse().find((a) => a.title === tituloExtra);
         if (novo && (ficha?.participants?.length ?? 0) > 0) {
-          for (const u of ficha!.participants!) {
+          for (const sel of ficha!.participants!) {
             atualizada = meetingFromApi(
-              await apiAddAgendaItemParticipant(meeting.id, novo.id, {
-                entraObjectId: u.id,
-                displayName: u.displayName ?? directoryEmail(u) ?? "",
-                email: directoryEmail(u),
-                isConfirmed: false,
-              }),
+              await apiAddAgendaItemParticipant(meeting.id, novo.id, selecionadoParaPayload(sel)),
             );
           }
         }
@@ -1578,6 +1692,18 @@ export default function MeetingDetailView({
    *   convite sincronizado       -> nada pendente (null)
    */
   const proximaAcao: { label: string; onClick: () => void; busy: boolean } | null = (() => {
+    // Convite primeiro (025): a reunião já deveria estar reservada desde o
+    // agendamento; pendente/falha é o que mais urge corrigir.
+    if (permiteTentarNovamente(meeting.calendar)) {
+      return {
+        label:
+          estadoDoCalendario === "pending"
+            ? language === "pt" ? "Enviar convite da reunião" : "Send meeting invitation"
+            : language === "pt" ? "Reenviar convite da reunião" : "Resend meeting invitation",
+        onClick: handleSyncCalendar,
+        busy: syncing,
+      };
+    }
     if (!pautasAprovadas) {
       if (statusValidacao === "sent") {
         return {
@@ -1590,16 +1716,6 @@ export default function MeetingDetailView({
         label: language === "pt" ? "Enviar pautas para validação" : "Send agenda for validation",
         onClick: abrirValidacao,
         busy: false,
-      };
-    }
-    if (permiteTentarNovamente(meeting.calendar)) {
-      return {
-        label:
-          estadoDoCalendario === "pending"
-            ? language === "pt" ? "Enviar convite da reunião" : "Send meeting invitation"
-            : language === "pt" ? "Reenviar convite da reunião" : "Resend meeting invitation",
-        onClick: handleSyncCalendar,
-        busy: syncing,
       };
     }
     return null;
@@ -1684,6 +1800,8 @@ export default function MeetingDetailView({
                     setEditedEndTime(meeting.endTime || "");
                     setEditedGovernanceBodyId(meeting.governanceBodyId || "");
                     setEditedRecurrence(meeting.recurrence || "Single");
+                    setEditedModality(meeting.modality ?? "online");
+                    setEditedLocationKey(meeting.physicalLocation?.id ?? "");
                     setIsEditingMeeting(true);
                   }}
                   className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer border border-[#00658d]/10"
@@ -2006,6 +2124,28 @@ export default function MeetingDetailView({
                         </p>
                       </div>
                     </div>
+
+                    {/* Modalidade (025). Presencial continua com Teams. */}
+                    <div className="flex items-start gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-[#00658d] shrink-0 border border-slate-200/40">
+                        {meeting.modality === "in_person" ? <MapPin className="w-5 h-5" /> : <Video className="w-5 h-5" />}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">
+                          {language === "pt" ? "Modalidade" : "Format"}
+                        </p>
+                        <p className="text-sm font-bold text-slate-800 mt-0.5">
+                          {meeting.modality === "in_person"
+                            ? `${language === "pt" ? "Presencial" : "In person"} — ${meeting.physicalLocation ? locationLabel(meeting.physicalLocation) : t.notInformed}`
+                            : "Online"}
+                        </p>
+                        {meeting.modality === "in_person" && (
+                          <p className="text-[10px] text-slate-500 font-semibold">
+                            {language === "pt" ? "Microsoft Teams como contingência" : "Microsoft Teams as fallback"}
+                          </p>
+                        )}
+                      </div>
+                    </div>
                   </div>
 
                   <div className="pt-4 border-t border-slate-100">
@@ -2068,8 +2208,8 @@ export default function MeetingDetailView({
                   {!pautasAprovadas && (
                     <p className="text-[10px] text-slate-500 font-medium leading-relaxed">
                       {language === "pt"
-                        ? "O convite do Outlook e do Teams só pode ser enviado depois que as pautas forem aprovadas."
-                        : "The Outlook and Teams invitation can only be sent after the agenda is approved."}
+                        ? "A aprovação das pautas é exigida para iniciar a reunião. O convite já sai no agendamento."
+                        : "Agenda approval is required to start the meeting. The invitation is sent at scheduling."}
                     </p>
                   )}
                   {/*
@@ -2414,7 +2554,7 @@ export default function MeetingDetailView({
                       ? (language === "en" ? "Pautas · Live Meeting" : "Pautas · Reunião ao Vivo")
                       : modoResultado
                       ? (language === "en" ? "Pautas · Result" : "Pautas · Resultado")
-                      : (language === "en" ? "Pautas · Planning" : "Pautas · Planejamento")}
+                      : (language === "en" ? "Agendas & Topics · Preparation" : "Pautas e Temas · Preparação")}
                   </h3>
                   <p className="text-xs text-slate-400 font-semibold mt-0.5">
                     {modoExecucao
@@ -2426,8 +2566,8 @@ export default function MeetingDetailView({
                           ? "Read-only outcome of the executed agenda."
                           : "Leitura do desfecho da agenda executada.")
                       : (language === "en"
-                          ? "Build the agenda: add, edit, order, owners, duration and recurring theme."
-                          : "Monte a agenda: adicione, edite, ordene, responsáveis, duração e Tema circular.")}
+                          ? "Create agendas and add topics to them: order, owners, duration and recurring theme."
+                          : "Crie as pautas e inclua os temas de cada uma: ordem, responsáveis, duração e Tema circular.")}
                   </p>
                 </div>
                 {meeting.status === "In Progress" && (
@@ -2438,11 +2578,121 @@ export default function MeetingDetailView({
                 )}
               </div>
 
+              {/*
+                PREPARAÇÃO (025): crie as PAUTAS (ex.: Finanças, Auditoria) e
+                inclua TEMAS nelas — direto aqui ou vinculando da Biblioteca.
+              */}
+              {canSchedule && modoPlanejamento && (
+                <div className="mb-6 p-4 bg-slate-50/70 border border-slate-200 rounded-2xl space-y-3">
+                  <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
+                    <div className="flex-1 flex flex-col gap-1">
+                      <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                        {language === "pt" ? "Nova pauta" : "New agenda"}
+                      </label>
+                      <input
+                        value={novaPautaTitulo}
+                        onChange={(e) => setNovaPautaTitulo(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void criarPauta(); } }}
+                        placeholder={language === "pt" ? "Ex.: Finanças" : "e.g. Finance"}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs"
+                      />
+                    </div>
+                    <button type="button" onClick={() => void criarPauta()} disabled={isPersisting || !novaPautaTitulo.trim()}
+                      className="px-3 py-2 bg-slate-800 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer">
+                      <FolderPlus className="w-3.5 h-3.5" />{language === "pt" ? "Criar pauta" : "Create agenda"}
+                    </button>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
+                    <div className="flex-1 flex flex-col gap-1">
+                      <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                        {language === "pt" ? "Novo tema" : "New topic"}
+                      </label>
+                      <input
+                        value={novoTemaTitulo}
+                        onChange={(e) => setNovoTemaTitulo(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void criarTema(); } }}
+                        placeholder={language === "pt" ? "Ex.: Resultado do trimestre" : "e.g. Quarterly results"}
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1 sm:w-44">
+                      <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                        {language === "pt" ? "Na pauta" : "In agenda"}
+                      </label>
+                      <select value={pautaDestinoId} onChange={(e) => setPautaDestinoId(e.target.value)}
+                        className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs cursor-pointer">
+                        <option value="">{language === "pt" ? "Sem pauta" : "No agenda"}</option>
+                        {(meeting.agendas ?? []).map((a) => (
+                          <option key={a.id} value={a.id}>{a.title}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1 sm:w-36">
+                      <label className="text-[10px] font-extrabold text-slate-500 uppercase">
+                        {language === "pt" ? "Duração" : "Duration"}
+                      </label>
+                      <DurationHoursMinutesSelect
+                        language={language}
+                        value={novoTemaDuracao}
+                        onChangeMinutes={(m) => setNovoTemaDuracao(formatMinutesAsTime(m))}
+                        selectClassName="w-full bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs cursor-pointer"
+                      />
+                    </div>
+                    <button type="button" onClick={() => void criarTema()} disabled={isPersisting || !novoTemaTitulo.trim()}
+                      className="px-3 py-2 bg-[#00658d] hover:bg-[#00aeef] text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer">
+                      <Plus className="w-3.5 h-3.5" />{language === "pt" ? "Incluir tema" : "Add topic"}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-400 font-semibold">
+                    {language === "pt"
+                      ? "Temas vinculados da Biblioteca (ao lado) também entram na pauta selecionada em \"Na pauta\". Responsável, participantes e ficha completa: use Editar no tema."
+                      : "Topics pulled from the Library (right) also go into the agenda selected above. Owner, participants and details: use Edit on the topic."}
+                  </p>
+                </div>
+              )}
+
               {/* Dynamic timelines of topics */}
               <div className="relative space-y-4">
                 <div className="absolute left-4.5 top-3.5 bottom-3.5 w-0.5 bg-slate-100" />
 
-                {(meeting.agenda || []).map((ag, index) => {
+                {temasPorPauta(meeting.agendas ?? [], meeting.agenda || []).map((grupo) => (
+                  <React.Fragment key={grupo.agenda?.id ?? "sem-pauta"}>
+                  {/* Cabeçalho da PAUTA — só quando a reunião usa pautas (025). */}
+                  {(meeting.agendas?.length ?? 0) > 0 && (
+                    <div className="relative z-10 flex items-center justify-between gap-2 pt-2">
+                      <h4 className="text-[11px] font-extrabold uppercase tracking-wider text-[#00658d] bg-white pr-2 flex items-center gap-1.5">
+                        {grupo.agenda
+                          ? `${language === "pt" ? "Pauta" : "Agenda"}: ${grupo.agenda.title}`
+                          : language === "pt" ? "Temas sem pauta" : "Topics without agenda"}
+                        <span className="text-slate-400 font-bold normal-case tracking-normal">
+                          ({grupo.temas.length} {language === "pt" ? "tema(s)" : "topic(s)"})
+                        </span>
+                      </h4>
+                      {grupo.agenda && canSchedule && modoPlanejamento && (
+                        <span className="flex items-center gap-1 bg-white">
+                          <button type="button" onClick={() => renomearPauta(grupo.agenda!.id, grupo.agenda!.title)}
+                            className="p-1 text-slate-400 hover:text-slate-700 rounded cursor-pointer" title={language === "pt" ? "Renomear pauta" : "Rename agenda"}>
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          {grupo.temas.length === 0 && (
+                            <button type="button" onClick={() => excluirPauta(grupo.agenda!.id)}
+                              className="p-1 text-slate-400 hover:text-red-600 rounded cursor-pointer" title={language === "pt" ? "Excluir pauta" : "Delete agenda"}>
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {grupo.agenda && grupo.temas.length === 0 && (
+                    <p className="relative z-10 pl-12 text-[10px] text-slate-400 font-semibold">
+                      {language === "pt" ? "Nenhum tema nesta pauta ainda." : "No topics in this agenda yet."}
+                    </p>
+                  )}
+                  {grupo.temas.map((ag) => {
+                  // Índice na ordem GLOBAL (`position`): mover/arrastar/adiar
+                  // continuam operando sobre a lista completa.
+                  const index = (meeting.agenda || []).indexOf(ag);
                   const currentStatus = getTopicStatus(ag);
                   const isCurrent = activeAgendaId === ag.id;
 
@@ -2525,6 +2775,21 @@ export default function MeetingDetailView({
                             <User className="w-3 h-3 text-slate-400" />
                             Responsável: {ag.author || "Definido no ato"}
                           </p>
+                          {canSchedule && modoPlanejamento && (meeting.agendas?.length ?? 0) > 0 && (
+                            <select
+                              value={ag.agendaId ?? ""}
+                              onChange={(e) => moverTemaDePauta(ag, e.target.value)}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              disabled={isPersisting}
+                              aria-label={language === "pt" ? "Pauta do tema" : "Topic agenda"}
+                              className="mt-1 bg-white border border-slate-200 rounded-lg px-2 py-0.5 text-[10px] font-semibold text-slate-600 cursor-pointer"
+                            >
+                              <option value="">{language === "pt" ? "Sem pauta" : "No agenda"}</option>
+                              {(meeting.agendas ?? []).map((a) => (
+                                <option key={a.id} value={a.id}>{a.title}</option>
+                              ))}
+                            </select>
+                          )}
                         </div>
  
                         {/* Control buttons & reordering controls during execution */}
@@ -2652,6 +2917,8 @@ export default function MeetingDetailView({
                     </div>
                     );
                   })}
+                  </React.Fragment>
+                ))}
               </div>
 
               {/* Pauta extraordinária — só no modo Execução (reunião In Progress). */}
@@ -2804,21 +3071,21 @@ export default function MeetingDetailView({
                         </div>
                         <div className="md:col-span-12 flex flex-col gap-1">
                           <label className="text-[10px] font-extrabold text-slate-500 uppercase">Participantes da pauta</label>
-                          <DirectoryUserPicker
+                          <ParticipantPicker
                             language={language}
-                            selected={null}
                             placeholder="Adicionar participante..."
-                            onSelect={(u) =>
-                              setExtraParticipants((prev) => (prev.some((x) => x.id === u.id) ? prev : [...prev, u]))
-                            }
-                            onClear={() => {}}
+                            jaEscolhidos={{
+                              entraIds: extraParticipants.flatMap((x) => (x.origem === "entra" ? [x.user.id] : [])),
+                              emails: extraParticipants.flatMap((x) => (x.origem === "pgcp" ? [x.participante.email] : []))
+                            }}
+                            onSelect={(sel) => setExtraParticipants((prev) => [...prev, sel])}
                           />
                           {extraParticipants.length > 0 && (
                             <div className="flex flex-wrap gap-1.5 mt-1">
                               {extraParticipants.map((u) => (
-                                <span key={u.id} className="inline-flex items-center gap-1 bg-[#00658d]/5 text-[#00658d] text-[10px] font-bold px-2 py-0.5 rounded-full">
-                                  {u.displayName ?? directoryEmail(u)}
-                                  <button type="button" onClick={() => setExtraParticipants((prev) => prev.filter((x) => x.id !== u.id))} className="hover:text-red-600" aria-label="Remover">
+                                <span key={u.origem === "entra" ? u.user.id : u.participante.id} className="inline-flex items-center gap-1 bg-[#00658d]/5 text-[#00658d] text-[10px] font-bold px-2 py-0.5 rounded-full">
+                                  {nomeDoSelecionado(u)}
+                                  <button type="button" onClick={() => setExtraParticipants((prev) => prev.filter((x) => x !== u))} className="hover:text-red-600" aria-label="Remover">
                                     <X className="w-3 h-3" />
                                   </button>
                                 </span>
@@ -2884,10 +3151,10 @@ export default function MeetingDetailView({
                 <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-xl">
                   <AlertCircle className="w-8 h-8 text-slate-350 mx-auto mb-3" />
                   <p className="text-sm font-bold text-slate-500">
-                    {language === "en" ? "No agenda items loaded." : "Nenhuma pauta cadastrada para esta reunião."}
+                    {language === "en" ? "No topics yet." : "Nenhum tema cadastrado para esta reunião."}
                   </p>
                   <p className="text-xs text-slate-400 mt-1">
-                    {language === "en" ? "Import topics from the interactive panel on the right." : "Utilize o painel inteligente ao lado para importar cronogramas."}
+                    {language === "en" ? "Create agendas and topics above, or pull topics from the Library." : "Crie pautas e temas acima, ou vincule temas da Biblioteca ao lado."}
                   </p>
                 </div>
               )}
@@ -2901,7 +3168,7 @@ export default function MeetingDetailView({
             <div className="bg-white border border-slate-200 p-5 rounded-2xl card-shadow">
               <h3 className="text-xs font-extrabold text-slate-900 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                 <Calendar className="w-4 h-4 text-[#00658d]" />
-                {language === "en" ? "Cronograma Anual (Template Suggestions)" : "Cronograma Anual de Governança"}
+                {language === "en" ? "Topic Library" : "Biblioteca de Temas"}
               </h3>
               <p className="text-[10px] text-slate-400 font-bold block mb-4 uppercase">
                 {language === "en" ? "Capture scheduled themes for this specific month" : "Temas previstos mapeados no cronograma da Cielo"}
@@ -3682,6 +3949,30 @@ export default function MeetingDetailView({
 
               {isAddingParticipantOnTab && (
                 <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3.5 animate-fade-in max-w-xl">
+                  {/* Entra ID + externos do PGCP: inclui direto na reunião. */}
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                      {language === "pt" ? "Buscar participante" : "Find participant"}
+                    </label>
+                    <ParticipantPicker
+                      language={language}
+                      showHint
+                      disabled={isPersisting}
+                      jaEscolhidos={{
+                        entraIds: (meeting.participants || []).map((p) => p.entraObjectId ?? "").filter(Boolean),
+                        emails: (meeting.participants || []).map((p) => p.email ?? "")
+                      }}
+                      onSelect={(sel) =>
+                        void persistir(
+                          () => apiAddParticipant(meeting.id, selecionadoParaPayload(sel)),
+                          language === "en" ? "Participant added!" : `${nomeDoSelecionado(sel)} adicionado(a) à reunião.`
+                        )
+                      }
+                    />
+                  </div>
+                  <p className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider pt-1">
+                    {language === "pt" ? "Ou inclua um convidado avulso" : "Or add a one-off guest"}
+                  </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="flex flex-col gap-1">
                       <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">{language === "pt" ? "Nome Completo" : "Full Name"} *</label>
@@ -3777,12 +4068,27 @@ export default function MeetingDetailView({
                             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">{p.role}</p>
                           </div>
                         </div>
+                        <span className="flex items-center gap-1.5">
                         <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wider border ${
                           p.confirmed 
                             ? "bg-emerald-50 text-emerald-700 border-emerald-100" 
                             : "bg-slate-100 text-slate-400 border-slate-200"
                         }`}>
                           {p.confirmed ? (language === "pt" ? "Presidente / Presença" : "Present") : (language === "pt" ? "Pendente" : "Pending")}
+                        </span>
+                        {/* Único caminho para a pessoa DEIXAR a reunião. */}
+                        {canSchedule && p.participantId && (
+                          <button
+                            type="button"
+                            disabled={isPersisting}
+                            onClick={() => pedirRemocaoDaReuniao(p.participantId!, p.name)}
+                            className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer disabled:opacity-40"
+                            title={language === "pt" ? "Remover da reunião" : "Remove from meeting"}
+                            aria-label={language === "pt" ? `Remover ${p.name} da reunião` : `Remove ${p.name} from meeting`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         </span>
                       </div>
 
@@ -3884,9 +4190,8 @@ export default function MeetingDetailView({
                 </div>
               </div>
 
-              {/* Órgão / Recorrência / Organizador — mesmos campos da criação
-                  (ScheduleMeetingModal). O link do Teams não é digitado: vem do
-                  próprio evento do calendário. */}
+              {/* Órgão / Recorrência / Organizador. O link do Teams não é
+                  digitado: vem do próprio evento do calendário. */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div className="space-y-1.5">
                   <label htmlFor="editGovernanceBody" className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
@@ -3952,6 +4257,20 @@ export default function MeetingDetailView({
                 </div>
               </div>
 
+              {/*
+                Modalidade/local (025). Alterar reaproveita o MESMO evento do
+                Outlook (PATCH no id gravado) — nunca cria convite duplicado.
+              */}
+              <ModalityFields
+                language={language}
+                modality={editedModality}
+                physicalLocationKey={editedLocationKey}
+                onChange={(m, local) => {
+                  setEditedModality(m);
+                  setEditedLocationKey(local);
+                }}
+              />
+
               {/* Description / Objective */}
               <div className="space-y-1.5">
                 <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
@@ -3992,7 +4311,15 @@ export default function MeetingDetailView({
                         startAt: localToInstant(editedDate, editedStartTime, meeting.timeZone),
                         endAt: localToInstant(editedDate, editedEndTime, meeting.timeZone),
                         recurrence: editedRecurrence,
-                        ...(editedGovernanceBodyId ? { governanceBodyId: editedGovernanceBodyId } : {})
+                        ...(editedGovernanceBodyId ? { governanceBodyId: editedGovernanceBodyId } : {}),
+                        // Só envia se mudou: modalidade/local desatualizam o convite.
+                        ...(editedModality !== (meeting.modality ?? "online") ||
+                        editedLocationKey !== (meeting.physicalLocation?.id ?? "")
+                          ? {
+                              modality: editedModality,
+                              physicalLocationKey: editedModality === "in_person" ? editedLocationKey || null : null
+                            }
+                          : {})
                       }),
                     language === "en" ? "Meeting updated successfully" : "Dados da reunião atualizados com sucesso"
                   ).then((ok) => {
@@ -4177,7 +4504,7 @@ export default function MeetingDetailView({
                 return (
                   <div className="flex flex-col gap-1">
                     <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                      {language === "pt" ? "Participantes da pauta" : "Pauta participants"}
+                      {language === "pt" ? "Participantes do tema" : "Topic participants"}
                     </label>
                     {vinculados.length > 0 && (
                       <div className="flex flex-wrap gap-1.5 mb-1">
@@ -4202,15 +4529,10 @@ export default function MeetingDetailView({
                                 <button
                                   type="button"
                                   disabled={isPersisting}
-                                  onClick={() => {
-                                    const msg = language === "pt"
-                                      ? "Ao remover esta pessoa da pauta, ela também será removida dos participantes da reunião. Continuar?"
-                                      : "Removing this person from the topic also removes them from the meeting participants. Continue?";
-                                    if (window.confirm(msg)) void desvincularParticipantePauta(itemAtual!.id, p.participantId);
-                                  }}
+                                  onClick={() => pedirRemocaoDoTema(itemAtual!.id, itemAtual!.title, p.participantId, p.name)}
                                   className="hover:text-red-600 disabled:opacity-40"
-                                  title={language === "pt" ? "Remover da pauta e da reunião" : "Remove from topic and meeting"}
-                                  aria-label={language === "pt" ? "Remover da pauta e da reunião" : "Remove from topic and meeting"}
+                                  title={language === "pt" ? "Remover do tema" : "Remove from topic"}
+                                  aria-label={language === "pt" ? `Remover ${p.name} do tema` : `Remove ${p.name} from topic`}
                                 >
                                   <X className="w-3 h-3" />
                                 </button>
@@ -4222,12 +4544,15 @@ export default function MeetingDetailView({
                     )}
                     {canSchedule && itemAtual && (
                       <>
-                        <DirectoryUserPicker
+                        <ParticipantPicker
                           language={language}
-                          selected={null}
                           placeholder={language === "pt" ? "Adicionar participante..." : "Add participant..."}
-                          onSelect={(user) => void vincularParticipantePauta(itemAtual.id, user)}
-                          onClear={() => {}}
+                          jaEscolhidos={{
+                            emails: (meeting.participants || [])
+                              .filter((p) => (itemAtual.participants || []).some((x) => x.participantId === p.participantId))
+                              .map((p) => p.email ?? "")
+                          }}
+                          onSelect={(sel) => void vincularParticipantePauta(itemAtual.id, sel)}
                         />
                         <p className="text-[10px] text-slate-400 font-semibold">
                           {language === "pt"
@@ -4270,6 +4595,16 @@ export default function MeetingDetailView({
       )}
 
       {/* MODAL: confirmação de exclusão de pauta — identifica a pauta pelo título. */}
+      {remocaoPendente && (
+        <ConfirmRemovalDialog
+          language={language === "en" ? "en" : "pt"}
+          confirmacao={remocaoPendente.confirmacao}
+          busy={isPersisting}
+          onCancel={() => setRemocaoPendente(null)}
+          onConfirm={() => void confirmarRemocao()}
+        />
+      )}
+
       {pautaParaExcluir && (
         <div
           className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"

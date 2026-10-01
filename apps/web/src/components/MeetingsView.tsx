@@ -4,7 +4,6 @@ import {
   Search,
   Filter,
   Download,
-  Plus,
   Clock,
   Users,
   Layers,
@@ -39,9 +38,9 @@ interface MeetingsViewProps {
   meetingsError?: string | null;
   onReloadMeetings?: () => void;
   onMeetingClick: (meet: Meeting) => void;
-  onScheduleClick: () => void;
   /**
-   * Mostrar a ação de agendar.
+   * Mostrar ações de Assessoria (excluir). "Nova reunião" saiu desta tela
+   * (025): agendar é exclusivo do Calendário.
    *
    * Cortesia com quem não pode, não controle de acesso: o servidor
    * revalida `PGCP.Assessoria` em toda mutação de reunião.
@@ -57,7 +56,6 @@ export default function MeetingsView({
   meetingsError = null,
   onReloadMeetings,
   onMeetingClick,
-  onScheduleClick,
   canSchedule = false,
   onDeleteMeeting
 }: MeetingsViewProps) {
@@ -78,7 +76,6 @@ export default function MeetingsView({
     title: language === "en" ? "Meetings" : "Reuniões",
     subTitle: language === "en" ? "Manage and review corporate governance sessions." : "Gerencie e analise as sessões de governança corporativa.",
     btnExport: language === "en" ? "Export" : "Exportar",
-    btnNewMeeting: language === "en" ? "New Meeting" : "Nova Reunião",
     tabUpcoming: language === "en" ? "Upcoming" : "Próximas",
     tabPast: language === "en" ? "Past" : "Concluídas",
     searchPlaceholder: language === "en" ? "Search meetings..." : "Buscar reuniões...",
@@ -314,16 +311,6 @@ export default function MeetingsView({
             <Download className="w-3.5 h-3.5 text-slate-500 animate-pulse" />
             {t.btnExport}
           </button>
-          {/* Só para quem agenda. O servidor revalida de qualquer forma. */}
-          {canSchedule && (
-            <button
-              onClick={onScheduleClick}
-              className="px-4 py-2.5 rounded-lg bg-[#00aeef] hover:bg-[#009bd4] text-white font-bold text-xs uppercase tracking-wider transition-all flex items-center gap-2 cursor-pointer active:scale-95 shrink-0"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              {t.btnNewMeeting}
-            </button>
-          )}
         </div>
       </header>
 

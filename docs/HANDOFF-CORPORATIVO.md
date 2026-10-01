@@ -446,8 +446,11 @@ ciclo da **reunião**; `agenda_validation_status` é o ciclo da **pauta**;
 `meetings.status`. "Convite enviado" não ganhou coluna — já é `synced`, com
 `provider_event_id` como prova.
 
-O envio do convite confere a aprovação **no backend**, antes de qualquer chamada
-ao Graph: sem ela, **409** `agenda_not_approved`. Desabilitar o botão é cortesia.
+**Revisado na migration 025:** o convite **não** depende mais da aprovação das
+pautas — sai no agendamento (Calendário) ou na reserva da Agenda Anual, antes da
+aprovação do planejamento. O gate `agenda_not_approved` foi retirado; a
+aprovação das pautas continua exigida para **iniciar** a reunião. Ver
+`docs/security.md` §8.
 
 A **aprovação acontece fora do sistema**: o aprovador responde por e-mail e a
 Secretaria registra o fato. Não há leitura de resposta nem portal externo.
@@ -560,9 +563,12 @@ pauta é também participante da reunião* e, para pessoa identificada no Entra,
 *todo responsável é participante da própria pauta*. **Adicionar** alguém reutiliza o participante
 se já existe (dedup por `entra_object_id`/`user_id`, nunca por nome; sem `UNIQUE` novo)
 ou o **adiciona à reunião** pelo mesmo fluxo da aba Participantes (calendário fica
-`stale`, auditoria). **Remover** da pauta **remove da reunião** — apaga o
-`meeting_participant`, e o `ON DELETE CASCADE` tira os vínculos dele com as demais
-pautas. Ao vincular da Biblioteca, os `agenda_topic_participants` viram
+`stale`, auditoria). **Remover de um Tema** (regra revista na 025, substitui a
+Opção A) desfaz **só** aquele vínculo — a pessoa segue na reunião e nos demais
+Temas. Sair da reunião é pela aba Participantes: apaga o `meeting_participant` e o
+`ON DELETE CASCADE` tira os vínculos com todos os Temas. Nenhuma das duas apaga o
+cadastro de participante externo; ambas pedem confirmação. Ver
+`docs/modelo-de-dados.md` §5.9.1. Ao vincular da Biblioteca, os `agenda_topic_participants` viram
 `meeting_participants` + vínculos (snapshot; depois independente). Vincular/desvincular
 é estrutural → reabre a validação antes da reunião (016).
 

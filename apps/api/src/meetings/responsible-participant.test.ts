@@ -274,8 +274,15 @@ const fonteDe = (arquivo: string): string =>
   semComentarios(readFileSync(new URL(arquivo, import.meta.url), "utf8"));
 
 test("criar reuniao, adicionar pauta e trocar responsavel aplicam a garantia", () => {
+  // `createMeeting` delega a `inserirReuniao` (025: a reserva da Agenda Anual
+  // usa o mesmo caminho). A garantia precisa estar no caminho compartilhado.
+  assert.match(
+    corpoDaFuncao(fonteDe("./create.ts"), "export async function createMeeting("),
+    /await inserirReuniao\(/,
+  );
+
   const caminhos: [string, string][] = [
-    ["./create.ts", "export async function createMeeting("],
+    ["./create.ts", "export async function inserirReuniao("],
     ["./update.ts", "export async function addAgendaItem("],
     ["./update.ts", "export async function updateAgendaItem("],
   ];
@@ -351,16 +358,24 @@ test("a recusa vive dentro da remocao compartilhada, nao em uma rota so", () => 
   assert.match(corpo, /await recusarRemocaoDeResponsavel\(/);
 
   const update = fonteDe("./update.ts");
-  for (const assinatura of [
-    "export async function removeParticipant(",
-    "export async function removeAgendaItemParticipant(",
-  ]) {
-    assert.match(
-      corpoDaFuncao(update, assinatura),
-      /excluirMeetingParticipant\(/,
-      `${assinatura} precisa remover pela fonte única — é lá que está a recusa`,
-    );
-  }
+  assert.match(
+    corpoDaFuncao(update, "export async function removeParticipant("),
+    /excluirMeetingParticipant\(/,
+    "sair da reunião passa pela fonte única — é lá que está a recusa",
+  );
+
+  // Regra vigente: remover do TEMA só desfaz o vínculo — nunca tira da reunião.
+  const doTema = corpoDaFuncao(update, "export async function removeAgendaItemParticipant(");
+  assert.match(doTema, /desvincularParticipanteDoTema\(/);
+  assert.doesNotMatch(doTema, /excluirMeetingParticipant\(|DELETE FROM meeting_participants/);
+
+  // O responsável segue protegido no próprio tema.
+  const desvincular = corpoDaFuncao(
+    fonteDe("./agenda-item-participants.ts"),
+    "export async function desvincularParticipanteDoTema(",
+  );
+  assert.match(desvincular, /responsible_entra_object_id/);
+  assert.doesNotMatch(desvincular, /DELETE FROM meeting_participants/);
 });
 
 test("trocar ou remover responsavel NAO remove participante", () => {

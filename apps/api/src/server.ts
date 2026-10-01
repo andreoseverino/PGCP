@@ -8,6 +8,8 @@ import { governanceBodiesRouter, jsonErrorHandler } from "./governance-bodies/ro
 import { integrationsRouter } from "./integrations/routes.js";
 import { meRouter } from "./me/routes.js";
 import { meetingsRouter } from "./meetings/routes.js";
+import { annualAgendasRouter } from "./annual-agendas/routes.js";
+import { externalParticipantsRouter } from "./external-participants/routes.js";
 import { agendaTopicsRouter } from "./agenda-topics/routes.js";
 import { actionItemsRouter } from "./action-items/routes.js";
 import { calendarRouter } from "./calendar/routes.js";
@@ -125,6 +127,19 @@ app.use("/users", usersRouter);
  * para que o `meetingId` venha SEMPRE do caminho e nunca do corpo.
  */
 app.use("/meetings", meetingsRouter);
+
+/**
+ * Agenda Anual — planejamento das reunioes de um orgao no ano. Reservar cria
+ * as reunioes (origem `annual_agenda`) e os convites ANTES da aprovacao do
+ * planejamento. Leitura: usuario ativo; mutacao: `PGCP.Assessoria`.
+ */
+app.use("/annual-agendas", annualAgendasRouter);
+
+/**
+ * Participantes externos (fora do Entra). Cadastro funcional do Painel de
+ * Administracao: `PGCP.Assessoria` OU `PGCP.Admin`. Nao sao usuarios do PGCP.
+ */
+app.use("/external-participants", externalParticipantsRouter);
 
 /**
  * Biblioteca de pautas reutilizaveis. Distinta de /meetings: aqui a pauta nao

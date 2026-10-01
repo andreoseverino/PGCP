@@ -1,7 +1,8 @@
 import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 import type { AgendaValidationStatus } from "./agenda-validation.js";
-import { findCalendarIntegration, type CalendarIntegration } from "../calendar/service.js";
+import { findCalendarIntegration, type CalendarIntegration, type CalendarSyncStatus } from "../calendar/service.js";
+import { encontrarLocalFisico, type LocalFisico } from "./locations.js";
 
 /**
  * Leitura de reunioes. SOMENTE LEITURA nesta etapa.
@@ -86,6 +87,24 @@ export interface MeetingSummary {
    * dizer "Teams pedido, ainda nao sincronizado" sem inventar link.
    */
   onlineMeetingProvider: "teamsForBusiness" | null;
+  /**
+   * Modalidade (025). `in_person` continua com Teams — ele e contingencia.
+   */
+  modality: "online" | "in_person";
+  /**
+   * Local fisico resolvido do catalogo (`locations.ts`), so no presencial.
+   * Endereco `null` enquanto nao estiver configurado — nunca inventado.
+   */
+  physicalLocation: LocalFisico | null;
+  /** De onde a reuniao veio: Calendario (manual) ou reserva da Agenda Anual. */
+  origin: "manual" | "annual_agenda";
+  annualAgendaId: string | null;
+  /**
+   * Estado do convite (`meeting_calendar_integrations.sync_status`), tambem no
+   * resumo para o Pipeline nao precisar abrir cada reuniao. `null` = sem
+   * integracao preparada.
+   */
+  calendarSyncStatus: CalendarSyncStatus | null;
   status: MeetingStatus;
   /**
    * Ciclo da PAUTA — eixo SEPARADO de `status`, que e o ciclo da reuniao.
@@ -94,8 +113,9 @@ export interface MeetingSummary {
    *   sent      PDF enviado ao aprovador, aguardando validacao
    *   approved  validacao registrada pela Secretaria
    *
-   * O convite do Outlook so pode ser enviado em `approved`, e a barreira esta
-   * no backend (`POST /:id/calendar-sync`), nao apenas na tela.
+   * Desde a 025 o convite NAO depende deste eixo: a reuniao e reservada no
+   * calendario ao ser agendada (Calendario ou Agenda Anual). A aprovacao das
+   * pautas continua exigida para INICIAR a reuniao (`meeting-start.ts`).
    */
   agendaValidation: {
     status: AgendaValidationStatus;
@@ -152,8 +172,23 @@ export interface AgendaItemResponsible {
   entraObjectId: string | null;
 }
 
+/**
+ * PAUTA da reuniao (025): agrupa temas. Reuniao -> Pauta -> Tema.
+ */
+export interface MeetingAgenda {
+  id: string;
+  title: string;
+  position: number;
+}
+
+/**
+ * TEMA da reuniao (`meeting_agenda_items`). O nome tecnico e anterior a 025,
+ * quando "pauta" designava o assunto especifico; a tabela nao foi renomeada.
+ */
 export interface MeetingAgendaItem {
   id: string;
+  /** Pauta a que este tema pertence. `null` = tema sem pauta (legado). */
+  agendaId: string | null;
   title: string;
   position: number;
   /** Hora local do dia da reuniao (HH:mm:ss), sem fuso proprio. */
@@ -194,6 +229,9 @@ export interface MeetingAgendaItem {
 
 export interface MeetingDetail extends MeetingSummary {
   participants: MeetingParticipant[];
+  /** Pautas (agrupadores), em ordem. */
+  agendas: MeetingAgenda[];
+  /** Temas, em ordem global de `position`. */
   agendaItems: MeetingAgendaItem[];
   /**
    * Estado da projecao no calendario externo. `null` quando a reuniao nao tem
@@ -219,6 +257,11 @@ interface MeetingRow {
   timezone: string;
   meeting_link: string | null;
   online_meeting_provider: "teamsForBusiness" | null;
+  modality: "online" | "in_person";
+  physical_location_key: string | null;
+  origin: "manual" | "annual_agenda";
+  annual_agenda_id: string | null;
+  calendar_sync_status: CalendarSyncStatus | null;
   status: MeetingStatus;
   agenda_validation_status: AgendaValidationStatus;
   agenda_validation_sent_at: Date | null;
@@ -254,6 +297,7 @@ interface ParticipantRow {
 
 interface AgendaItemRow {
   id: string;
+  meeting_agenda_id: string | null;
   title: string;
   position: number;
   scheduled_start_time: string | null;
@@ -294,6 +338,11 @@ function toSummary(row: MeetingRow): MeetingSummary {
     timezone: row.timezone,
     meetingLink: row.meeting_link,
     onlineMeetingProvider: row.online_meeting_provider,
+    modality: row.modality,
+    physicalLocation: row.modality === "in_person" ? encontrarLocalFisico(row.physical_location_key) : null,
+    origin: row.origin,
+    annualAgendaId: row.annual_agenda_id,
+    calendarSyncStatus: row.calendar_sync_status,
     status: row.status,
     agendaValidation: {
       status: row.agenda_validation_status,
@@ -329,6 +378,7 @@ function toParticipant(row: ParticipantRow): MeetingParticipant {
 function toAgendaItem(row: AgendaItemRow): MeetingAgendaItem {
   return {
     id: row.id,
+    agendaId: row.meeting_agenda_id,
     title: row.title,
     position: row.position,
     scheduledStartTime: row.scheduled_start_time,
@@ -376,6 +426,12 @@ const SUMMARY_SELECT = `
          m.timezone,
          m.meeting_link,
          m.online_meeting_provider,
+         m.modality,
+         m.physical_location_key,
+         m.origin,
+         m.annual_agenda_id,
+         (SELECT ci.sync_status FROM meeting_calendar_integrations ci
+           WHERE ci.meeting_id = m.id AND ci.provider = 'outlook') AS calendar_sync_status,
          m.status,
          m.agenda_validation_status,
          m.agenda_validation_sent_at,
@@ -463,13 +519,25 @@ export async function findMeeting(id: string): Promise<MeetingDetail> {
     throw new HttpError(404, "Reunião não encontrada.");
   }
 
-  const [participants, agendaItems, calendar] = await Promise.all([
+  const [participants, agendas, agendaItems, calendar] = await Promise.all([
     listParticipants(id),
+    listAgendas(id),
     listAgendaItems(id),
     findCalendarIntegration(id),
   ]);
 
-  return { ...toSummary(row), participants, agendaItems, calendar };
+  return { ...toSummary(row), participants, agendas, agendaItems, calendar };
+}
+
+async function listAgendas(meetingId: string): Promise<MeetingAgenda[]> {
+  const { rows } = await pool.query<MeetingAgenda>(
+    `SELECT id, title, position
+       FROM meeting_agendas
+      WHERE meeting_id = $1
+      ORDER BY position, id`,
+    [meetingId],
+  );
+  return rows;
 }
 
 async function listParticipants(meetingId: string): Promise<MeetingParticipant[]> {
@@ -498,6 +566,7 @@ async function listParticipants(meetingId: string): Promise<MeetingParticipant[]
 async function listAgendaItems(meetingId: string): Promise<MeetingAgendaItem[]> {
   const { rows } = await pool.query<AgendaItemRow>(
     `SELECT ai.id,
+            ai.meeting_agenda_id,
             ai.title,
             ai.position,
             ai.scheduled_start_time,

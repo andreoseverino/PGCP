@@ -169,7 +169,9 @@ function semComentarios(fonte: string): string {
 }
 
 test("nenhuma tela associa pauta e participante por substring de nome", () => {
-  const telas = ["../components/ScheduleMeetingModal.tsx", "../components/MeetingDetailView.tsx"];
+  // O antigo modal de agendamento (com pautas) saiu em 025: agendar é no
+  // Calendário, sem pautas; pautas/temas são preparados no detalhe (Pipeline).
+  const telas = ["../components/MeetingDetailView.tsx"];
 
   for (const tela of telas) {
     const fonte = semComentarios(readFileSync(new URL(tela, import.meta.url), "utf8"));

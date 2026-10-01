@@ -5,17 +5,22 @@ import { recordAuditIn } from "../audit/service.js";
 import { marcarComoDesatualizada } from "../calendar/service.js";
 import { exigeResincronizacao } from "../calendar/mapper.js";
 import {
+  MODALIDADES,
   parseAgendaItemInput,
   parseParticipantInput,
   prepararParticipantes,
   urlHttpOpcional,
   type AgendaItemInput,
   type MeetingActor,
+  type Modalidade,
   type ParticipantInput
 } from "./create.js";
+import { localFisicoExiste } from "./locations.js";
+import { exigirPautaDaReuniao } from "./agendas.js";
 import { findMeeting, type MeetingDetail } from "./service.js";
 import { reabrirValidacaoSePreReuniao } from "./agenda-validation.js";
 import {
+  desvincularParticipanteDoTema,
   excluirMeetingParticipant,
   findOrCreateMeetingParticipant,
   garantirResponsavelComoParticipante,
@@ -134,6 +139,12 @@ export interface UpdateMeetingInput {
    * estado que o calendario contradiz. O gatilho da 014 recusa de qualquer modo.
    */
   onlineMeetingProvider?: "teamsForBusiness";
+  /**
+   * Modalidade e local (025). A coerencia final (presencial exige local,
+   * online nao tem) depende do estado atual e e conferida em `updateMeeting`.
+   */
+  modality?: Modalidade;
+  physicalLocationKey?: string | null;
 }
 
 /**
@@ -156,6 +167,9 @@ export function parseUpdateInput(body: unknown): UpdateMeetingInput {
     // Habilitar a reuniao online. O gatilho da 014 impede desligar depois que o
     // Graph provisionou — desmarcar aqui nao desfaria nada do outro lado.
     "onlineMeetingProvider",
+    // Modalidade e local fisico (025). Trocar e editar a reuniao: o evento
+    // existente e atualizado (PATCH), nunca recriado.
+    "modality", "physicalLocationKey",
   ]);
 
   for (const chave of Object.keys(dados)) {
@@ -250,11 +264,50 @@ export function parseUpdateInput(body: unknown): UpdateMeetingInput {
     saida.onlineMeetingProvider = valor;
   }
 
+  if ("modality" in dados) {
+    if (!(MODALIDADES as readonly unknown[]).includes(dados.modality)) {
+      throw new HttpError(400, "O campo 'modality' aceita apenas 'online' ou 'in_person'.");
+    }
+    saida.modality = dados.modality as Modalidade;
+  }
+
+  if ("physicalLocationKey" in dados) {
+    const valor = texto("physicalLocationKey", 64);
+    if (valor && !localFisicoExiste(valor)) {
+      throw new HttpError(400, "O local físico informado não existe no catálogo de locais.");
+    }
+    saida.physicalLocationKey = valor ?? null;
+  }
+
   if (Object.keys(saida).length === 0) {
     throw new HttpError(400, "Nenhum campo alterável foi informado.");
   }
 
   return saida;
+}
+
+/**
+ * Coerencia final de modalidade/local depois do PATCH, a partir do estado
+ * atual. Mesma regra do CHECK da 025, com mensagem util em vez de violacao
+ * crua. Trocar para online limpa o local (o PATCH pode omiti-lo).
+ */
+export function resolverModalidadeDoPatch(
+  atual: { modality: Modalidade; physicalLocationKey: string | null },
+  input: Pick<UpdateMeetingInput, "modality" | "physicalLocationKey">,
+): { modality: Modalidade; physicalLocationKey: string | null } {
+  const modality = input.modality ?? atual.modality;
+  if (modality === "online") {
+    if (input.physicalLocationKey) {
+      throw new HttpError(400, "Reunião online não tem local físico: remova 'physicalLocationKey'.");
+    }
+    return { modality, physicalLocationKey: null };
+  }
+  const physicalLocationKey =
+    input.physicalLocationKey !== undefined ? input.physicalLocationKey : atual.physicalLocationKey;
+  if (!physicalLocationKey) {
+    throw new HttpError(400, "Reunião presencial exige o local físico ('physicalLocationKey').");
+  }
+  return { modality, physicalLocationKey };
 }
 
 const COLUNA_DE: Record<keyof UpdateMeetingInput, string> = {
@@ -269,6 +322,8 @@ const COLUNA_DE: Record<keyof UpdateMeetingInput, string> = {
   pendingRequirements: "pending_requirements",
   status: "status",
   onlineMeetingProvider: "online_meeting_provider",
+  modality: "modality",
+  physicalLocationKey: "physical_location_key",
 };
 
 export async function updateMeeting(
@@ -279,8 +334,13 @@ export async function updateMeeting(
   assertUuid(meetingId, "Identificador");
 
   await emTransacao(async (client) => {
-    const atual = await client.query<{ start_at: Date; end_at: Date }>(
-      "SELECT start_at, end_at FROM meetings WHERE id = $1 FOR UPDATE",
+    const atual = await client.query<{
+      start_at: Date;
+      end_at: Date;
+      modality: Modalidade;
+      physical_location_key: string | null;
+    }>(
+      "SELECT start_at, end_at, modality, physical_location_key FROM meetings WHERE id = $1 FOR UPDATE",
       [meetingId],
     );
     if (atual.rows.length === 0) throw new HttpError(404, "Reunião não encontrada.");
@@ -291,6 +351,18 @@ export async function updateMeeting(
     const fim = input.endAt ? new Date(input.endAt) : atual.rows[0]!.end_at;
     if (fim.getTime() <= inicio.getTime()) {
       throw new HttpError(400, "O horário de término deve ser depois do horário de início.");
+    }
+
+    // Modalidade/local: normaliza o par final e grava os dois juntos.
+    if (input.modality !== undefined || input.physicalLocationKey !== undefined) {
+      const final = resolverModalidadeDoPatch(
+        {
+          modality: atual.rows[0]!.modality,
+          physicalLocationKey: atual.rows[0]!.physical_location_key,
+        },
+        input,
+      );
+      input = { ...input, ...final };
     }
 
     // Iniciar exige pautas aprovadas e convite enviado. Sob o lock acima.
@@ -443,6 +515,11 @@ export async function addAgendaItem(
       }
     }
 
+    // Tema dentro de pauta: a pauta precisa ser DESTA reuniao (IDOR).
+    if (input.agendaId) {
+      await exigirPautaDaReuniao(client, meetingId, input.agendaId);
+    }
+
     // Entra no fim da lista. `coalesce` cobre a reunião sem pauta nenhuma.
     const { rows: pos } = await client.query<{ proxima: number }>(
       "SELECT coalesce(max(position), 0) + 1 AS proxima FROM meeting_agenda_items WHERE meeting_id = $1",
@@ -455,13 +532,15 @@ export async function addAgendaItem(
                duration_minutes, execution_status, responsible_label,
                responsible_entra_tenant_id, responsible_entra_object_id,
                is_circular_theme,
-               agenda_topic_type_id, agenda_topic_nature_id, description, generates_action_item)
+               agenda_topic_type_id, agenda_topic_nature_id, description, generates_action_item,
+               meeting_agenda_id)
             VALUES ($1, $9, $2, $3, $4, $5, 'pending', $6, $7, $8,
                COALESCE($10::boolean, (SELECT is_circular_theme FROM agenda_topics WHERE id = $9), false),
                COALESCE($11::uuid,    (SELECT agenda_topic_type_id   FROM agenda_topics WHERE id = $9)),
                COALESCE($12::uuid,    (SELECT agenda_topic_nature_id FROM agenda_topics WHERE id = $9)),
                COALESCE($13::text,    (SELECT description            FROM agenda_topics WHERE id = $9)),
-               COALESCE($14::boolean, (SELECT generates_action_item  FROM agenda_topics WHERE id = $9), false))
+               COALESCE($14::boolean, (SELECT generates_action_item  FROM agenda_topics WHERE id = $9), false),
+               $15)
          RETURNING id`,
       [
         meetingId,
@@ -481,13 +560,14 @@ export async function addAgendaItem(
         input.agendaTopicNatureId ?? null,
         input.description ?? null,
         input.generatesActionItem ?? null,
+        input.agendaId ?? null,
       ],
     );
 
     await recordAuditIn(client, {
       actorUserId: actor.userId,
       actorName: actor.name,
-      action: "Pauta adicionada",
+      action: "Tema adicionado",
       entityType: "meeting_agenda_item",
       entityId: rows[0]!.id,
       entityLabel: titulo,
@@ -541,6 +621,8 @@ export type ExecutionStatus = (typeof EXECUTION_STATUSES)[number];
 
 export interface AgendaItemPatch {
   title?: string;
+  /** Move o TEMA para outra PAUTA da mesma reuniao; `null` = sem pauta. */
+  agendaId?: string | null;
   durationMinutes?: number | null;
   scheduledStartTime?: string | null;
   responsibleLabel?: string | null;
@@ -574,6 +656,7 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
     "responsibleLabel", "responsibleEntraObjectId", "executionStatus",
     "isCircularTheme",
     "agendaTopicTypeId", "agendaTopicNatureId", "description", "generatesActionItem",
+    "agendaId",
   ]);
   for (const chave of Object.keys(dados)) {
     if (!permitidos.has(chave)) {
@@ -690,6 +773,15 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
     saida.generatesActionItem = dados.generatesActionItem;
   }
 
+  if ("agendaId" in dados) {
+    const valor = dados.agendaId;
+    if (valor === null) saida.agendaId = null;
+    else {
+      if (typeof valor !== "string") throw new HttpError(400, "'agendaId' deve ser um UUID.");
+      saida.agendaId = assertUuid(valor, "agendaId");
+    }
+  }
+
   // Identidade sem rotulo nao entra — mesma regra da criacao.
   if (saida.responsibleEntraObjectId && !saida.responsibleLabel) {
     throw new HttpError(400, "Informe 'responsibleLabel' junto de 'responsibleEntraObjectId'.");
@@ -730,6 +822,10 @@ export async function updateAgendaItem(
       atribuicoes.push(`${coluna} = $${valores.length}`);
     };
 
+    if (input.agendaId) {
+      await exigirPautaDaReuniao(client, meetingId, input.agendaId);
+    }
+    if (input.agendaId !== undefined) bind("meeting_agenda_id", input.agendaId);
     if (input.title !== undefined) bind("title", input.title);
     if (input.durationMinutes !== undefined) bind("duration_minutes", input.durationMinutes);
     if (input.scheduledStartTime !== undefined) bind("scheduled_start_time", input.scheduledStartTime);
@@ -802,6 +898,7 @@ export async function updateAgendaItem(
     // de todo modo, execucao acontece com a reuniao ja em andamento (o gate na
     // funcao de reabertura bloqueia).
     const alterouEstrutura =
+      input.agendaId !== undefined ||
       input.title !== undefined ||
       input.durationMinutes !== undefined ||
       input.responsibleLabel !== undefined ||
@@ -919,13 +1016,13 @@ export async function addAgendaItemParticipant(
 }
 
 /**
- * Remove uma pessoa de uma pauta.
+ * Remove uma pessoa de um TEMA (`meeting_agenda_items`).
  *
- * REGRA DE NEGÓCIO (corrigida): remover da pauta remove a pessoa DA REUNIÃO
- * inteira — não só o vínculo. Apaga o `meeting_participant`; o `ON DELETE
- * CASCADE` da 020 elimina os vínculos dela com ESTA e com as DEMAIS pautas da
- * reunião. Reutiliza `excluirMeetingParticipant` (mesma remoção da aba
- * Participantes): calendário desatualizado + auditoria, na mesma transação.
+ * REGRA VIGENTE (substitui a Opção A da 020): remove SOMENTE o vínculo com
+ * este tema. A pessoa continua em `meeting_participants` e nos demais temas;
+ * o convite do calendário não muda. Sair da reunião inteira é a remoção da aba
+ * Participantes (`removeParticipant`), cujo cascade apaga todos os vínculos.
+ * Nenhuma das duas apaga o cadastro de participante externo.
  */
 export async function removeAgendaItemParticipant(
   meetingId: string,
@@ -941,17 +1038,11 @@ export async function removeAgendaItemParticipant(
     const titulo = await exigirReuniao(client, meetingId);
     await exigirPautaNaReuniao(client, meetingId, agendaItemId);
 
-    // A pessoa precisa estar vinculada A ESTA pauta (a ação parte da pauta).
-    const { rows } = await client.query(
-      `SELECT 1 FROM meeting_agenda_item_participants
-        WHERE meeting_agenda_item_id = $1 AND meeting_participant_id = $2`,
-      [agendaItemId, meetingParticipantId],
+    // Só o vínculo com ESTE tema. A pessoa segue na reunião e nos demais temas.
+    const rowCount = await desvincularParticipanteDoTema(
+      client, meetingId, agendaItemId, meetingParticipantId, actor, titulo,
     );
-    if (rows.length === 0) throw new HttpError(404, "Participante não está vinculado a esta pauta.");
-
-    // Remove da REUNIÃO (cascata apaga os vínculos com todas as pautas).
-    const rowCount = await excluirMeetingParticipant(client, meetingId, meetingParticipantId, actor, titulo);
-    if (rowCount === 0) throw new HttpError(404, "Participante não encontrado nesta reunião.");
+    if (rowCount === 0) throw new HttpError(404, "Participante não está vinculado a este tema.");
 
     // Mudança ESTRUTURAL da pauta (§ validação).
     await reabrirValidacaoSePreReuniao(client, meetingId, actor);

@@ -1,4 +1,5 @@
 import { HttpError } from "../http-error.js";
+import { descreverLocalFisico, type LocalFisico } from "../meetings/locations.js";
 
 /**
  * Traducao PGCP -> evento de calendario. PURO: nao fala com o banco nem com o
@@ -183,6 +184,17 @@ export interface ReuniaoParaCalendario {
    * nao saberia dizer qual reuniao online e aquela.
    */
   onlineMeetingProvider: "teamsForBusiness" | null;
+  /** Modalidade (025). Ausente = online (comportamento anterior). */
+  modality?: "online" | "in_person";
+  /** Local do catalogo, ja resolvido. So no presencial. */
+  physicalLocation?: LocalFisico | null;
+}
+
+/** `location` do evento Graph. So nome/endereco que existem de verdade. */
+export interface LocalGraph {
+  displayName: string;
+  locationType: "default";
+  address?: { street?: string; city?: string; state?: string };
 }
 
 export interface EventoGraph {
@@ -194,6 +206,42 @@ export interface EventoGraph {
   transactionId?: string;
   isOnlineMeeting?: boolean;
   onlineMeetingProvider?: "teamsForBusiness";
+  location?: LocalGraph;
+  /** So no PATCH de reuniao online: `[]` apaga locais anteriores (ver planejador). */
+  locations?: LocalGraph[];
+}
+
+/**
+ * Local VAZIO: e como o Graph apaga `location`/`locations` de um evento. Omitir
+ * a propriedade num PATCH nao apaga nada — o endereco antigo continuaria la.
+ */
+export const LOCAL_REMOVIDO: LocalGraph = { displayName: "", locationType: "default" };
+
+/**
+ * Aviso de modalidade que vai no CORPO do convite. O link do Teams e anexado
+ * pelo proprio Graph ao evento online; aqui so se diz o papel dele.
+ */
+export const AVISO_TEAMS_CONTINGENCIA =
+  "O link do Microsoft Teams deste convite está disponível como contingência.";
+
+/**
+ * `location` do evento a partir do local do catalogo.
+ *
+ * Endereco so entra se estiver configurado; sem ele, o convite leva o nome da
+ * sede e nada mais — completar com endereco presumido seria inventar dado.
+ */
+export function montarLocalDoEvento(local: LocalFisico): LocalGraph {
+  const endereco: NonNullable<LocalGraph["address"]> = {};
+  const rua = [local.address, local.complement].filter(Boolean).join(", ");
+  if (rua) endereco.street = rua;
+  if (local.city) endereco.city = local.city;
+  if (local.state) endereco.state = local.state;
+
+  return {
+    displayName: descreverLocalFisico(local),
+    locationType: "default",
+    ...(Object.keys(endereco).length > 0 ? { address: endereco } : {}),
+  };
 }
 
 /**
@@ -220,7 +268,12 @@ export function montarEvento(
 ): EventoGraph {
   const timezone = assertTimezoneSuportado(reuniao.timezone);
 
-  const corpo = [reuniao.description?.trim(), reuniao.meetingLink?.trim()]
+  const presencial = reuniao.modality === "in_person" && reuniao.physicalLocation;
+  const modalidade = presencial
+    ? `Reunião presencial — Local: ${descreverLocalFisico(reuniao.physicalLocation!)}.\n${AVISO_TEAMS_CONTINGENCIA}`
+    : null;
+
+  const corpo = [modalidade, reuniao.description?.trim(), reuniao.meetingLink?.trim()]
     .filter((linha): linha is string => Boolean(linha))
     .join("\n\n");
 
@@ -246,8 +299,44 @@ export function montarEvento(
     evento.isOnlineMeeting = true;
     evento.onlineMeetingProvider = reuniao.onlineMeetingProvider;
   }
+  /*
+   * Local fisico so no presencial. Online nao carrega local; se o evento ja
+   * existe, `planejarChamadaDoEvento` acrescenta a REMOCAO explicita.
+   */
+  if (presencial) {
+    evento.location = montarLocalDoEvento(reuniao.physicalLocation!);
+  }
 
   return evento;
+}
+
+/**
+ * Qual chamada o Graph recebe. PURO, para ser afirmavel em teste.
+ *
+ * Com `provider_event_id` gravado e SEMPRE PATCH nesse id — editar a reuniao
+ * (inclusive a que veio da Agenda Anual) atualiza o evento existente, nunca cria
+ * outro. Sem ele e POST com o `transactionId` fixo da integracao.
+ */
+export function planejarChamadaDoEvento(
+  ownerEntraObjectId: string,
+  eventoExistente: string | null,
+  evento: EventoGraph,
+): { method: "POST" | "PATCH"; path: string; body: EventoGraph } {
+  const base = `/users/${ownerEntraObjectId}`;
+  if (eventoExistente) {
+    // `transactionId` e so da criacao: reenvia-lo num PATCH nao significa nada.
+    const { transactionId: _ignorado, ...semTransacao } = evento;
+    /*
+     * Reuniao ONLINE (sem local no corpo): apaga qualquer local fisico anterior
+     * do MESMO evento — presencial que virou online nao pode continuar com o
+     * endereco da sede no Outlook. Mesmo id, mesmo Teams: so o local muda.
+     */
+    const body: EventoGraph = semTransacao.location
+      ? semTransacao
+      : { ...semTransacao, location: LOCAL_REMOVIDO, locations: [] };
+    return { method: "PATCH", path: `${base}/events/${eventoExistente}`, body };
+  }
+  return { method: "POST", path: `${base}/events`, body: evento };
 }
 
 /**
@@ -266,6 +355,9 @@ export const CAMPOS_QUE_DESATUALIZAM = [
   "meetingLink",
   // Habilitar a reuniao online muda o evento: o Graph precisa provisiona-la.
   "onlineMeetingProvider",
+  // Modalidade e local aparecem no corpo e no `location` do convite (025).
+  "modality",
+  "physicalLocationKey",
 ] as const;
 
 /** Alguma mudanca do PATCH exige atualizar o evento? */

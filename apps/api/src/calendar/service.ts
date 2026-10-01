@@ -11,9 +11,11 @@ import {
   type DirectoryAddress,
   type GraphConfig,
 } from "../graph/client.js";
+import { encontrarLocalFisico } from "../meetings/locations.js";
 import {
   montarAttendees,
   montarEvento,
+  planejarChamadaDoEvento,
   resolverEnderecoCorporativo,
   type ParticipanteParaConvite,
   type ReuniaoParaCalendario,
@@ -242,9 +244,12 @@ async function carregarDados(executor: Executor, meetingId: string): Promise<Dad
     organizer_entra_object_id: string | null;
     organizer_name: string | null;
     online_meeting_provider: "teamsForBusiness" | null;
+    modality: "online" | "in_person";
+    physical_location_key: string | null;
   }>(
     `SELECT m.id, m.title, m.description, m.start_at, m.end_at, m.timezone,
             m.meeting_link, m.online_meeting_provider,
+            m.modality, m.physical_location_key,
             m.organizer_entra_object_id, m.organizer_name
        FROM meetings m
       WHERE m.id = $1`,
@@ -313,6 +318,9 @@ async function carregarDados(executor: Executor, meetingId: string): Promise<Dad
       timezone: row.timezone,
       meetingLink: row.meeting_link,
       onlineMeetingProvider: row.online_meeting_provider,
+      modality: row.modality,
+      physicalLocation:
+        row.modality === "in_person" ? encontrarLocalFisico(row.physical_location_key) : null,
     },
     ownerEntraObjectId: row.organizer_entra_object_id,
     participantes: participantes.map((p) => ({
@@ -475,22 +483,16 @@ export async function syncMeetingCalendar(
     }
 
     const evento = montarEvento(dados.reuniao, attendees, { idempotencyKey });
-    const base = `/users/${dados.ownerEntraObjectId}`;
+    // Existe evento? PATCH nele. Nao existe? POST com a chave fixa. Nunca um
+    // segundo evento para a mesma reuniao — ver `planejarChamadaDoEvento`.
+    const chamada = planejarChamadaDoEvento(dados.ownerEntraObjectId, eventoExistente, evento);
 
-    const resposta = eventoExistente
-      ? await graphRequest<EventoResposta>(config, `${base}/events/${eventoExistente}`, {
-          method: "PATCH",
-          // `transactionId` e so da criacao: reenvia-lo num PATCH nao significa nada.
-          body: { ...evento, transactionId: undefined },
-          headers: PREFER_IMMUTABLE_ID,
-          timeoutMs: 15000,
-        })
-      : await graphRequest<EventoResposta>(config, `${base}/events`, {
-          method: "POST",
-          body: evento,
-          headers: PREFER_IMMUTABLE_ID,
-          timeoutMs: 15000,
-        });
+    const resposta = await graphRequest<EventoResposta>(config, chamada.path, {
+      method: chamada.method,
+      body: chamada.body,
+      headers: PREFER_IMMUTABLE_ID,
+      timeoutMs: 15000,
+    });
 
     const eventId = resposta.id ?? eventoExistente;
     if (!eventId) {
