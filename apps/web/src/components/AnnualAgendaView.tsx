@@ -705,7 +705,9 @@ function AgendaDetail({
                 type="button"
                 disabled={ocupado || !email.trim() || bloqueiosTempo.length > 0}
                 title={bloqueiosTempo.length > 0 ? (pt ? "Ajuste a duração dos temas antes de enviar." : "Fix topic durations first.") : undefined}
-                onClick={() => void executar(() => requestAnnualAgendaApproval(agenda.id, email.trim()), pt ? "Agenda Anual enviada para aprovação (compilado anexado)." : "Plan sent for approval.")}
+                onClick={() => void executar(() => requestAnnualAgendaApproval(agenda.id, email.trim()), pt
+                    ? "E-mail aceito pelo Microsoft 365 e enviado pela sua caixa (confira em Itens Enviados). A entrega depende do servidor de e-mail do destinatário."
+                    : "E-mail accepted by Microsoft 365 and sent from your mailbox (see Sent Items). Delivery depends on the recipient's mail server.")}
                 className="px-4 py-2 bg-slate-800 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
               >
                 <Send className="w-3.5 h-3.5" />

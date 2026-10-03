@@ -1,6 +1,6 @@
 import { ConfidentialClientApplication } from "@azure/msal-node";
 import { HttpError } from "../http-error.js";
-import { GraphError, getGraphConfig, graphRequest, missingGraphConfig } from "../graph/client.js";
+import { GraphError, getGraphConfig, graphRequest, missingGraphConfig, type RespostaDoGraph } from "../graph/client.js";
 
 /**
  * Envio de e-mail pela caixa do PROPRIO usuario autenticado.
@@ -110,30 +110,16 @@ export interface EmailParaEnviar {
 }
 
 /**
- * Envia o e-mail a partir da caixa de quem esta na sessao.
+ * Corpo de `POST /me/sendMail`. Puro, para ser testado sem rede.
  *
  * `saveToSentItems: true` de proposito: a pessoa precisa ver na propria caixa de
  * Itens Enviados o que o PGCP mandou em nome dela. Um envio invisivel para o
- * remetente seria indefensavel numa auditoria.
+ * remetente seria indefensavel numa auditoria — e e por la que se confirma o
+ * envio quando o destinatario diz que nao recebeu.
+ *
+ * Destinatario: o endereco informado, sem filtro de dominio (externo e valido).
  */
-export async function enviarEmail(userToken: string, email: EmailParaEnviar): Promise<void> {
-  const config = getGraphConfig();
-  if (!config) {
-    throw new HttpError(
-      503,
-      `Integração com o Microsoft Graph não configurada. Faltam: ${missingGraphConfig().join(", ")}.`,
-    );
-  }
-
-  if (email.anexo && email.anexo.conteudo.length > ANEXO_MAX_BYTES) {
-    throw new HttpError(
-      413,
-      "O documento gerado ficou grande demais para ser enviado por e-mail. Reduza a quantidade de pautas.",
-    );
-  }
-
-  const token = await adquirirTokenDeEnvio(userToken);
-
+export function corpoDoSendMail(email: EmailParaEnviar): { message: Record<string, unknown>; saveToSentItems: true } {
   const mensagem: Record<string, unknown> = {
     subject: email.assunto,
     body: {
@@ -161,6 +147,59 @@ export async function enviarEmail(userToken: string, email: EmailParaEnviar): Pr
       },
     ];
   }
+  return { message: mensagem, saveToSentItems: true };
+}
+
+/**
+ * Falha do Graph no ENVIO DELEGADO -> mensagem que aponta a camada certa.
+ *
+ * O tradutor generico do cliente fala de permissao de APLICACAO e de calendario
+ * (o caso dele); aqui o token e delegado: 401 e sessao/credencial, 403 e a
+ * caixa do usuario ou a permissao Mail.Send delegada.
+ */
+export function falhaDeEnvio(error: unknown): unknown {
+  if (!(error instanceof GraphError)) return error;
+  if (error.status === 401) {
+    return new GraphError(
+      "O Microsoft 365 não aceitou a sua credencial para enviar o e-mail. Saia e entre de novo no PGCP e tente outra vez.",
+      error.code,
+      401,
+    );
+  }
+  if (error.status === 403) {
+    return new GraphError(
+      "O Microsoft 365 recusou o envio pela sua caixa de e-mail. Confirme com o administrador a permissão " +
+        "Mail.Send (delegada) do PGCP e se a sua conta tem caixa do Exchange Online habilitada.",
+      error.code,
+      403,
+    );
+  }
+  return error;
+}
+
+/** Envia o e-mail a partir da caixa de quem esta na sessao. */
+export async function enviarEmail(
+  userToken: string,
+  email: EmailParaEnviar,
+  /** Nome da operação no log estruturado (ex.: `annual_agenda_send_mail`). */
+  operacao = "send_mail",
+): Promise<RespostaDoGraph> {
+  const config = getGraphConfig();
+  if (!config) {
+    throw new HttpError(
+      503,
+      `Integração com o Microsoft Graph não configurada. Faltam: ${missingGraphConfig().join(", ")}.`,
+    );
+  }
+
+  if (email.anexo && email.anexo.conteudo.length > ANEXO_MAX_BYTES) {
+    throw new HttpError(
+      413,
+      "O documento gerado ficou grande demais para ser enviado por e-mail. Reduza a quantidade de pautas.",
+    );
+  }
+
+  const token = await adquirirTokenDeEnvio(userToken);
 
   /*
    * `/me/sendMail` — resolve pela identidade DO TOKEN. Nao existe id de caixa
@@ -169,11 +208,27 @@ export async function enviarEmail(userToken: string, email: EmailParaEnviar): Pr
    *
    * O corpo NAO vai para log: carrega o texto do e-mail e o anexo em base64.
    */
-  await graphRequest<void>(config, "/me/sendMail", {
-    method: "POST",
-    body: { message: mensagem, saveToSentItems: true },
-    accessToken: token,
-    // Anexo torna a requisicao maior; o padrao de 10s e curto para 3 MB.
-    timeoutMs: 30000,
-  });
+  /*
+   * 202 Accepted = o Microsoft 365 ACEITOU a mensagem para envio, não que ela
+   * chegou ao destinatário (spam, quarentena, política do domínio de destino,
+   * autenticação SPF/DKIM do remetente ficam depois daqui). A prova de envio é
+   * a cópia em Itens Enviados; a de entrega, o message trace do Exchange.
+   */
+  let resposta: RespostaDoGraph | null = null;
+  try {
+    await graphRequest<void>(config, "/me/sendMail", {
+      method: "POST",
+      body: corpoDoSendMail(email),
+      accessToken: token,
+      // Anexo torna a requisicao maior; o padrao de 10s e curto para 3 MB.
+      timeoutMs: 30000,
+      operacao,
+      aoResponder: (info) => {
+        resposta = info;
+      },
+    });
+  } catch (error) {
+    throw falhaDeEnvio(error);
+  }
+  return resposta ?? { status: 202, requestId: null, clientRequestId: "" };
 }

@@ -498,6 +498,21 @@ organizador não precisa ter conta no PGCP), e as chamadas usam
 Nenhum dos fluxos usa `Mail.Send` Application. O convite em si não é e-mail do
 PGCP: é o Exchange que notifica os `attendees` do evento.
 
+**`202 Accepted` não é entrega.** `/me/sendMail` devolve 202 quando o Microsoft
+365 ACEITA a mensagem; a entrega ao destinatário depende do Exchange e do
+servidor de destino. O PGCP só marca a Agenda Anual como enviada depois do
+202 (falha do OBO ou do Graph não cria versão nem muda o status), guarda a
+cópia em Itens Enviados (`saveToSentItems: true`) e registra no log
+estruturado `request-id`/`client-request-id` (sem token, corpo ou
+destinatário). Destinatário externo é aceito. Quando o Graph aceitou e o
+e-mail não chegou, o diagnóstico é do Exchange/DNS do domínio remetente:
+Itens Enviados, NDR, message trace (`internetMessageId`), spam/quarentena do
+destino, política de envio externo e autenticação do domínio (SPF único, DKIM
+do Microsoft 365, DMARC). No QA de 03/10/2026 o domínio remetente do tenant de
+teste tinha **dois registros SPF** (inválido pela RFC 7208), **sem DKIM** do
+Microsoft 365 e DMARC `p=none` — pendência de configuração do tenant, não do
+código.
+
 O SPA continua sem nenhuma permissão do Graph; o navegador só envia o token da
 API do PGCP. Token e segredo do Graph nunca saem do backend.
 

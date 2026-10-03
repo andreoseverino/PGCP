@@ -16,6 +16,7 @@ import {
 } from "../meetings/create.js";
 import { parseEmailDoAprovador } from "../meetings/agenda-validation.js";
 import { enviarEmail } from "../mail/send.js";
+import { GraphError } from "../graph/client.js";
 import { dentroDaTransacao, transacaoAmbiente } from "../transacao-ambiente.js";
 import { horaLocal, parseTipoDeSessao, type TipoDeSessao } from "../meetings/title.js";
 import { cronogramaDosTemas, tempoDaReuniao, type TempoDaReuniao } from "../meetings/schedule.js";
@@ -1979,13 +1980,25 @@ export async function gerarDocumentoDaVersao(id: string): Promise<{ pdf: Buffer;
  * Reenviar enquanto aguarda (corrigir destinatário) cria a versão seguinte e
  * retira a anterior — no máximo uma versão em aberto (índice da 028).
  */
+/** Falha no envio do e-mail: a mesma causa, dizendo que a Agenda NÃO ficou como enviada. */
+function comAvisoDeNaoEnviada(error: unknown): unknown {
+  const aviso = " A Agenda não foi marcada como enviada.";
+  if (error instanceof GraphError) {
+    return new GraphError(`${error.message}${aviso}`, error.code, error.status, error.retryAfterSeconds);
+  }
+  if (error instanceof HttpError) return new HttpError(error.status, `${error.message}${aviso}`);
+  return error;
+}
+
 export async function solicitarAprovacao(
   id: string,
   emailBruto: unknown,
   actor: MeetingActor,
   userToken: string,
   /** Injetável para teste; em produção, `Mail.Send` delegado (OBO). */
-  enviar: typeof enviarEmail = enviarEmail,
+  enviar: (
+    ...args: Parameters<typeof enviarEmail>
+  ) => Promise<Awaited<ReturnType<typeof enviarEmail>> | void> = enviarEmail,
 ): Promise<AnnualAgendaDetail> {
   assertId(id);
   const email = parseEmailDoAprovador(emailBruto);
@@ -2029,8 +2042,9 @@ export async function solicitarAprovacao(
         aprovadaEm: null,
       });
 
+      let aceito: { status: number; requestId: string | null } | null = null;
       try {
-        await enviar(userToken, {
+        aceito = (await enviar(userToken, {
           para: email,
           assunto: `Aprovação da Agenda Anual ${agenda.year} — ${agenda.title}`,
           // Texto puro, montado no servidor. Mesma decisao de `mail/send.ts`.
@@ -2046,18 +2060,21 @@ export async function solicitarAprovacao(
             tipo: PDF_CONTENT_TYPE,
             conteudo: pdf,
           },
-        });
+        }, "annual_agenda_send_mail")) || null;
       } catch (error) {
+        // Nada foi gravado: sem versão, status inalterado (a transação desfaz).
+        const status = (error as { status?: number } | null)?.status;
+        const codigo = (error as { code?: string } | null)?.code;
         await recordAudit({
           actorUserId: actor.userId,
           actorName: actor.name,
           action: "Falha ao enviar Agenda Anual para aprovação",
           entityType: "annual_agenda",
           entityId: id,
-          entityLabel: agenda.title,
+          entityLabel: `${agenda.title}${status ? ` — Microsoft 365 respondeu ${status}` : ""}${codigo ? ` (${codigo})` : ""}`,
           status: "failure",
         });
-        throw error;
+        throw comAvisoDeNaoEnviada(error);
       }
       enviado = true;
 
@@ -2084,7 +2101,10 @@ export async function solicitarAprovacao(
         action: "Agenda Anual enviada para aprovação",
         entityType: "annual_agenda",
         entityId: id,
-        entityLabel: `${agenda.title} — versão ${numero} enviada a ${email}`,
+        // "Enviada" = ACEITA pelo Microsoft 365 (202); a entrega é do Exchange.
+        entityLabel:
+          `${agenda.title} — versão ${numero} enviada a ${email} (aceita pelo Microsoft 365` +
+          `${aceito?.requestId ? `; request-id ${aceito.requestId}` : ""})`,
         status: "success",
       });
     });

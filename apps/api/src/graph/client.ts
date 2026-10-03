@@ -34,6 +34,7 @@
  *   - nenhuma rota adquire token por conta propria.
  */
 
+import { randomUUID } from "node:crypto";
 import { ConfidentialClientApplication, type AuthenticationResult } from "@azure/msal-node";
 
 const GRAPH_DEFAULT_BASE_URL = "https://graph.microsoft.com/v1.0";
@@ -206,6 +207,24 @@ export interface GraphRequestOptions {
    * Continua sem sair deste modulo e sem aparecer em log.
    */
   accessToken?: string;
+  /**
+   * Nome da operação para o LOG ESTRUTURADO de sucesso (ex.: `send_mail`).
+   * Sem ele, só as falhas são registradas, como antes.
+   */
+  operacao?: string;
+  /** Recebe status e ids de correlação da resposta bem-sucedida. */
+  aoResponder?: (info: RespostaDoGraph) => void;
+}
+
+/**
+ * Correlação de uma resposta do Graph: `request-id` (do Graph) e
+ * `client-request-id` (enviado pelo PGCP). É o que o suporte Microsoft e o
+ * diagnóstico pedem — nunca token, corpo ou destinatário.
+ */
+export interface RespostaDoGraph {
+  status: number;
+  requestId: string | null;
+  clientRequestId: string;
 }
 
 /**
@@ -245,8 +264,10 @@ export async function graphRequest<T>(
   urlOrPath: string,
   options: GraphRequestOptions = {},
 ): Promise<T> {
-  const { headers = {}, timeoutMs = 10000, method = "GET", body, accessToken } = options;
+  const { headers = {}, timeoutMs = 10000, method = "GET", body, accessToken, operacao, aoResponder } = options;
   const url = urlOrPath.startsWith("http") ? urlOrPath : `${config.baseUrl}${urlOrPath}`;
+  // Id de correlação desta chamada (o Graph o devolve e o registra do lado dele).
+  const clientRequestId = randomUUID();
 
   for (let tentativa = 0; ; tentativa++) {
     // Token delegado quando quem chama ja o obteve; senao, o da aplicacao.
@@ -263,6 +284,7 @@ export async function graphRequest<T>(
           ...headers,
           Authorization: `Bearer ${token}`,
           Accept: "application/json",
+          "client-request-id": clientRequestId,
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -274,7 +296,17 @@ export async function graphRequest<T>(
       clearTimeout(timer);
     }
 
+    const requestId = response.headers.get("request-id");
+
     if (response.ok) {
+      const info: RespostaDoGraph = { status: response.status, requestId, clientRequestId };
+      if (operacao) {
+        // Log estruturado e seguro: sem token, sem corpo, sem destinatário.
+        console.info(
+          JSON.stringify({ kind: "integration", integration: "microsoft_graph", operation: operacao, ...info }),
+        );
+      }
+      aoResponder?.(info);
       /*
        * SUCESSO SEM CORPO E SUCESSO.
        *
@@ -345,7 +377,8 @@ export async function graphRequest<T>(
     }
 
     console.error(
-      `[graph] ${method} ${rotuloParaLog(url)} respondeu ${response.status}${code ? ` (${code})` : ""}`,
+      `[graph] ${method} ${rotuloParaLog(url)} respondeu ${response.status}${code ? ` (${code})` : ""}` +
+        ` request-id=${requestId ?? "ausente"} client-request-id=${clientRequestId}`,
     );
 
     // Traduz as falhas que tem correcao clara no App Registration.
