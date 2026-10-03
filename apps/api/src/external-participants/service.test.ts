@@ -22,16 +22,27 @@ const valido = {
   phone: "+55 (11) 91234-5678",
 };
 
-test("criação válida; órgão colegiado opcional; nome normalizado", () => {
+test("criação válida; nome normalizado; sem órgãos/temas no corpo = vínculos intocados", () => {
   const input = parseExternalParticipantInput(valido);
   assert.deepEqual(input, {
     fullName: "Maria Souza",
     email: "maria@parceiro.com.br",
     phone: "+55 (11) 91234-5678",
-    governanceBodyId: null,
+    // Editar só o cadastro (tela de Pessoas externas) NÃO apaga os grupos da pessoa.
+    classificacoes: null,
   });
-  const comOrgao = parseExternalParticipantInput({ ...valido, governanceBodyId: "11111111-1111-1111-1111-111111111111" });
-  assert.equal(comOrgao.governanceBodyId, "11111111-1111-1111-1111-111111111111");
+  assert.deepEqual(parseExternalParticipantInput({ ...valido, governanceBodyIds: [] }).classificacoes, {
+    governanceBodyIds: [],
+    topicIds: [],
+  });
+});
+
+test("múltiplos órgãos e múltiplos temas; duplicados no corpo viram um só", () => {
+  const G1 = "11111111-1111-1111-1111-111111111111";
+  const G2 = "22222222-2222-2222-2222-222222222222";
+  const T1 = "33333333-3333-3333-3333-333333333333";
+  const input = parseExternalParticipantInput({ ...valido, governanceBodyIds: [G1, G2, G1.toUpperCase()], topicIds: [T1] });
+  assert.deepEqual(input.classificacoes, { governanceBodyIds: [G1, G2], topicIds: [T1] });
 });
 
 test("nome, e-mail e telefone são obrigatórios", () => {
@@ -44,8 +55,11 @@ test("nome, e-mail e telefone são obrigatórios", () => {
   assert.throws(() => parseExternalParticipantInput({ ...valido, fullName: "x".repeat(201) }), HttpError);
 });
 
-test("órgão colegiado inválido é recusado (texto livre não vira órgão)", () => {
-  assert.throws(() => parseExternalParticipantInput({ ...valido, governanceBodyId: "Comitê X" }), HttpError);
+test("órgão/tema inválido é recusado; campo antigo `governanceBodyId` não é mais aceito", () => {
+  assert.throws(() => parseExternalParticipantInput({ ...valido, governanceBodyIds: ["Comitê X"] }), HttpError);
+  assert.throws(() => parseExternalParticipantInput({ ...valido, topicIds: "Finanças" }), HttpError);
+  assert.throws(() => parseExternalParticipantInput({ ...valido, governanceBodyIds: Array(51).fill("11111111-1111-1111-1111-111111111111") }), HttpError);
+  assert.throws(() => parseExternalParticipantInput({ ...valido, governanceBodyId: "11111111-1111-1111-1111-111111111111" }), HttpError);
 });
 
 test("e-mail: um endereço, sem separador nem injeção", () => {

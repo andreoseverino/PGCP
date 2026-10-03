@@ -3,6 +3,14 @@ import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
 import { findDirectoryUsersByEmail, getGraphConfig } from "../graph/client.js";
+import {
+  exigirExistencia,
+  gravarClassificacoes,
+  lerClassificacoes,
+  parseClassificacoes,
+  type Classificacoes,
+  type VinculosLidos,
+} from "../participants/classifications.js";
 
 /**
  * PARTICIPANTES EXTERNOS — cadastro local de quem participa de reunioes sem
@@ -30,7 +38,9 @@ export interface ExternalParticipant {
   fullName: string;
   email: string;
   phone: string;
-  governanceBody: { id: string; name: string } | null;
+  /** Classificacao (027): orgaos colegiados e temas da Biblioteca. So sugestao. */
+  governanceBodies: VinculosLidos["governanceBodies"];
+  topics: VinculosLidos["topics"];
   createdAt: string;
   updatedAt: string;
 }
@@ -39,14 +49,19 @@ export interface ExternalParticipantInput {
   fullName: string;
   email: string;
   phone: string;
-  governanceBodyId: string | null;
+  /**
+   * Órgãos/temas (027; substitui o `governanceBodyId` único da 026). `null` =
+   * não informados: a gravação NÃO mexe nos vínculos (os grupos de participação
+   * são mantidos na própria tela de grupos).
+   */
+  classificacoes: Classificacoes | null;
 }
 
 // ---------------------------------------------------------------------------
 // Validacao
 // ---------------------------------------------------------------------------
 
-const CAMPOS = ["fullName", "email", "phone", "governanceBodyId"] as const;
+const CAMPOS = ["fullName", "email", "phone", "governanceBodyIds", "topicIds"] as const;
 
 /**
  * Endereco pragmatico (mesmo criterio do aprovador de pautas): forma de
@@ -107,19 +122,12 @@ export function parseExternalParticipantInput(body: unknown): ExternalParticipan
     throw new HttpError(400, "O nome deve ter entre 2 e 200 caracteres.");
   }
 
-  let governanceBodyId: string | null = null;
-  if (dados.governanceBodyId !== undefined && dados.governanceBodyId !== null && dados.governanceBodyId !== "") {
-    if (typeof dados.governanceBodyId !== "string" || !UUID_PATTERN.test(dados.governanceBodyId)) {
-      throw new HttpError(400, "O órgão colegiado informado é inválido.");
-    }
-    governanceBodyId = dados.governanceBodyId.toLowerCase();
-  }
-
   return {
     fullName,
     email: parseEmail(dados.email),
     phone: parsePhone(dados.phone),
-    governanceBodyId,
+    classificacoes:
+      dados.governanceBodyIds === undefined && dados.topicIds === undefined ? null : parseClassificacoes(dados),
   };
 }
 
@@ -195,30 +203,25 @@ interface Row {
   full_name: string;
   email: string;
   phone: string;
-  governance_body_id: string | null;
-  governance_body_name: string | null;
   created_at: Date;
   updated_at: Date;
 }
 
 const SELECT = `
   SELECT ep.id, ep.full_name, ep.email, ep.phone,
-         ep.governance_body_id, gb.name AS governance_body_name,
          ep.created_at, ep.updated_at
     FROM external_participants ep
-    LEFT JOIN governance_bodies gb ON gb.id = ep.governance_body_id`;
+`;
 
-function toParticipant(row: Row): ExternalParticipant {
+function toParticipant(row: Row, vinculos: VinculosLidos | undefined): ExternalParticipant {
   return {
     id: row.id,
     origin: "pgcp",
     fullName: row.full_name,
     email: row.email,
     phone: row.phone,
-    governanceBody:
-      row.governance_body_id && row.governance_body_name
-        ? { id: row.governance_body_id, name: row.governance_body_name }
-        : null,
+    governanceBodies: vinculos?.governanceBodies ?? [],
+    topics: vinculos?.topics ?? [],
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -233,13 +236,15 @@ export async function listExternalParticipants(query?: string): Promise<External
         [`%${termo.replace(/[\\%_]/g, (c) => `\\${c}`)}%`],
       )
     : await pool.query<Row>(`${SELECT} ORDER BY ep.full_name, ep.id LIMIT 500`);
-  return rows.map(toParticipant);
+  const vinculos = await lerClassificacoes(pool, "external", rows.map((r) => r.id));
+  return rows.map((r) => toParticipant(r, vinculos.get(r.id)));
 }
 
 async function findById(client: Pick<PoolClient, "query">, id: string): Promise<ExternalParticipant> {
   const { rows } = await client.query<Row>(`${SELECT} WHERE ep.id = $1`, [id]);
   if (!rows[0]) throw new HttpError(404, "Participante não encontrado.");
-  return toParticipant(rows[0]);
+  const vinculos = await lerClassificacoes(client, "external", [id]);
+  return toParticipant(rows[0], vinculos.get(id));
 }
 
 // ---------------------------------------------------------------------------
@@ -271,18 +276,13 @@ async function emTransacao<T>(fn: (client: PoolClient) => Promise<T>): Promise<T
     const code = (error as { code?: string } | null)?.code;
     // Corrida entre duas gravacoes do mesmo e-mail: o indice unico decide.
     if (code === "23505") throw new HttpError(409, "Já existe participante do PGCP com este e-mail.");
-    if (code === "23503") throw new HttpError(404, "Órgão colegiado não encontrado.");
+    if (code === "23503") throw new HttpError(404, "Órgão colegiado ou tema não encontrado.");
     throw error;
   } finally {
     client.release();
   }
 }
 
-async function exigirOrgao(client: PoolClient, governanceBodyId: string | null): Promise<void> {
-  if (!governanceBodyId) return;
-  const { rows } = await client.query("SELECT 1 FROM governance_bodies WHERE id = $1", [governanceBodyId]);
-  if (rows.length === 0) throw new HttpError(404, "Órgão colegiado não encontrado.");
-}
 
 export async function createExternalParticipant(
   input: ExternalParticipantInput,
@@ -290,14 +290,18 @@ export async function createExternalParticipant(
   checker: DirectoryChecker = verificarNoDiretorio,
 ): Promise<ResultadoGravacao> {
   return emTransacao(async (client) => {
-    await exigirOrgao(client, input.governanceBodyId);
+    if (input.classificacoes) await exigirExistencia(client, input.classificacoes);
     await exigirSemDuplicidade(client, input, checker, null);
 
     const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO external_participants (full_name, email, phone, governance_body_id, created_by_user_id)
-            VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [input.fullName, input.email, input.phone, input.governanceBodyId, ator.userId],
+      `INSERT INTO external_participants (full_name, email, phone, created_by_user_id)
+            VALUES ($1, $2, $3, $4) RETURNING id`,
+      [input.fullName, input.email, input.phone, ator.userId],
     );
+    // `governance_body_id` (026) depreciada: orgaos vivem em participant_governance_bodies.
+    if (input.classificacoes) {
+      await gravarClassificacoes(client, { tipo: "external", id: rows[0]!.id }, input.classificacoes);
+    }
 
     // Trilha sem e-mail/telefone: nome e id bastam para auditar o ato.
     await recordAuditIn(client, {
@@ -327,7 +331,7 @@ export async function updateExternalParticipant(
       [id],
     );
     if (!atual[0]) throw new HttpError(404, "Participante não encontrado.");
-    await exigirOrgao(client, input.governanceBodyId);
+    if (input.classificacoes) await exigirExistencia(client, input.classificacoes);
 
     // So revalida (inclusive no diretorio) quando o e-mail muda.
     if (atual[0].email.toLowerCase() !== input.email.toLowerCase()) {
@@ -336,10 +340,12 @@ export async function updateExternalParticipant(
 
     await client.query(
       `UPDATE external_participants
-          SET full_name = $2, email = $3, phone = $4, governance_body_id = $5, updated_by_user_id = $6
+          SET full_name = $2, email = $3, phone = $4, updated_by_user_id = $5
         WHERE id = $1`,
-      [id, input.fullName, input.email, input.phone, input.governanceBodyId, ator.userId],
+      [id, input.fullName, input.email, input.phone, ator.userId],
     );
+    // Remover vinculo nunca apaga a pessoa; a trilha abaixo consolida o ato.
+    if (input.classificacoes) await gravarClassificacoes(client, { tipo: "external", id }, input.classificacoes);
 
     await recordAuditIn(client, {
       actorUserId: ator.userId,

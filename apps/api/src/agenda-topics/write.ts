@@ -363,7 +363,7 @@ async function emTransacao<T>(fn: (client: PoolClient) => Promise<T>): Promise<T
 function traduzirErro(error: unknown): unknown {
   if (error instanceof HttpError) return error;
   if ((error as { code?: string } | null)?.code === "23505") {
-    return new HttpError(409, "A mesma pessoa foi informada mais de uma vez nesta pauta.");
+    return new HttpError(409, "A mesma pessoa foi informada mais de uma vez neste tema.");
   }
   return error;
 }
@@ -372,60 +372,71 @@ export async function createAgendaTopic(
   input: AgendaTopicInput,
   actor: MeetingActor,
 ): Promise<AgendaTopicDetail> {
-  const id = await emTransacao(async (client) => {
-    await validarReferencias(client, input);
+  const id = await emTransacao((client) => inserirTemaNaBiblioteca(client, input, actor));
+  return findAgendaTopic(id);
+}
 
-    const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO agenda_topics
-              (title, description, estimated_duration_minutes, generates_action_item,
-               responsible_label, responsible_entra_tenant_id, responsible_entra_object_id,
-               agenda_topic_type_id, agenda_topic_nature_id, governance_body_id,
-               is_circular_theme)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-         RETURNING id`,
-      [
-        input.title,
-        input.description ?? null,
-        input.estimatedDurationMinutes ?? null,
-        input.generatesActionItem ?? false,
-        input.responsibleLabel ?? null,
-        input.responsibleEntraObjectId ? actor.entraTenantId : null,
-        input.responsibleEntraObjectId ?? null,
-        input.agendaTopicTypeId ?? null,
-        input.agendaTopicNatureId ?? null,
-        input.governanceBodyId ?? null,
-        input.isCircularTheme ?? false,
-      ],
-    );
+/**
+ * Cadastra o tema na Biblioteca DENTRO da transação do chamador: ficha,
+ * participantes padrão (com o responsável-pessoa garantido) e auditoria.
+ * Fonte única — a Biblioteca e o "+ Novo tema" da Agenda Anual usam esta mesma
+ * função. Título não é único no catálogo: cada chamada cria um tema novo.
+ */
+export async function inserirTemaNaBiblioteca(
+  client: PoolClient,
+  input: AgendaTopicInput,
+  actor: MeetingActor,
+): Promise<string> {
+  await validarReferencias(client, input);
 
-    const topicId = rows[0]!.id;
+  const { rows } = await client.query<{ id: string }>(
+    `INSERT INTO agenda_topics
+            (title, description, estimated_duration_minutes, generates_action_item,
+             responsible_label, responsible_entra_tenant_id, responsible_entra_object_id,
+             agenda_topic_type_id, agenda_topic_nature_id, governance_body_id,
+             is_circular_theme)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING id`,
+    [
+      input.title,
+      input.description ?? null,
+      input.estimatedDurationMinutes ?? null,
+      input.generatesActionItem ?? false,
+      input.responsibleLabel ?? null,
+      input.responsibleEntraObjectId ? actor.entraTenantId : null,
+      input.responsibleEntraObjectId ?? null,
+      input.agendaTopicTypeId ?? null,
+      input.agendaTopicNatureId ?? null,
+      input.governanceBodyId ?? null,
+      input.isCircularTheme ?? false,
+    ],
+  );
 
-    await reconciliarParticipantesDaBiblioteca(
-      client,
-      topicId,
-      input.participants ?? [],
-      actor.entraTenantId,
-      {
-        label: input.responsibleLabel,
-        entraTenantId: input.responsibleEntraObjectId ? actor.entraTenantId : null,
-        entraObjectId: input.responsibleEntraObjectId,
-      },
-    );
+  const topicId = rows[0]!.id;
 
-    await recordAuditIn(client, {
-      actorUserId: actor.userId,
-      actorName: actor.name,
-      action: "Pauta criada na Biblioteca",
-      entityType: "agenda_topic",
-      entityId: topicId,
-      entityLabel: input.title,
-      status: "success",
-    });
+  await reconciliarParticipantesDaBiblioteca(
+    client,
+    topicId,
+    input.participants ?? [],
+    actor.entraTenantId,
+    {
+      label: input.responsibleLabel,
+      entraTenantId: input.responsibleEntraObjectId ? actor.entraTenantId : null,
+      entraObjectId: input.responsibleEntraObjectId,
+    },
+  );
 
-    return topicId;
+  await recordAuditIn(client, {
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    action: "Pauta criada na Biblioteca",
+    entityType: "agenda_topic",
+    entityId: topicId,
+    entityLabel: input.title,
+    status: "success",
   });
 
-  return findAgendaTopic(id);
+  return topicId;
 }
 
 const COLUNA_DE: Record<string, string> = {
@@ -451,7 +462,7 @@ export async function updateAgendaTopic(
       "SELECT title FROM agenda_topics WHERE id = $1 FOR UPDATE",
       [id],
     );
-    if (existe.rows.length === 0) throw new HttpError(404, "Pauta não encontrada na biblioteca.");
+    if (existe.rows.length === 0) throw new HttpError(404, "Tema não encontrado na Biblioteca.");
 
     await validarReferencias(client, input);
 
@@ -540,7 +551,7 @@ export async function addTopicParticipant(
       "SELECT title FROM agenda_topics WHERE id = $1",
       [topicId],
     );
-    if (rows.length === 0) throw new HttpError(404, "Pauta não encontrada na biblioteca.");
+    if (rows.length === 0) throw new HttpError(404, "Tema não encontrado na Biblioteca.");
 
     await inserirParticipante(client, topicId, input, actor.entraTenantId);
 
@@ -580,11 +591,11 @@ export async function exigirParticipanteRemovivelDaBiblioteca(
       WHERE t.id = $1`,
     [topicId, participantId],
   );
-  if (rows.length === 0) throw new HttpError(404, "Pauta não encontrada na biblioteca.");
+  if (rows.length === 0) throw new HttpError(404, "Tema não encontrado na Biblioteca.");
   if (rows[0]!.is_responsible) {
     throw new HttpError(
       409,
-      "O responsável atual deve permanecer participante da pauta. Troque o responsável antes de removê-lo.",
+      "O responsável atual deve permanecer participante do tema. Troque o responsável antes de removê-lo.",
     );
   }
   return rows[0]!.title;
@@ -611,7 +622,7 @@ export async function removeTopicParticipant(
       "DELETE FROM agenda_topic_participants WHERE id = $1 AND agenda_topic_id = $2",
       [participantId, topicId],
     );
-    if (rowCount === 0) throw new HttpError(404, "Participante não encontrado nesta pauta.");
+    if (rowCount === 0) throw new HttpError(404, "Participante não encontrado neste tema.");
 
     await recordAuditIn(client, {
       actorUserId: actor.userId,
@@ -646,12 +657,12 @@ export async function deleteAgendaTopic(id: string, actor: MeetingActor): Promis
          FROM agenda_topics t WHERE t.id = $1`,
       [id],
     );
-    if (rows.length === 0) throw new HttpError(404, "Pauta não encontrada na biblioteca.");
+    if (rows.length === 0) throw new HttpError(404, "Tema não encontrado na Biblioteca.");
 
     if (rows[0]!.vinculos > 0) {
       throw new HttpError(
         409,
-        `Esta pauta está vinculada a ${rows[0]!.vinculos} reunião(ões) e não pode ser excluída.`,
+        `Este tema está vinculado a ${rows[0]!.vinculos} reunião(ões) e não pode ser excluído.`,
       );
     }
 

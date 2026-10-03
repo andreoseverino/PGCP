@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import pool from "../database.js";
+import { transacaoAmbiente } from "../transacao-ambiente.js";
 import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
 import type { MeetingActor } from "./create.js";
@@ -73,6 +74,9 @@ export async function exigirPautaDaReuniao(
 }
 
 async function emTransacao(fn: (client: PoolClient) => Promise<void>): Promise<void> {
+  // Dentro da transação de quem chamou (ex.: Agenda Anual com a agenda travada).
+  const ambienteAtual = transacaoAmbiente();
+  if (ambienteAtual) return fn(ambienteAtual);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");

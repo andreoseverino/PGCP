@@ -8,6 +8,12 @@ import {
   type ParticipantInput,
   type ParticipanteResolvido,
 } from "./create.js";
+import {
+  estaExcluidaDaReuniao,
+  identidadeDe,
+  limparExclusao,
+  registrarExclusao,
+} from "./participant-exclusions.js";
 
 /**
  * Participantes POR PAUTA (Opção A) — núcleo reutilizável.
@@ -67,6 +73,25 @@ export async function inserirMeetingParticipant(
     entityLabel: titulo,
     status: "success",
   });
+
+  // A pessoa está na reunião de novo: uma exceção antiga (031) deixa de valer.
+  // Os caminhos AUTOMÁTICOS consultam a exceção antes e nem chegam aqui.
+  const apagada = await limparExclusao(
+    client,
+    meetingId,
+    await identidadeDe(client, preparado, actor.entraTenantId),
+  );
+  if (apagada) {
+    await recordAuditIn(client, {
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      action: "Exceção de inclusão automática removida (pessoa incluída novamente)",
+      entityType: "meeting_participant",
+      entityId: rows[0]!.id,
+      entityLabel: titulo,
+      status: "success",
+    });
+  }
 
   return rows[0]!.id;
 }
@@ -130,11 +155,43 @@ export async function excluirMeetingParticipant(
 ): Promise<number> {
   await recusarRemocaoDeResponsavel(client, meetingId, participantId);
 
-  const { rowCount } = await client.query(
-    "DELETE FROM meeting_participants WHERE id = $1 AND meeting_id = $2",
+  const { rows: removidos, rowCount } = await client.query<{
+    user_id: string | null;
+    entra_tenant_id: string | null;
+    entra_object_id: string | null;
+    email: string | null;
+  }>(
+    `DELETE FROM meeting_participants WHERE id = $1 AND meeting_id = $2
+     RETURNING user_id, entra_tenant_id, entra_object_id, email`,
     [participantId, meetingId],
   );
   if ((rowCount ?? 0) > 0) {
+    // EXCEÇÃO (031): a inclusão automática não traz a pessoa de volta a ESTA
+    // reunião. Grupos (órgão/tema) não são tocados; próximas reuniões seguem.
+    const r = removidos[0];
+    const criada =
+      r !== undefined &&
+      (await registrarExclusao(
+        client,
+        meetingId,
+        await identidadeDe(
+          client,
+          { userId: r.user_id, entraObjectId: r.entra_object_id, email: r.email },
+          r.entra_tenant_id ?? actor.entraTenantId,
+        ),
+        actor.userId,
+      ));
+    if (criada) {
+      await recordAuditIn(client, {
+        actorUserId: actor.userId,
+        actorName: actor.name,
+        action: "Exceção registrada: não incluir automaticamente nesta reunião",
+        entityType: "meeting_participant",
+        entityId: participantId,
+        entityLabel: titulo,
+        status: "success",
+      });
+    }
     // A lista de convidados mudou: o evento no calendário deixa de refletir a
     // reunião. MESMO comportamento da aba Participantes.
     await marcarComoDesatualizada(client, meetingId);
@@ -196,16 +253,141 @@ export async function snapshotTopicParticipantsIntoItem(
     [agendaTopicId],
   );
 
+  let incluidos = 0;
   for (const p of rows) {
+    // Removida explicitamente desta reunião (031): o padrão do tema não a traz de volta.
+    const identidade = await identidadeDe(
+      client,
+      { userId: p.user_id, entraObjectId: p.entra_object_id, email: p.email },
+      actor.entraTenantId,
+    );
+    if (await estaExcluidaDaReuniao(client, meetingId, identidade)) continue;
+
     const input: ParticipantInput = {
       userId: p.user_id ?? undefined,
       entraObjectId: p.entra_object_id ?? undefined,
       displayName: p.display_name ?? undefined,
       email: p.email ?? undefined,
     };
-    const { id } = await findOrCreateMeetingParticipant(client, meetingId, input, actor, titulo);
+    const { id, criado } = await findOrCreateMeetingParticipant(client, meetingId, input, actor, titulo);
     await vincularParticipanteNaPauta(client, agendaItemId, id);
+    if (criado) incluidos += 1;
   }
+  if (incluidos > 0) {
+    await recordAuditIn(client, {
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      action: `Participantes padrão do tema incluídos na reunião (${incluidos})`,
+      entityType: "meeting_agenda_item",
+      entityId: agendaItemId,
+      entityLabel: titulo,
+      status: "success",
+    });
+  }
+}
+
+/** Pessoa de um grupo de participação do órgão (diretório OU externo do PGCP). */
+export interface MembroDeGrupo {
+  entraObjectId: string | null;
+  nome: string;
+  email: string | null;
+  externo: boolean;
+}
+
+/**
+ * Inclui UMA pessoa do grupo numa reunião, pelo caminho comum (find-or-create +
+ * calendário desatualizado + trilha). Respeita a exceção da reunião e nunca
+ * duplica (identidade ou mesmo e-mail já convidado por outra origem).
+ */
+export async function incluirMembroDoGrupo(
+  client: PoolClient,
+  meetingId: string,
+  m: MembroDeGrupo,
+  actor: MeetingActor,
+  titulo: string,
+): Promise<"incluida" | "excluida" | "ja_participa"> {
+  const identidade = await identidadeDe(client, { entraObjectId: m.entraObjectId, email: m.email }, actor.entraTenantId);
+  if (await estaExcluidaDaReuniao(client, meetingId, identidade)) return "excluida";
+
+  // Mesmo endereço já convidado (por outra origem): não duplica o convite.
+  if (m.email) {
+    const { rows } = await client.query(
+      "SELECT 1 FROM meeting_participants WHERE meeting_id = $1 AND lower(email) = lower($2) LIMIT 1",
+      [meetingId, m.email],
+    );
+    if (rows.length > 0) return "ja_participa";
+  }
+
+  const input: ParticipantInput = m.externo
+    ? { displayName: m.nome, email: m.email ?? undefined, participantType: "external" }
+    : { entraObjectId: m.entraObjectId!, displayName: m.nome, email: m.email ?? undefined };
+  const { criado } = await findOrCreateMeetingParticipant(client, meetingId, input, actor, titulo);
+  return criado ? "incluida" : "ja_participa";
+}
+
+/**
+ * GRUPO DO ÓRGÃO COLEGIADO: quem pertence ao grupo (`participant_governance_bodies`)
+ * entra na reunião NOVA do órgão. Roda na transação de criação, depois dos
+ * participantes manuais — o convite (Outlook/Teams) sai depois, uma vez, já com
+ * todos. (Entrar no grupo depois inclui a pessoa nas reuniões ABERTAS já
+ * existentes do órgão — `participants/groups.ts`.)
+ *
+ *   pessoa Microsoft  identidade (tenant, oid) do grupo, do tenant de quem cria
+ *   externo do PGCP   convidado por nome + e-mail, sem identidade Microsoft
+ *
+ * Deduplica por identidade E por e-mail (nunca dois convites para o mesmo
+ * endereço) e respeita a exceção da reunião. Devolve quantos entraram.
+ */
+export async function incluirGrupoDoOrgao(
+  client: PoolClient,
+  meetingId: string,
+  governanceBodyId: string,
+  actor: MeetingActor,
+  titulo: string,
+): Promise<number> {
+  const { rows: membros } = await client.query<{
+    entra_object_id: string | null;
+    nome: string;
+    email: string | null;
+    externo: boolean;
+  }>(
+    `SELECT dp.entra_object_id, dp.display_name AS nome, dp.email, false AS externo
+       FROM participant_governance_bodies g
+       JOIN directory_people dp ON dp.id = g.directory_person_id
+      WHERE g.governance_body_id = $1 AND dp.entra_tenant_id = $2
+     UNION ALL
+     SELECT NULL, ep.full_name, ep.email, true
+       FROM participant_governance_bodies g
+       JOIN external_participants ep ON ep.id = g.external_participant_id
+      WHERE g.governance_body_id = $1
+      ORDER BY nome`,
+    [governanceBodyId, actor.entraTenantId],
+  );
+
+  let incluidos = 0;
+  for (const m of membros) {
+    const r = await incluirMembroDoGrupo(
+      client,
+      meetingId,
+      { entraObjectId: m.entra_object_id, nome: m.nome, email: m.email, externo: m.externo },
+      actor,
+      titulo,
+    );
+    if (r === "incluida") incluidos += 1;
+  }
+
+  if (incluidos > 0) {
+    await recordAuditIn(client, {
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      action: `Participantes do grupo do órgão incluídos automaticamente (${incluidos})`,
+      entityType: "meeting",
+      entityId: meetingId,
+      entityLabel: titulo,
+      status: "success",
+    });
+  }
+  return incluidos;
 }
 
 // -----------------------------------------------------------------------------

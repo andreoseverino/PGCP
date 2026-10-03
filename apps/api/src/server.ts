@@ -10,6 +10,8 @@ import { meRouter } from "./me/routes.js";
 import { meetingsRouter } from "./meetings/routes.js";
 import { annualAgendasRouter } from "./annual-agendas/routes.js";
 import { externalParticipantsRouter } from "./external-participants/routes.js";
+import { directoryPeopleRouter } from "./directory-people/routes.js";
+import { participationGroupsRouter } from "./participants/groups-routes.js";
 import { agendaTopicsRouter } from "./agenda-topics/routes.js";
 import { actionItemsRouter } from "./action-items/routes.js";
 import { calendarRouter } from "./calendar/routes.js";
@@ -140,6 +142,18 @@ app.use("/annual-agendas", annualAgendasRouter);
  * Administracao: `PGCP.Assessoria` OU `PGCP.Admin`. Nao sao usuarios do PGCP.
  */
 app.use("/external-participants", externalParticipantsRouter);
+
+/**
+ * Pessoas do diretorio com classificacao (orgaos/temas) no PGCP. So quem foi
+ * vinculado; identidade continua no Entra. `PGCP.Assessoria` OU `PGCP.Admin`.
+ */
+app.use("/directory-people", directoryPeopleRouter);
+
+/**
+ * Grupos de participação por órgão colegiado: quem entra automaticamente nas
+ * reuniões NOVAS do órgão. Não é autorização. `PGCP.Assessoria` OU `PGCP.Admin`.
+ */
+app.use("/participation-groups", participationGroupsRouter);
 
 /**
  * Biblioteca de pautas reutilizaveis. Distinta de /meetings: aqui a pauta nao

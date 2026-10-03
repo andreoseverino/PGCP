@@ -2,12 +2,14 @@ import type { PoolClient } from "pg";
 import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
+import { montarTituloDaReuniao, parseTipoDeSessao, type TipoDeSessao } from "./title.js";
 import { prepararIntegracao } from "../calendar/service.js";
 import { findMeeting, type MeetingDetail } from "./service.js";
 // Ciclo só de funções (usadas em runtime, nunca no topo do módulo): seguro em
 // ESM. Reutiliza o snapshot de participantes do tema no create da reunião.
 import {
   garantirResponsavelComoParticipante,
+  incluirGrupoDoOrgao,
   snapshotTopicParticipantsIntoItem,
 } from "./agenda-item-participants.js";
 import { localFisicoExiste } from "./locations.js";
@@ -141,6 +143,13 @@ export interface CreateMeetingInput {
   physicalLocationKey?: string;
   /** Ausente = o proprio ator organiza. Ver `parseCreateInput`. */
   organizer?: OrganizerInput;
+  /**
+   * Tipo (030). Informado = TÍTULO PADRONIZADO montado pelo servidor
+   * (`title.ts`); o corpo não pode trazer título. Ausente = título livre
+   * (clientes anteriores e datas planejadas sem tipo).
+   */
+  sessionType?: TipoDeSessao;
+  /** Com `sessionType`, ignorado: o servidor monta. */
   title: string;
   description?: string;
   /** Instante ISO-8601 com fuso. */
@@ -561,12 +570,19 @@ export function parseCreateInput(body: unknown): CreateMeetingInput {
 
   const { modality, physicalLocationKey } = parseModalidade(dados);
 
+  // Título padronizado: com tipo, o servidor monta e o corpo não manda título.
+  const sessionType = dados.sessionType === undefined ? undefined : parseTipoDeSessao(dados.sessionType);
+  if (sessionType && dados.title !== undefined) {
+    throw new HttpError(400, "O título é gerado automaticamente pelos campos da reunião; não o informe.");
+  }
+
   return {
     governanceBodyId,
     modality,
     physicalLocationKey: physicalLocationKey ?? undefined,
     organizer: parseOrganizerInput(dados.organizer),
-    title: textoObrigatorio(dados.title, "title", 300),
+    sessionType,
+    title: sessionType ? "" : textoObrigatorio(dados.title, "title", 300),
     description: textoOpcional(dados.description, "description", 5000),
     startAt: startAt.toISOString(),
     endAt: endAt.toISOString(),
@@ -806,6 +822,7 @@ export async function createMeeting(
   try {
     await client.query("BEGIN");
     meetingId = await inserirReuniao(client, input, actor, { origin: "manual", annualAgendaId: null });
+    await associarAAgendaAnualDoOrgaoEAno(client, meetingId, actor);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {
@@ -819,6 +836,50 @@ export async function createMeeting(
   // Fonte unica de representacao: a resposta do POST e literalmente o que o
   // GET /meetings/:id devolve. Duas montagens divergiriam com o tempo.
   return findMeeting(meetingId);
+}
+
+/**
+ * Reunião criada no Calendário entra na Agenda Anual do MESMO órgão e ano
+ * (única por órgão/ano, 029) — se ela existir e estiver EM ELABORAÇÃO. Enviada
+ * ou aprovada não muda de conteúdo: a reunião fica fora e aparece na Agenda
+ * como "do Calendário, ainda não associada".
+ *
+ * Só grava `annual_agenda_id`: nenhum evento, convite ou chamada ao Graph.
+ * Trava a agenda (mesma linha do envio para aprovação): a inclusão não entra
+ * entre o snapshot e a mudança de status. A origem (`manual`) não importa.
+ */
+export async function associarAAgendaAnualDoOrgaoEAno(
+  client: PoolClient,
+  meetingId: string,
+  actor: MeetingActor,
+): Promise<string | null> {
+  const { rows } = await client.query<{ id: string; title: string; status: string; meeting_title: string }>(
+    `SELECT a.id, a.title, a.status, m.title AS meeting_title
+       FROM meetings m
+       JOIN annual_agendas a
+         ON a.governance_body_id = m.governance_body_id
+        AND a.year = EXTRACT(YEAR FROM m.start_at AT TIME ZONE m.timezone)::int
+      WHERE m.id = $1 AND m.annual_agenda_id IS NULL
+      FOR UPDATE OF a`,
+    [meetingId],
+  );
+  const agenda = rows[0];
+  if (!agenda || agenda.status !== "draft") return null;
+
+  await client.query("UPDATE meetings SET annual_agenda_id = $2 WHERE id = $1 AND annual_agenda_id IS NULL", [
+    meetingId,
+    agenda.id,
+  ]);
+  await recordAuditIn(client, {
+    actorUserId: actor.userId,
+    actorName: actor.name,
+    action: "Reunião associada automaticamente à Agenda Anual",
+    entityType: "annual_agenda",
+    entityId: agenda.id,
+    entityLabel: `${agenda.title} — ${agenda.meeting_title}`,
+    status: "success",
+  });
+  return agenda.id;
 }
 
 /**
@@ -862,13 +923,24 @@ export async function inserirReuniao(
 
     // O orgao precisa existir. FK sozinha devolveria 23503, e o cliente
     // receberia 500 no lugar de uma resposta que explica o problema.
-    const { rows: orgao } = await client.query<{ id: string }>(
-      "SELECT id FROM governance_bodies WHERE id = $1",
+    const { rows: orgao } = await client.query<{ id: string; name: string }>(
+      "SELECT id, name FROM governance_bodies WHERE id = $1",
       [input.governanceBodyId],
     );
     if (orgao.length === 0) {
       throw new HttpError(404, "Órgão de governança não encontrado.");
     }
+
+    // Título padronizado (030): montado aqui, a partir dos campos gravados.
+    const titulo = input.sessionType
+      ? montarTituloDaReuniao({
+          startAt: input.startAt,
+          timezone: input.timezone,
+          orgao: orgao[0]!.name,
+          tipo: input.sessionType,
+          modalidade: input.modality,
+        })
+      : input.title;
 
     const participantes = await prepararParticipantes(client, input.participants, actor.entraTenantId);
 
@@ -898,9 +970,9 @@ export async function inserirReuniao(
                start_at, end_at, timezone, meeting_link,
                online_meeting_provider,
                status, recurrence, pending_requirements,
-               modality, physical_location_key, origin, annual_agenda_id)
+               modality, physical_location_key, origin, annual_agenda_id, session_type)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                    $18, $19, $20, $21)
+                    $18, $19, $20, $21, $22)
          RETURNING id`,
       [
         input.governanceBodyId,
@@ -910,7 +982,7 @@ export async function inserirReuniao(
         organizador.entraObjectId,
         organizador.displayName,
         organizador.email,
-        input.title,
+        titulo,
         input.description ?? null,
         input.startAt,
         input.endAt,
@@ -928,6 +1000,7 @@ export async function inserirReuniao(
         input.modality === "in_person" ? input.physicalLocationKey ?? null : null,
         origem.origin,
         origem.annualAgendaId,
+        input.sessionType ?? null,
       ],
     );
 
@@ -953,6 +1026,11 @@ export async function inserirReuniao(
         ],
       );
     }
+
+    // GRUPO DO ÓRGÃO: quem pertence ao grupo entra na reunião nova, depois dos
+    // manuais (dedup por identidade/e-mail) e antes dos temas (que reconhecem
+    // a pessoa). Mesma transação; o convite sai depois, uma vez, com todos.
+    await incluirGrupoDoOrgao(client, meetingId, input.governanceBodyId, actor, input.title);
 
     // `position` vem da ordem enviada, comecando em 1. O indice do array serve
     // para ordenar e nada mais: a identidade da pauta e o UUID gerado pelo banco.

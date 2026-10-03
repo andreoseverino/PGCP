@@ -12,7 +12,7 @@ import {
   podeEnviarParaAprovacao,
   podeRegistrarAprovacao,
 } from "./service.js";
-import { gerarPdfDaAgendaAnual, linhaDaReuniao, nomeDoArquivoDaAgendaAnual } from "./pdf.js";
+import { cabecalhoDaReuniao, gerarPdfDaAgendaAnual, nomeDoArquivoDaAgendaAnual } from "./pdf.js";
 
 /**
  * Agenda Anual — regras puras. Sem banco e sem Graph.
@@ -108,17 +108,19 @@ test("aprovação é independente da reserva e não pula etapas", () => {
   assert.equal(podeRegistrarAprovacao("approved"), true, "idempotente");
 });
 
-test("PDF: linha no fuso da reunião e indicação de reserva", () => {
-  const linha = linhaDaReuniao({
-    titulo: "Reunião de Janeiro",
+test("PDF: reunião no fuso DA REUNIÃO; aviso de reserva só para data planejada (legado)", () => {
+  const base = {
+    titulo: " Reunião  de Janeiro ",
     inicioEm: "2027-01-20T12:00:00Z",
     fimEm: "2027-01-20T14:00:00Z",
     fuso: "America/Sao_Paulo",
     reservada: true,
-  });
-  assert.equal(linha.mes, "Janeiro");
-  assert.equal(linha.horario, "09:00 – 11:00");
-  assert.equal(linha.reserva, "Reservada");
+  };
+  const c = cabecalhoDaReuniao(base);
+  assert.deepEqual([c.dia, c.mesAno, c.semana, c.titulo, c.horario, c.aviso], ["20", "JAN 2027", "Quarta-feira", "Reunião de Janeiro", "09:00–11:00", null]);
+  // 22h de 31/12 em São Paulo já é 01/01 em UTC: vale o fuso da reunião, não o da máquina.
+  assert.equal(cabecalhoDaReuniao({ ...base, inicioEm: "2027-01-01T01:00:00Z", fimEm: "2027-01-01T02:00:00Z" }).dia, "31");
+  assert.match(cabecalhoDaReuniao({ ...base, reservada: false }).aviso!, /Data planejada/);
 });
 
 test("PDF da Agenda Anual é gerado (vazio e com reuniões)", async () => {

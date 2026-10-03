@@ -687,3 +687,21 @@ export async function findDirectoryUsersByEmail(
   const pagina = await getter(config, url);
   return pagina.value ?? [];
 }
+
+/**
+ * Pessoa do diretorio por `id` (oid). Usada ao VINCULAR classificacao a uma
+ * pessoa do Entra: a identidade e o nome vem do Graph, nunca do corpo da
+ * requisicao. 404 do Graph = pessoa inexistente (`null`). `User.Read.All`.
+ */
+export async function findDirectoryUserById(
+  config: GraphConfig,
+  objectId: string,
+  getter: (config: GraphConfig, url: string) => Promise<DirectoryUser> = (c, url) => graphGet<DirectoryUser>(c, url),
+): Promise<DirectoryUser | null> {
+  try {
+    return await getter(config, `/users/${encodeURIComponent(objectId)}?$select=${DIRECTORY_SELECT}`);
+  } catch (error) {
+    if (error instanceof GraphError && error.status === 404) return null;
+    throw error;
+  }
+}

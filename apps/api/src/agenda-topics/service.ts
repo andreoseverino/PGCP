@@ -224,7 +224,7 @@ export async function findAgendaTopic(id: string): Promise<AgendaTopicDetail> {
 
   const { rows } = await pool.query<TopicRow>(`${SUMMARY_SELECT} WHERE t.id = $1`, [id]);
   const row = rows[0];
-  if (!row) throw new HttpError(404, "Pauta não encontrada na biblioteca.");
+  if (!row) throw new HttpError(404, "Tema não encontrado na Biblioteca.");
 
   const [participants, linkedMeetings] = await Promise.all([
     listTopicParticipants(id),

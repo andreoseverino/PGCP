@@ -164,3 +164,34 @@ test("migration 022 só acrescenta vínculos por identidade e é idempotente", (
   assert.equal((executable.match(/ON CONFLICT DO NOTHING/g) ?? []).length, 2);
   assert.doesNotMatch(executable, /\bDELETE\b|\bUPDATE\b|\bDROP\b|\bALTER\b/i);
 });
+
+/*
+ * Semântica do PATCH (`parseAgendaTopicInput(body, true)` + UPDATE dinâmico em
+ * `updateAgendaTopic`, que só grava as chaves presentes): campo OMITIDO fica
+ * como está; campo `null` APAGA. A bandeira FUP da Biblioteca depende disso.
+ */
+test("PATCH da bandeira FUP: só generatesActionItem chega ao UPDATE", () => {
+  for (const marcado of [true, false]) {
+    const saida = parseAgendaTopicInput({ generatesActionItem: marcado }, true);
+    assert.deepEqual(saida, { generatesActionItem: marcado });
+  }
+});
+
+test("PATCH com null é limpeza explícita (por isso a bandeira não envia nulls)", () => {
+  const saida = parseAgendaTopicInput(
+    { generatesActionItem: true, description: null, estimatedDurationMinutes: null, agendaTopicTypeId: null },
+    true,
+  );
+  assert.equal(saida.description, null);
+  assert.equal(saida.estimatedDurationMinutes, null);
+  assert.equal(saida.agendaTopicTypeId, null);
+  // E o UPDATE grava toda chave diferente de undefined.
+  const fonte = readFileSync(new URL("./write.ts", import.meta.url), "utf8");
+  assert.match(fonte, /if \(valor !== undefined\) bind\(coluna, valor\);/);
+});
+
+test("criação sem generatesActionItem usa o default false", () => {
+  assert.equal(parseAgendaTopicInput({ title: "Novo tema" }).generatesActionItem, undefined);
+  const fonte = readFileSync(new URL("./write.ts", import.meta.url), "utf8");
+  assert.match(fonte, /input\.generatesActionItem \?\? false,/);
+});

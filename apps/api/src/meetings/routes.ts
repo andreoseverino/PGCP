@@ -34,6 +34,7 @@ import {
   putMinutesHandler,
 } from "../meeting-minutes/routes.js";
 import { findMeetingMinutes } from "../meeting-minutes/service.js";
+import { exigirLiberadaParaPipeline } from "./pipeline-release.js";
 import { gerarPdfDaAta, nomeDoArquivoDaAta, PDF_CONTENT_TYPE } from "../meeting-minutes/pdf.js";
 import {
   addAgendaItem,
@@ -54,6 +55,13 @@ import {
 } from "./update.js";
 
 export const meetingsRouter = Router();
+
+/**
+ * Reunião de Agenda Anual ainda não aprovada é preparada NA AGENDA: aqui, toda
+ * mutação em `/:id/...` (exceto o convite de calendário) responde 409. Fica
+ * ANTES das rotas para valer para todas. A Agenda edita pelas próprias rotas.
+ */
+meetingsRouter.use("/:id", exigirLiberadaParaPipeline());
 
 /**
  * Reunioes — leitura e escrita.

@@ -14,6 +14,8 @@ import { meRouter } from "../me/routes.js";
 import { meetingsRouter } from "../meetings/routes.js";
 import { annualAgendasRouter } from "../annual-agendas/routes.js";
 import { externalParticipantsRouter } from "../external-participants/routes.js";
+import { directoryPeopleRouter } from "../directory-people/routes.js";
+import { participationGroupsRouter } from "../participants/groups-routes.js";
 import { usersRouter } from "../users/routes.js";
 
 /**
@@ -95,6 +97,8 @@ const ROUTERS: Array<[string, unknown]> = [
   ["meetings", meetingsRouter],
   ["annual-agendas", annualAgendasRouter],
   ["external-participants", externalParticipantsRouter],
+  ["directory-people", directoryPeopleRouter],
+  ["participation-groups", participationGroupsRouter],
   ["agenda-topics", agendaTopicsRouter],
   ["action-items", actionItemsRouter],
   ["audit-logs", auditLogsRouter],
@@ -414,4 +418,18 @@ test("directory e calendar: usuario ativo, sem papel, e somente leitura", () => 
       );
     }
   }
+});
+
+test("participation-groups: Assessoria OU Admin no router; grupo nao e autorizacao", () => {
+  assert.ok(
+    middlewaresDe(participationGroupsRouter).includes(requireAssessoriaOuAdmin as never),
+    "guarda no router cobre listar, adicionar e remover",
+  );
+  const rotas = rotasDe(participationGroupsRouter).map(rotulo).sort();
+  assert.deepEqual(rotas, [
+    "DELETE /governance-bodies/:id/members/:memberId",
+    "GET /governance-bodies",
+    "GET /governance-bodies/:id/members",
+    "POST /governance-bodies/:id/members",
+  ]);
 });

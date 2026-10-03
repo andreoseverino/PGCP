@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import pool from "../database.js";
+import { transacaoAmbiente } from "../transacao-ambiente.js";
 import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
 import { marcarComoDesatualizada } from "../calendar/service.js";
@@ -17,6 +18,7 @@ import {
 } from "./create.js";
 import { localFisicoExiste } from "./locations.js";
 import { exigirPautaDaReuniao } from "./agendas.js";
+import { montarTituloDaReuniao, parseTipoDeSessao, type TipoDeSessao } from "./title.js";
 import { findMeeting, type MeetingDetail } from "./service.js";
 import { reabrirValidacaoSePreReuniao } from "./agenda-validation.js";
 import {
@@ -62,6 +64,16 @@ function assertUuid(valor: string, campo: string): string {
 async function emTransacao<T>(
   fn: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
+  // Dentro da transação de quem chamou (ex.: Agenda Anual com a agenda travada):
+  // mesmo cliente, sem BEGIN/COMMIT; o ROLLBACK é de quem abriu.
+  const ambienteAtual = transacaoAmbiente();
+  if (ambienteAtual) {
+    try {
+      return await fn(ambienteAtual);
+    } catch (error) {
+      throw traduzirErro(error);
+    }
+  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -122,6 +134,8 @@ async function exigirReuniaoTravada(client: PoolClient, meetingId: string): Prom
 
 export interface UpdateMeetingInput {
   title?: string;
+  /** Tipo (030): com ele, o título é recomposto pelo servidor. */
+  sessionType?: TipoDeSessao;
   description?: string | null;
   governanceBodyId?: string;
   startAt?: string;
@@ -162,7 +176,7 @@ export function parseUpdateInput(body: unknown): UpdateMeetingInput {
 
   const dados = body as Record<string, unknown>;
   const permitidos = new Set([
-    "title", "description", "governanceBodyId", "startAt", "endAt", "timezone",
+    "title", "description", "governanceBodyId", "startAt", "endAt", "timezone", "sessionType",
     "meetingLink", "recurrence", "pendingRequirements", "status",
     // Habilitar a reuniao online. O gatilho da 014 impede desligar depois que o
     // Graph provisionou — desmarcar aqui nao desfaria nada do outro lado.
@@ -196,6 +210,7 @@ export function parseUpdateInput(body: unknown): UpdateMeetingInput {
 
   const titulo = texto("title", 300, true);
   if (titulo !== undefined) saida.title = titulo as string;
+  if ("sessionType" in dados) saida.sessionType = parseTipoDeSessao(dados.sessionType);
 
   for (const [chave, max] of [
     ["description", 5000],
@@ -312,6 +327,7 @@ export function resolverModalidadeDoPatch(
 
 const COLUNA_DE: Record<keyof UpdateMeetingInput, string> = {
   title: "title",
+  sessionType: "session_type",
   description: "description",
   governanceBodyId: "governance_body_id",
   startAt: "start_at",
@@ -339,11 +355,33 @@ export async function updateMeeting(
       end_at: Date;
       modality: Modalidade;
       physical_location_key: string | null;
+      governance_body_id: string;
+      annual_agenda_id: string | null;
+      session_type: TipoDeSessao | null;
     }>(
-      "SELECT start_at, end_at, modality, physical_location_key FROM meetings WHERE id = $1 FOR UPDATE",
+      `SELECT start_at, end_at, modality, physical_location_key, governance_body_id, annual_agenda_id, session_type
+         FROM meetings WHERE id = $1 FOR UPDATE`,
       [meetingId],
     );
     if (atual.rows.length === 0) throw new HttpError(404, "Reunião não encontrada.");
+
+    // Título padronizado (030): com tipo, o título é do servidor.
+    if (input.title !== undefined && (input.sessionType ?? atual.rows[0]!.session_type)) {
+      throw new HttpError(400, "O título desta reunião é gerado automaticamente pelos campos; altere hora, formato, órgão ou tipo.");
+    }
+
+    // Reunião numa Agenda Anual pertence ao órgão da agenda (028). Trocar o
+    // órgão a deixaria no planejamento de outro órgão — desassocie antes.
+    if (
+      input.governanceBodyId !== undefined &&
+      input.governanceBodyId !== atual.rows[0]!.governance_body_id &&
+      atual.rows[0]!.annual_agenda_id
+    ) {
+      throw new HttpError(
+        409,
+        "Esta reunião faz parte de uma Agenda Anual do órgão atual. Desassocie-a na Agenda Anual antes de trocar o órgão colegiado.",
+      );
+    }
 
     // O CHECK do banco cobre isso, mas conferir aqui devolve 400 explicativo em
     // vez de 500 com violacao crua — inclusive quando so um dos dois muda.
@@ -384,10 +422,23 @@ export async function updateMeeting(
       atribuicoes.push(`${COLUNA_DE[chave as keyof UpdateMeetingInput]} = $${valores.length}`);
     }
 
-    const { rows } = await client.query<{ title: string }>(
+    let { rows } = await client.query<{ title: string }>(
       `UPDATE meetings SET ${atribuicoes.join(", ")} WHERE id = $1 RETURNING title`,
       valores,
     );
+
+    // Recompõe o título padronizado com os valores FINAIS (hora, fuso, órgão,
+    // formato, tipo). A versão aprovada da Agenda Anual não muda: está no
+    // snapshot. Título novo desatualiza o convite como qualquer outro campo.
+    const camposAlterados = Object.keys(input);
+    const recomposto = await recomporTituloPadronizado(client, meetingId);
+    if (recomposto && recomposto !== rows[0]!.title) {
+      ({ rows } = await client.query<{ title: string }>(
+        "UPDATE meetings SET title = $2 WHERE id = $1 RETURNING title",
+        [meetingId, recomposto],
+      ));
+      camposAlterados.push("title");
+    }
 
     /*
      * O evento no calendario ficou desatualizado?
@@ -399,7 +450,7 @@ export async function updateMeeting(
      * Na mesma transacao da alteracao: a reuniao nunca fica editada com a
      * integracao ainda afirmando `synced`.
      */
-    if (exigeResincronizacao(Object.keys(input))) {
+    if (exigeResincronizacao(camposAlterados)) {
       await marcarComoDesatualizada(client, meetingId);
     }
 
@@ -417,6 +468,31 @@ export async function updateMeeting(
   });
 
   return findMeeting(meetingId);
+}
+
+/** Título padronizado com os valores gravados; `null` = reunião sem tipo (legado). */
+async function recomporTituloPadronizado(client: PoolClient, meetingId: string): Promise<string | null> {
+  const { rows } = await client.query<{
+    start_at: Date;
+    timezone: string;
+    modality: "online" | "in_person";
+    session_type: TipoDeSessao | null;
+    orgao: string;
+  }>(
+    `SELECT m.start_at, m.timezone, m.modality, m.session_type, gb.name AS orgao
+       FROM meetings m JOIN governance_bodies gb ON gb.id = m.governance_body_id
+      WHERE m.id = $1`,
+    [meetingId],
+  );
+  const r = rows[0];
+  if (!r?.session_type) return null;
+  return montarTituloDaReuniao({
+    startAt: r.start_at.toISOString(),
+    timezone: r.timezone,
+    orgao: r.orgao,
+    tipo: r.session_type,
+    modalidade: r.modality,
+  });
 }
 
 // -----------------------------------------------------------------------------

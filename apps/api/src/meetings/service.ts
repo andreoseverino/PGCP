@@ -1,4 +1,5 @@
 import pool from "../database.js";
+import { liberadaParaPipeline } from "./pipeline-release.js";
 import { HttpError } from "../http-error.js";
 import type { AgendaValidationStatus } from "./agenda-validation.js";
 import { findCalendarIntegration, type CalendarIntegration, type CalendarSyncStatus } from "../calendar/service.js";
@@ -99,12 +100,27 @@ export interface MeetingSummary {
   /** De onde a reuniao veio: Calendario (manual) ou reserva da Agenda Anual. */
   origin: "manual" | "annual_agenda";
   annualAgendaId: string | null;
+  /** Status da Agenda Anual da reunião (`null` = reunião avulsa). */
+  annualAgendaStatus: "draft" | "pending_approval" | "approved" | null;
+  /**
+   * Operacional no Pipeline? Avulsa: sempre. Com Agenda Anual: só depois de
+   * APROVADA (antes disso a reunião é preparada na Agenda). Decidido aqui, no
+   * servidor; a mesma regra protege as mutações (`pipeline-release.ts`).
+   */
+  releasedToPipeline: boolean;
   /**
    * Estado do convite (`meeting_calendar_integrations.sync_status`), tambem no
    * resumo para o Pipeline nao precisar abrir cada reuniao. `null` = sem
    * integracao preparada.
    */
   calendarSyncStatus: CalendarSyncStatus | null;
+  /**
+   * Situação da Ata (`meeting_minutes.status`) no resumo, para a Visão Geral
+   * contar atas pendentes sem abrir cada reunião. `null` = Ata não iniciada.
+   */
+  minutesStatus: MinutesStatusResumo | null;
+  /** Tipo (030); `null` = legado com título livre. */
+  sessionType: "ordinary" | "extraordinary" | null;
   status: MeetingStatus;
   /**
    * Ciclo da PAUTA — eixo SEPARADO de `status`, que e o ciclo da reuniao.
@@ -161,6 +177,11 @@ export interface MeetingParticipant {
   roleInMeeting: string | null;
   isConfirmed: boolean;
   attended: boolean | null;
+  /**
+   * A pessoa pertence HOJE ao grupo do órgão colegiado da reunião (027/031) —
+   * informativo (texto de remoção, origem discreta). Não autoriza nada.
+   */
+  inGovernanceBodyGroup: boolean;
 }
 
 /** Responsavel pela pauta. Conceito DISTINTO de apresentador. */
@@ -261,7 +282,10 @@ interface MeetingRow {
   physical_location_key: string | null;
   origin: "manual" | "annual_agenda";
   annual_agenda_id: string | null;
+  annual_agenda_status: "draft" | "pending_approval" | "approved" | null;
   calendar_sync_status: CalendarSyncStatus | null;
+  minutes_status: MinutesStatusResumo | null;
+  session_type: "ordinary" | "extraordinary" | null;
   status: MeetingStatus;
   agenda_validation_status: AgendaValidationStatus;
   agenda_validation_sent_at: Date | null;
@@ -293,6 +317,7 @@ interface ParticipantRow {
   role_in_meeting: string | null;
   is_confirmed: boolean;
   attended: boolean | null;
+  in_body_group: boolean;
 }
 
 interface AgendaItemRow {
@@ -342,7 +367,11 @@ function toSummary(row: MeetingRow): MeetingSummary {
     physicalLocation: row.modality === "in_person" ? encontrarLocalFisico(row.physical_location_key) : null,
     origin: row.origin,
     annualAgendaId: row.annual_agenda_id,
+    annualAgendaStatus: row.annual_agenda_status,
+    releasedToPipeline: liberadaParaPipeline(row.annual_agenda_status),
     calendarSyncStatus: row.calendar_sync_status,
+    minutesStatus: row.minutes_status,
+    sessionType: row.session_type,
     status: row.status,
     agendaValidation: {
       status: row.agenda_validation_status,
@@ -372,6 +401,7 @@ function toParticipant(row: ParticipantRow): MeetingParticipant {
     roleInMeeting: row.role_in_meeting,
     isConfirmed: row.is_confirmed,
     attended: row.attended,
+    inGovernanceBodyGroup: row.in_body_group,
   };
 }
 
@@ -417,6 +447,9 @@ function toAgendaItem(row: AgendaItemRow): MeetingAgendaItem {
  * entao o orgao sempre resolve. LEFT JOIN em users porque `organizer_user_id`
  * e opcional por design.
  */
+/** Valores de `meeting_minutes.status` (CHECK do banco). */
+type MinutesStatusResumo = "draft" | "under_review" | "approved" | "closed";
+
 const SUMMARY_SELECT = `
   SELECT m.id,
          m.title,
@@ -430,8 +463,11 @@ const SUMMARY_SELECT = `
          m.physical_location_key,
          m.origin,
          m.annual_agenda_id,
+         (SELECT aa.status FROM annual_agendas aa WHERE aa.id = m.annual_agenda_id) AS annual_agenda_status,
          (SELECT ci.sync_status FROM meeting_calendar_integrations ci
            WHERE ci.meeting_id = m.id AND ci.provider = 'outlook') AS calendar_sync_status,
+         (SELECT mm.status FROM meeting_minutes mm WHERE mm.meeting_id = m.id) AS minutes_status,
+         m.session_type,
          m.status,
          m.agenda_validation_status,
          m.agenda_validation_sent_at,
@@ -552,7 +588,20 @@ async function listParticipants(meetingId: string): Promise<MeetingParticipant[]
             mp.participant_type,
             mp.role_in_meeting,
             mp.is_confirmed,
-            mp.attended
+            mp.attended,
+            -- Grupo do órgão da reunião: pessoa do diretório pelo par (tenant, oid);
+            -- externo do PGCP pelo e-mail (é como ele entra na reunião).
+            EXISTS (
+              SELECT 1
+                FROM participant_governance_bodies g
+                JOIN meetings m ON m.id = mp.meeting_id AND m.governance_body_id = g.governance_body_id
+                LEFT JOIN directory_people dp ON dp.id = g.directory_person_id
+                LEFT JOIN external_participants ep ON ep.id = g.external_participant_id
+               WHERE (dp.id IS NOT NULL
+                      AND dp.entra_tenant_id = coalesce(mp.entra_tenant_id, u.entra_tenant_id)
+                      AND dp.entra_object_id = coalesce(mp.entra_object_id, u.entra_object_id))
+                  OR (ep.id IS NOT NULL AND mp.email IS NOT NULL AND lower(ep.email) = lower(mp.email))
+            ) AS in_body_group
        FROM meeting_participants mp
        LEFT JOIN users u ON u.id = mp.user_id
       WHERE mp.meeting_id = $1
