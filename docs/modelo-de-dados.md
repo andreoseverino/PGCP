@@ -1046,27 +1046,46 @@ reunião não liberada — exceto o convite de calendário, que sai no agendamen
 (025). A Agenda edita pelas próprias rotas (`/annual-agendas/:id/meetings/...`,
 inclusive participantes da reunião), na transação travada dela.
 
-**Documentos.** O PGCP **não armazena arquivos enviados** (sem upload, sem
-tabela de anexos, sem storage configurado). A biblioteca central
-(`GET /documents`) lista, sem cópia, o que já é persistido: **Atas** com
-conteúdo (`meeting_minutes`) e a **versão vigente** enviada/aprovada de cada
-Agenda Anual (`annual_agenda_versions`); o download usa as rotas de origem. A
-prévia da Agenda não entra (muda a cada edição). **Não há upload de arquivos
-nem armazenamento de objetos nesta versão.**
+**Documentos.** Ver §5.19 (anexos com AWS S3, migration 033). Atas com
+conteúdo e a versão vigente da Agenda Anual continuam entrando na biblioteca
+sem cópia (download pelas rotas de origem); a prévia da Agenda não entra.
 
-**Próxima evolução (planejada, NÃO implementada): Documentos com AWS S3.**
+### 5.19 Documentos com AWS S3 (migration 033)
 
-- Documento **pertence à reunião** e, opcionalmente, a um **tema daquela
-  reunião** — `meeting_agenda_items.id`, não o tema da Biblioteca: o mesmo tema
-  em outra reunião é outro contexto documental.
-- Bytes no S3; **metadados no PostgreSQL**, fonte de verdade para reunião, tema
-  da reunião, órgão, autoria, data, tipo e filtros. A organização de chaves é só
-  referência (`meetings/{meetingId}/documents/...`,
-  `meetings/{meetingId}/topics/{meetingAgendaItemId}/...`) — nenhuma regra de
-  negócio depende de "pasta".
-- Documentos gerados passam a ser guardados: PDF da versão enviada/aprovada da
-  Agenda Anual e PDF da Ata final → S3 → Documentos.
-- Pipeline: anexo ao tema da reunião → upload → S3 → Documentos.
+**Implementado (código, testes e banco descartável).**
+
+- Tabela `documents` — **metadado** do anexo; os bytes ficam no S3 privado.
+  Colunas: `source` (`user` | `pgcp`), `meeting_id`, `meeting_agenda_item_id`
+  (tema **desta** reunião, não o tema da Biblioteca), `annual_agenda_version_id`,
+  `original_filename`, `description`, `mime_type` (decidido pelo servidor),
+  `size_bytes`, `sha256`, `object_key` (único), `uploaded_by_user_id`,
+  `created_at`.
+- Integridade no banco: exatamente um contexto (reunião **ou** versão da Agenda
+  Anual — `num_nonnulls = 1`); tema exige reunião; FK **composta**
+  `(meeting_id, meeting_agenda_item_id) → meeting_agenda_items (meeting_id, id)`
+  impede anexar a um tema de outra reunião; `source = 'user'` exige autor.
+- Sem exclusão no MVP: FKs `ON DELETE RESTRICT`; o runtime (`pcgp_app`) tem só
+  `SELECT, INSERT` (UPDATE/DELETE revogados). Excluir tema ou reunião com
+  documento → 409 antes de qualquer efeito (inclusive antes de cancelar o
+  evento do Outlook). Nada de cascade apagando objeto no S3.
+- Chave do objeto só com ids estáveis:
+  `meetings/{meetingId}/documents/{documentId}/arquivo.{ext}` e
+  `meetings/{meetingId}/topics/{meetingAgendaItemId}/{documentId}/arquivo.{ext}`.
+  Nome original e pessoas ficam fora da chave. A chave nunca sai da API.
+- Biblioteca e árvore vêm **dos metadados** (UNION de anexos, Atas e Agenda
+  vigente), numa consulta; o bucket nunca é listado. Pastas visuais Órgão →
+  Ano → (Agenda Anual | Mês → "DD/MM — Reunião"), sem nível Dia; ano/mês são
+  os da reunião no fuso dela (filtros `year`/`month` usam o mesmo critério).
+- Resumo da reunião expõe `documentsCount` (anexos) e
+  `agendaItemsWithoutDuration` para a Lista do Pipeline.
+- Reversão no cabeçalho de `033_documents.sql` (DROP TABLE + linha de
+  `schema_migrations`); **os objetos no S3 permanecem** e precisam de limpeza
+  manual se houver.
+
+**Pendente.** Guardar no S3 os PDFs gerados (versão enviada/aprovada da
+Agenda Anual, Ata final) — a coluna `annual_agenda_version_id` e `source =
+'pgcp'` já existem; hoje esses documentos entram pela rota de origem.
+Exclusão/versionamento de anexo e antivírus: fora do MVP.
 
 ## 6. Relacionamentos e cardinalidades
 
@@ -1142,7 +1161,7 @@ de funcionar.
 | `meeting_minutes_signatures` | Assinar é `signatures.push(nome)` (`MeetingDetailView.tsx:307`). Sem certificado, hash ou carimbo de tempo. Modelar agora seria inventar requisito. |
 | `meeting_minutes_versions` | Versionamento explicitamente adiado (Decisão 4). |
 | `meeting_transcript_segments` | Hardcoded no componente, nunca persistido (`MeetingDetailView.tsx:102`). Gravação é `setTimeout` de 1,8s. |
-| `documents` / `attachments` | **Não existe aba de documentos.** As abas são Overview, Agendas, Transcript, Minutes, Fup, Participants. Nomes de PDF aparecem só como texto em log mockado. |
+| `documents` / `attachments` | **Implementado na 033** (ver §5.19): aba Documentos na reunião (Pipeline) e biblioteca central. |
 | `roles` / `permissions` | **Não existe controle de acesso.** `currentUser` é hardcoded (`App.tsx:624`). |
 | `meeting_categories` | Só quando existir classificação de sessão real (Ordinária/Extraordinária/Especial) — Decisão 1. |
 | `integration_settings` | `clientSecret` exige cofre (Key Vault / Secrets Manager), não coluna. |

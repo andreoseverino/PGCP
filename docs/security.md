@@ -24,8 +24,8 @@ Documentos relacionados (todos no repositório):
 Auditoria de código              ✅ concluída
 Hardening PostgreSQL             ✅ concluído
 Hardening de produção no código  ✅ concluído
-npm audit                        ✅ 0 vulnerabilidades
-Build / typecheck / testes       ✅ verdes (API 306 + web 170)
+npm audit                        ⚠️ 3 (2 moderadas, 1 alta) em dependências transitivas já presentes antes do S3: qs (via express), browserslist e baseline-browser-mapping (via vite/build). Correção (`npm audit fix`) pendente de rodada própria
+Build / typecheck / testes       ✅ verdes (API 323 + web 178)
 Pré-go-live local                ✅ concluído
 Mail.Send Delegated / OBO        ✅ validado no tenant real (envio e recebimento)
 Validação de pautas — pós-envio  ⚠️ revalidar após a correção do 202 (ver §9)
@@ -478,12 +478,40 @@ servidor. A Agenda gerencia participantes da reunião pelas próprias rotas
 (`PGCP.Assessoria`, agenda em `draft`, pertença conferida, mesmas regras de
 deduplicação/exceção da aba Participantes).
 
-**Documentos.** `GET /documents` (usuário ativo) só LISTA: Atas e versão
-vigente da Agenda Anual, com a cláusula de leitura de reunião
-(`clausulaDeReuniaoVisivel`). Query fechada e validada (UUIDs, enums, datas,
-limites; curingas do LIKE escapados). Nenhum caminho de arquivo trafega: o
-download é feito nas rotas de origem, com a autorização delas. Não há upload —
-nenhuma superfície de envio de arquivo foi aberta.
+**Documentos (S3, migration 033).**
+
+- Leitura: `GET /documents`, `GET /documents/tree` e
+  `GET /documents/:id/download` exigem usuário PGCP ativo e aplicam a cláusula
+  de leitura de reunião (`clausulaDeReuniaoVisivel`). Query fechada e validada
+  (UUIDs, enums, datas, ano/mês, limites; curingas do LIKE escapados).
+  Documento inexistente ou fora da visibilidade → 404, sem revelar qual.
+- Download: a API autoriza pelo contexto, lê o objeto e devolve os bytes com
+  `Content-Disposition: attachment` (nome saneado + `filename*` UTF-8),
+  `Cache-Control: private, no-store` e `X-Content-Type-Options: nosniff`.
+  **Sem URL pré-assinada, sem URL permanente, chave do objeto nunca sai.**
+  Ata e Agenda Anual seguem pelas rotas de origem.
+- Upload: só `POST /meetings/:id/documents`, com `PGCP.Assessoria` e a guarda
+  de liberação do Pipeline (reunião de Agenda não aprovada → 409). Corpo
+  `application/octet-stream` (outro tipo → 415), limite central
+  `DOCUMENT_MAX_SIZE_BYTES` (padrão 20 MB, teto 100 MB; excedeu → 413). Nome e
+  descrição em cabeçalho URL-encoded; só `agendaItemId` é aceito na query.
+- Validação no servidor: allowlist (PDF, PPT/PPTX, DOC/DOCX, XLS/XLSX) com
+  **MIME decidido pelo servidor** e assinatura do conteúdo (`%PDF-`, ZIP, OLE);
+  denylist de extensões perigosas também nas extensões internas (dupla
+  extensão: `relatorio.exe.pdf`), sem macro (`pptm/docm/xlsm`), sem
+  HTML/SVG/JS/CSV; arquivo vazio recusado; nome reduzido ao basename (sem
+  path traversal), sem caracteres de controle, sem arquivo oculto, ≤ 255.
+- Tema precisa ser **desta** reunião (checagem na aplicação + FK composta).
+- Ordem: valida → grava no S3 (SSE `AES256`, ou `aws:kms` com
+  `PGCP_DOCUMENTS_KMS_KEY_ID`; sem ACL) → INSERT + auditoria na mesma
+  transação. Falha no banco após o upload remove o objeto (compensação, sem
+  órfão). Falha do S3 não grava metadado.
+- Auditoria: "Documento adicionado à reunião" / "… ao tema da reunião", sem
+  chave, URL ou conteúdo.
+- Sem S3 configurado o sistema funciona; só as operações de arquivo respondem
+  503. Em produção, `production-guard` exige `PGCP_DOCUMENTS_BUCKET` e
+  `AWS_REGION`. Credenciais só pela cadeia padrão do SDK (IAM role) — nenhuma
+  credencial no código ou no `.env.example`.
 
 **Mass assignment.** `origin`, `annualAgendaId`, `status` da Agenda Anual,
 `meeting_id` do item e tenant não são aceitos do corpo (allowlists fechadas,
@@ -838,7 +866,7 @@ Repetido no topo (§0) por conveniência:
 Auditoria de código              ✅ concluída
 Hardening PostgreSQL             ✅ concluído
 Hardening de produção no código  ✅ concluído
-npm audit                        ✅ 0 vulnerabilidades
+npm audit                        ⚠️ 3 (2 moderadas, 1 alta) em dependências transitivas já presentes antes do S3: qs (via express), browserslist e baseline-browser-mapping (via vite/build). Correção (`npm audit fix`) pendente de rodada própria
 Build / typecheck / testes       ✅ verdes
 Pré-go-live local                ✅ concluído
 Mail.Send Delegated / OBO        ✅ validado no tenant real

@@ -516,6 +516,43 @@ código.
 O SPA continua sem nenhuma permissão do Graph; o navegador só envia o token da
 API do PGCP. Token e segredo do Graph nunca saem do backend.
 
+## Documentos — AWS S3
+
+> Nenhum nome real de bucket, conta, ARN, role ou região neste documento.
+
+**Implementado (código).** Cliente `@aws-sdk/client-s3` em
+`apps/api/src/documents/storage.ts`, com `PutObject`/`GetObject`/`DeleteObject`
+(o Delete só como compensação de upload cujo metadado falhou). Configuração por
+ambiente:
+
+| Variável | Uso |
+|---|---|
+| `PGCP_DOCUMENTS_BUCKET` | bucket privado dos anexos (obrigatória em produção) |
+| `AWS_REGION` | região do bucket (obrigatória em produção) |
+| `PGCP_DOCUMENTS_KMS_KEY_ID` | opcional: SSE-KMS; ausente = SSE-S3 (`AES256`) |
+| `DOCUMENT_MAX_SIZE_BYTES` | opcional: limite de upload (padrão 20 MB, teto 100 MB) |
+
+Credenciais pela cadeia padrão do SDK (role da instância/tarefa, SSO local).
+Sem bucket/região o PGCP sobe normalmente e só as operações de arquivo
+respondem 503. Tempo-limite de 30 s por operação; erros mapeados (objeto
+inexistente 404, tempo 504, acesso/credencial 503, demais 502) e logados sem
+chave nem conteúdo. O navegador nunca fala com o S3: upload e download passam
+pela API, então o bucket **não precisa de CORS**.
+
+**Pendente de infraestrutura AWS** (não criado, não inventado):
+
+- bucket privado, com Block Public Access ligado e Object Ownership
+  "bucket owner enforced" (sem ACL);
+- região definida pela equipe de infraestrutura;
+- IAM role do backend com `s3:PutObject`, `s3:GetObject` e `s3:DeleteObject`
+  restritos a `arn:aws:s3:::<bucket>/meetings/*` (sem `s3:ListBucket`: a API
+  nunca lista o bucket); `kms:GenerateDataKey`/`kms:Decrypt` na chave, se
+  SSE-KMS;
+- opcional: chave KMS dedicada, versionamento/lifecycle do bucket, política de
+  bucket negando transporte sem TLS (`aws:SecureTransport = false`);
+- futuro: antivírus dos anexos; guardar no S3 os PDFs gerados (Agenda Anual
+  enviada/aprovada, Ata final).
+
 > **Requisito de infraestrutura — e uma correção importante.**
 >
 > **Não** conceder `Calendars.ReadWrite` (Application) no App Registration do
