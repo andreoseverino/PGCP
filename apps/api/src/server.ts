@@ -12,6 +12,7 @@ import { annualAgendasRouter } from "./annual-agendas/routes.js";
 import { externalParticipantsRouter } from "./external-participants/routes.js";
 import { directoryPeopleRouter } from "./directory-people/routes.js";
 import { participationGroupsRouter } from "./participants/groups-routes.js";
+import { documentsRouter } from "./documents/routes.js";
 import { agendaTopicsRouter } from "./agenda-topics/routes.js";
 import { actionItemsRouter } from "./action-items/routes.js";
 import { calendarRouter } from "./calendar/routes.js";
@@ -154,6 +155,12 @@ app.use("/directory-people", directoryPeopleRouter);
  * reuniões NOVAS do órgão. Não é autorização. `PGCP.Assessoria` OU `PGCP.Admin`.
  */
 app.use("/participation-groups", participationGroupsRouter);
+
+/**
+ * Documentos: biblioteca central (leitura) dos documentos que o PGCP já
+ * persiste (Atas, versões da Agenda Anual). Usuário ativo, como reuniões.
+ */
+app.use("/documents", documentsRouter);
 
 /**
  * Biblioteca de pautas reutilizaveis. Distinta de /meetings: aqui a pauta nao

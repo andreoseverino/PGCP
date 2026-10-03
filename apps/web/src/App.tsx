@@ -79,6 +79,7 @@ import GovernanceBodyFilter from "./components/GovernanceBodyFilter";
 import { CHAVE_CONTEXTO_ORGAO, contextoValido, orgaoInicialParaCriacao } from "./lib/governance-context";
 import UnlinkedAgendasView from "./components/UnlinkedAgendasView";
 import FupListView from "./components/FupListView";
+import DocumentsView from "./components/DocumentsView";
 import LoginView from "./components/LoginView";
 import { FileCheck, LogOut, Search, Sparkles, Trash2, X } from "lucide-react";
 
@@ -1145,6 +1146,19 @@ export default function App() {
             onToggleTopicFup={handleToggleTopicFup}
             pautaTypes={pautaTypes}
             pautaNatures={pautaNatures}
+          />
+        );
+      case "documents":
+        return (
+          <DocumentsView
+            language={language}
+            governanceBodies={governanceBodies}
+            meetings={meetings}
+            libraryTopics={standaloneAgendas.map((a) => ({ id: a.id, title: a.title }))}
+            orgaoContexto={orgaoContexto}
+            onOpenMeeting={(meetingId) => void openMeetingById(meetingId)}
+            onOpenAnnualAgenda={() => setActiveTab("annual-agenda")}
+            triggerToast={triggerToast}
           />
         );
       case "fup":

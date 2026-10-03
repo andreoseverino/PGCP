@@ -16,6 +16,7 @@ import { annualAgendasRouter } from "../annual-agendas/routes.js";
 import { externalParticipantsRouter } from "../external-participants/routes.js";
 import { directoryPeopleRouter } from "../directory-people/routes.js";
 import { participationGroupsRouter } from "../participants/groups-routes.js";
+import { documentsRouter } from "../documents/routes.js";
 import { usersRouter } from "../users/routes.js";
 
 /**
@@ -99,6 +100,7 @@ const ROUTERS: Array<[string, unknown]> = [
   ["external-participants", externalParticipantsRouter],
   ["directory-people", directoryPeopleRouter],
   ["participation-groups", participationGroupsRouter],
+  ["documents", documentsRouter],
   ["agenda-topics", agendaTopicsRouter],
   ["action-items", actionItemsRouter],
   ["audit-logs", auditLogsRouter],

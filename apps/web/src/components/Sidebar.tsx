@@ -12,6 +12,7 @@ import {
   ListTodo,
   CalendarRange,
   Workflow,
+  FolderOpen,
 } from "lucide-react";
 
 interface SidebarProps {
@@ -88,6 +89,14 @@ export default function Sidebar({
           labelEn: "Pipeline",
           labelPt: "Pipeline",
           icon: Workflow,
+          badge: null,
+        },
+        {
+          // Biblioteca central: Atas e Agendas Anuais (e, no futuro, anexos).
+          id: "documents",
+          labelEn: "Documents",
+          labelPt: "Documentos",
+          icon: FolderOpen,
           badge: null,
         },
         {
