@@ -835,12 +835,93 @@ Pipeline (`PATCH /meetings/:id`), que atualiza o **mesmo** evento; a Agenda
 Anual exibe a data vigente da reunião. Alterar datas depois de pedir aprovação
 devolve a agenda para `draft`.
 
+**Situação atual (028+).** A interface não oferece mais datas planejadas nem a
+reserva: a Agenda Anual consolida as reuniões criadas no Calendário. A tabela
+`annual_agenda_items` e as rotas `/annual-agendas/:id/items` e `/:id/reserve`
+continuam por compatibilidade com dados existentes — o detalhe, o PDF/snapshot
+(`datasSemReuniao`) e a regra que impede desassociar reunião nascida de reserva
+ainda as leem.
+
 **Pipeline — sem status novo.** As etapas (Agendada, Em preparação, Pronta para
 reunião, Realizada) são derivadas de `meetings.status`,
 `agenda_validation_status` e da contagem de temas (`apps/web/src/lib/pipeline.ts`).
 
 Migration aditiva, com SQL de reversão documentado no cabeçalho de
 `025_calendar_pipeline_annual_agenda.sql`.
+
+**Revisão 028 — Agenda Anual como consolidação + versão aprovada.** A Agenda
+Anual deixa de ser só planejamento de datas: ela reúne as reuniões do órgão/ano
+**já criadas no Calendário** pelo vínculo existente `meetings.annual_agenda_id`
+(qualquer `origin` — `origin` diz onde a reunião nasceu, não se faz parte do
+plano). Associar grava só esse vínculo: mesmo `meeting.id`, mesmo evento Graph,
+sem convite novo. Pautas e temas são os da própria reunião (`meeting_agendas` /
+`meeting_agenda_items`) — nenhuma cópia em `annual_agendas`.
+
+| Estrutura | Papel | Regras |
+| --- | --- | --- |
+| `annual_agenda_versions` | Versão enviada para aprovação | `snapshot jsonb` = agenda, órgão, ano, reuniões (título/data/horário/fuso), pautas e temas **como enviados**; `version` sequencial por agenda; desfecho `approved_at` (+ quem registrou) **ou** `withdrawn_at`; no máximo uma em aberto e uma aprovada por agenda; FK `RESTRICT` |
+| Imutabilidade | — | trigger recusa alterar conteúdo, mudar desfecho já decidido e `DELETE`; `pcgp_app` só tem `SELECT`/`INSERT` e `UPDATE` das colunas de desfecho |
+| Trigger em `meetings` | Integridade | reunião só aponta para Agenda Anual do **mesmo órgão** (associar e trocar órgão) |
+
+Estados (sem enum novo, os de 025): `draft` = em elaboração (conteúdo
+editável pela Agenda); `pending_approval` = bloqueada até **retirar da
+aprovação** (explícito, auditado; a versão fica como retirada); `approved` =
+bloqueada de vez. Registrar a aprovação marca **a versão enviada** — não tira
+foto nova. O Pipeline continua operando as reuniões depois da aprovação; o
+documento aprovado sai do snapshot e não muda. Reversão no cabeçalho de
+`028_annual_agenda_versions.sql`.
+
+**Revisão 029 — uma Agenda Anual por órgão por ano.** Índice único
+`annual_agendas_body_year_uk (governance_body_id, year)`; a migration aborta,
+sem escolher nada, se já houver duplicata. Com a unicidade, a associação é
+automática e só grava `meetings.annual_agenda_id`:
+
+- **Visão anual** (`GET /annual-agendas/overview?year=`): reuniões do Calendário
+  do ano agrupadas por órgão, com a agenda formal quando existir. Somente
+  leitura — abrir a tela não cria agenda.
+- **Formalizar** ("Preparar Agenda Anual" = `POST /annual-agendas`): cria a
+  agenda do órgão/ano e associa as reuniões já existentes do mesmo órgão/ano
+  (fuso da reunião) que não estejam em outra agenda. 409 legível se já existir.
+- **Reunião nova no Calendário**: entra na agenda do mesmo órgão/ano se ela
+  estiver **em elaboração** (trava a agenda, como o envio). Enviada/aprovada
+  não muda de conteúdo: a reunião fica como "do Calendário, não associada".
+
+Reversão: `DROP INDEX annual_agendas_body_year_uk` (cabeçalho da 029).
+
+**Revisão 030 — tipo e título padronizado.** `meetings.session_type`
+(`ordinary` | `extraordinary`, CHECK; `NULL` = legado com título livre). Com
+tipo, o **servidor** monta o título — `09:00 | Cielo | Reunião Extraordinária do
+Comitê de Riscos (PRESENCIAL)` (hora no fuso da reunião; "do"/"da" pelo órgão;
+`PRESENCIAL`/`VIDEOCONFERÊNCIA` pelo formato) — na criação, na reserva da
+Agenda Anual e a cada alteração de hora, órgão, formato ou tipo (o convite fica
+`stale` para reenvio). O corpo não pode trazer título quando há tipo. A versão
+aprovada da Agenda Anual não muda: o título aprovado está no snapshot (028).
+Regra em `apps/api/src/meetings/title.ts` (prévia espelhada em
+`apps/web/src/lib/meeting-title.ts`).
+
+**Cronograma dos temas (sem migration).** A ordem é `meeting_agenda_items.position`
+(global na reunião, a mesma do Pipeline); cada tema começa quando o anterior
+termina, a partir do início da reunião, pela `duration_minutes`
+(`apps/api/src/meetings/schedule.ts`, espelhada em `web/src/lib/agenda-schedule.ts`,
+usada também pelo Pipeline). Tema sem duração não vira 0: fica sem término e
+é contado à parte. Pela Agenda Anual: arrastar reordena dentro da pauta
+(`PUT /annual-agendas/:id/meetings/:mid/agenda-items/order`) e o servidor regrava
+`scheduled_start_time`; o envio para aprovação é recusado (409) se alguma
+reunião tiver temas somando mais que a reunião ou tema sem duração. O snapshot
+(028) passa a guardar duração, início/fim, participantes e a ficha de cada tema
+(responsável, tipo, natureza, circular, descrição) — campos opcionais no JSON;
+snapshots antigos continuam legíveis. Anos da visão anual: só os que têm reunião
+ou Agenda Anual.
+
+**Temas pela Agenda Anual (sem migration).** A tela trabalha com Temas; a Pauta
+fica como estrutura interna. `POST /annual-agendas/:id/meetings/:mid/temas`
+aceita dois contratos fechados: **novo tema** (cadastro completo; desde 5.17
+também cadastra o tema-mestre na Biblioteca e vincula a instância) ou **da
+Biblioteca** (`agendaTopicId` +
+duração/pauta; título, ficha e participantes vêm do tema-mestre no servidor).
+Reunião sem pauta recebe a pauta padrão "Pauta da reunião" na mesma transação
+(agenda travada → em elaboração → cria → participantes → horários). Editar pela
+Agenda altera só a instância da reunião, nunca o tema-mestre.
 
 ### 5.15 Revisão 026 — Participantes externos
 
@@ -864,7 +945,7 @@ por e-mail na gravação, **fail closed** (sem verificação, não grava).
 | `full_name` | text | sim | 2–200 |
 | `email` | text | sim | **único case-insensitive** (`UNIQUE (lower(email))`) |
 | `phone` | text | sim | TEXTO (preserva DDI/DDD); dígitos, espaço, `+ ( ) -` |
-| `governance_body_id` | uuid FK → `governance_bodies` | não | `RESTRICT`; **um** órgão colegiado (limitação: não há N:N pessoa↔órgão no modelo) |
+| `governance_body_id` | uuid FK → `governance_bodies` | não | **DEPRECIADA na 027** — substituída pela classificação N:N (5.16). Valor da 026 preservado e migrado; a aplicação não lê nem escreve |
 | `created_by_user_id` / `updated_by_user_id` | uuid FK → `users` | | autoria |
 | `created_at` / `updated_at` | timestamptz | sim | |
 
@@ -873,6 +954,119 @@ Uso em reunião: a pessoa vira uma linha comum de `meeting_participants`
 como snapshot) — o convidado externo que o modelo já suportava. Sem FK de
 `meeting_participants` para cá: remover o cadastro não altera reuniões. O
 convite do Outlook usa só o e-mail. Migration aditiva; reversão no cabeçalho.
+
+### 5.16 Revisão 027 — Classificação de pessoas (órgãos e temas)
+
+Pessoas podem ser classificadas por **0..N Órgãos colegiados** e **0..N Temas**,
+nas duas origens. A classificação serve **só para sugerir** participantes nos
+seletores de reunião/tema — **não** é autorização, **não** é App Role e **não**
+inclui ninguém em reunião ou tema automaticamente.
+
+> **Revisado na 031 (5.17):** o vínculo pessoa ↔ **órgão** passou a ser o
+> *grupo do órgão* e **inclui** a pessoa nas reuniões novas do órgão (e, ao
+> entrar no grupo, nas abertas já existentes; comentário da tabela na 032). O vínculo
+> pessoa ↔ tema (`participant_topics`) continua só sugestão.
+
+| Conceito | Onde vive | Observação |
+|---|---|---|
+| Identidade Entra | Microsoft Entra ID | fonte de verdade; nunca copiada em massa |
+| Usuário do PGCP | `users` | só quem fez login (JIT); App Roles vêm do token |
+| Pessoa do Entra classificada | `directory_people` (nova) | só `(entra_tenant_id, entra_object_id)` + snapshot de nome/e-mail **lido do Graph** no vínculo; existe apenas para quem a Administração vinculou; `UNIQUE (tenant, oid)` |
+| Externo do PGCP | `external_participants` (026) | sem login, sem App Role |
+| Pessoa ↔ órgão | `participant_governance_bodies` (nova) | sujeito XOR (externo, pessoa do diretório); FK `RESTRICT` em `governance_bodies` |
+| Pessoa ↔ tema | `participant_topics` (nova) | tema = **Biblioteca de Temas** (`agenda_topics`), o catálogo reutilizável; FK `CASCADE` (excluir o tema remove só a classificação) |
+
+- Índices únicos parciais impedem vínculo duplicado por sujeito; `CHECK
+  (num_nonnulls(...) = 1)` impede vínculo sem sujeito ou com dois.
+- **Por que não `agenda_topic_participants`:** aquela relação é copiada para a
+  reunião quando o tema é vinculado (snapshot 020) — usá-la adicionaria pessoas
+  automaticamente. A classificação aponta para o mesmo catálogo por outra relação.
+- **Temas da reunião** (`meeting_agenda_items`) não são classificação; a
+  sugestão por tema usa o `agenda_topic_id` do tema quando ele veio da Biblioteca.
+- **Compatibilidade 026:** backfill de `external_participants.governance_body_id`
+  para `participant_governance_bodies`; a coluna fica, depreciada.
+- Migration aditiva; reversão no cabeçalho de `027_participant_classifications.sql`.
+
+**Órgão colegiado como contexto global (frontend).** O seletor do cabeçalho
+filtra Visão Geral, Calendário, Pipeline e Agenda Anual e pré-seleciona o órgão
+ao criar reunião/agenda (só órgão ativo). É preferência do navegador
+(`localStorage`), **não** autorização — nada vai para a API. Telas
+administrativas não são filtradas por ele.
+
+### 5.17 Revisão 031 — Grupos de participação e exceção por reunião
+
+Mudança de regra: os grupos passam a **incluir** pessoas automaticamente, em
+dois momentos claros (sem sincronização contínua nem retroativa).
+
+| Grupo | Onde vive | Quando inclui |
+|---|---|---|
+| Grupo do **Órgão colegiado** | `participant_governance_bodies` (027), pessoa do diretório ou externo | na **criação** da reunião do órgão (mesma transação, depois dos manuais) e, ao **entrar no grupo**, nas reuniões **abertas** já existentes do órgão |
+| **Participantes padrão** do Tema | `agenda_topic_participants` (lista do tema da Biblioteca — a mesma do modal da Biblioteca) | quando o tema da Biblioteca **entra** na reunião (cópia já existente, 020): pessoa na reunião + no tema |
+
+| Estrutura nova | Papel | Regras |
+|---|---|---|
+| `meeting_participant_exclusions` | Pessoa **removida explicitamente** de uma reunião | `meeting_id` FK `CASCADE`; identidade = a de `meeting_participants` (par Entra **ou** e-mail do convidado); únicos parciais por reunião+par e por reunião+`lower(email)`; `pcgp_app`: `SELECT/INSERT/DELETE` |
+
+- **Deduplicação:** a pessoa aparece uma vez (identidade Entra, usuário ou
+  e-mail); nenhum segundo convite para o mesmo endereço.
+- **Remover da reunião** apaga a participação (e os vínculos com temas) e grava
+  a exceção: nenhuma inclusão automática a traz de volta **àquela** reunião.
+  Grupos não mudam; a próxima reunião inclui de novo.
+- **Incluir manualmente** (ou vincular a um tema) apaga a exceção.
+- **Remover do tema** só desvincula do tema (sem exceção).
+- **Entrar no grupo do órgão** inclui a pessoa, na mesma transação, nas
+  reuniões **abertas** do órgão: status fora de `done/approved/closed` (a etapa
+  "Realizada" do Pipeline) **e** término no futuro ou `in_progress`. Realizadas,
+  encerradas e passadas não mudam; a exceção da reunião vence. **Sair do grupo**
+  não remove ninguém de reunião nenhuma.
+- Externo entra como convidado (nome + e-mail, `external`): sem `users`, sem
+  identidade Microsoft, sem App Role.
+- Convite: a inclusão do órgão acontece antes do primeiro envio (a integração
+  nasce `pending`); a do tema usa o caminho atual (convite fica `stale` para
+  reenvio, como em qualquer inclusão). Nenhuma lógica nova de Outlook/Teams.
+- **"+ Novo tema" da Agenda Anual** cadastra o tema também na Biblioteca
+  (`agenda_topics`, mesma função da Biblioteca): os participantes do formulário
+  viram os **participantes padrão** e a instância na reunião nasce vinculada
+  (`agenda_topic_id`), tudo na mesma transação. Editar a instância depois não
+  altera o tema-mestre. Título não é único no catálogo (cada "Novo tema" é um
+  tema-mestre novo). A massa local de QA teve 2 temas anteriores vinculados por
+  correção pontual (IDs explícitos), sem backfill genérico.
+- Migration aditiva; reversão no cabeçalho de `031_meeting_participant_exclusions.sql`.
+
+### 5.18 Agenda Anual → Pipeline e Documentos (sem migration)
+
+**Liberação para o Pipeline.** Reunião com `annual_agenda_id` só é operacional
+no Pipeline quando a Agenda Anual dela está `approved`; antes disso é preparada
+na Agenda (temas, participantes da reunião e dos temas, duração, ordem, prévia,
+aprovação). Reunião avulsa (`annual_agenda_id IS NULL`) segue o Pipeline
+normalmente. Nada é copiado na aprovação: o Pipeline passa a operar a MESMA
+reunião. O resumo da reunião expõe `annualAgendaStatus` e `releasedToPipeline`
+(decididos no servidor), e o router `/meetings` recusa mutações (409) de
+reunião não liberada — exceto o convite de calendário, que sai no agendamento
+(025). A Agenda edita pelas próprias rotas (`/annual-agendas/:id/meetings/...`,
+inclusive participantes da reunião), na transação travada dela.
+
+**Documentos.** O PGCP **não armazena arquivos enviados** (sem upload, sem
+tabela de anexos, sem storage configurado). A biblioteca central
+(`GET /documents`) lista, sem cópia, o que já é persistido: **Atas** com
+conteúdo (`meeting_minutes`) e a **versão vigente** enviada/aprovada de cada
+Agenda Anual (`annual_agenda_versions`); o download usa as rotas de origem. A
+prévia da Agenda não entra (muda a cada edição). **Não há upload de arquivos
+nem armazenamento de objetos nesta versão.**
+
+**Próxima evolução (planejada, NÃO implementada): Documentos com AWS S3.**
+
+- Documento **pertence à reunião** e, opcionalmente, a um **tema daquela
+  reunião** — `meeting_agenda_items.id`, não o tema da Biblioteca: o mesmo tema
+  em outra reunião é outro contexto documental.
+- Bytes no S3; **metadados no PostgreSQL**, fonte de verdade para reunião, tema
+  da reunião, órgão, autoria, data, tipo e filtros. A organização de chaves é só
+  referência (`meetings/{meetingId}/documents/...`,
+  `meetings/{meetingId}/topics/{meetingAgendaItemId}/...`) — nenhuma regra de
+  negócio depende de "pasta".
+- Documentos gerados passam a ser guardados: PDF da versão enviada/aprovada da
+  Agenda Anual e PDF da Ata final → S3 → Documentos.
+- Pipeline: anexo ao tema da reunião → upload → S3 → Documentos.
 
 ## 6. Relacionamentos e cardinalidades
 

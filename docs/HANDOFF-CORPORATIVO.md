@@ -447,8 +447,11 @@ ciclo da **reunião**; `agenda_validation_status` é o ciclo da **pauta**;
 `provider_event_id` como prova.
 
 **Revisado na migration 025:** o convite **não** depende mais da aprovação das
-pautas — sai no agendamento (Calendário) ou na reserva da Agenda Anual, antes da
-aprovação do planejamento. O gate `agenda_not_approved` foi retirado; a
+pautas — sai no agendamento (Calendário), antes da aprovação do planejamento.
+Não há ação de Reserva na interface atual: o fluxo começa pela reunião criada no
+Calendário, que a Agenda Anual consolida (028/029). A rota
+`POST /annual-agendas/:id/reserve` e a tabela `annual_agenda_items` ficam só por
+compatibilidade com dados existentes. O gate `agenda_not_approved` foi retirado; a
 aprovação das pautas continua exigida para **iniciar** a reunião. Ver
 `docs/security.md` §8.
 

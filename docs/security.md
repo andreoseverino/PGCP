@@ -25,7 +25,7 @@ Auditoria de código              ✅ concluída
 Hardening PostgreSQL             ✅ concluído
 Hardening de produção no código  ✅ concluído
 npm audit                        ✅ 0 vulnerabilidades
-Build / typecheck / testes       ✅ verdes (API 264 + web 81)
+Build / typecheck / testes       ✅ verdes (API 306 + web 170)
 Pré-go-live local                ✅ concluído
 Mail.Send Delegated / OBO        ✅ validado no tenant real (envio e recebimento)
 Validação de pautas — pós-envio  ⚠️ revalidar após a correção do 202 (ver §9)
@@ -366,7 +366,7 @@ reestruturado para **reservar a agenda de executivos cedo**:
 
 ```
 Calendário ──► Nova reunião ──► convite Outlook/Teams ──► Pipeline (preparação)
-Agenda Anual ─► reservar datas ─► convites (ANTES da aprovação do planejamento) ─► Pipeline
+Agenda Anual ─► associa as MESMAS reuniões do órgão/ano ─► Pauta → Tema ─► compilado ─► aprovação (versão imutável)
 Pipeline: Pautas → Temas → validação das pautas → aprovação → INICIAR a reunião
 ```
 
@@ -380,12 +380,13 @@ reservadas pela Agenda Anual e depois editadas pelo Pipeline).
 
 | Etapa | Onde vive o estado | Quem pode |
 | --- | --- | --- |
-| Agendar (Calendário) / reservar (Agenda Anual) | `meetings` (+ `origin`) e `annual_agenda_items.meeting_id` | `PGCP.Assessoria` |
+| Agendar (Calendário) / reservar (Agenda Anual — rota mantida, sem UI desde a 028) | `meetings` (+ `origin`) e `annual_agenda_items.meeting_id` | `PGCP.Assessoria` |
 | Enviar convite Outlook/Teams | `meeting_calendar_integrations.sync_status` | `PGCP.Assessoria` |
 | Preparação (pautas e temas) | `meeting_agendas` / `meeting_agenda_items` | `PGCP.Assessoria` |
 | Enviar pautas para validação | `meetings.agenda_validation_status = 'sent'` | `PGCP.Assessoria` |
 | Marcar pautas como aprovadas | `… = 'approved'` + `agenda_approved_by_user_id` | `PGCP.Assessoria` |
-| Aprovação da Agenda Anual | `annual_agendas.status` (independente da reserva) | `PGCP.Assessoria` |
+| Aprovação da Agenda Anual | `annual_agendas.status` + `annual_agenda_versions` (snapshot imutável) | `PGCP.Assessoria` |
+| Associar reunião / editar pauta-tema pela Agenda Anual | `meetings.annual_agenda_id`; `meeting_agendas`/`meeting_agenda_items` | `PGCP.Assessoria`; só com a agenda em `draft` (servidor) |
 
 **Três eixos que não se confundem** e por isso não compartilham coluna:
 
@@ -410,6 +411,19 @@ mesma reunião** (404 caso contrário) e o banco reforça com **FK composta**
 outra reunião nem por chamada direta. Itens de Agenda Anual são sempre
 consultados com `annual_agenda_id` no `WHERE`.
 
+**Agenda Anual (028).** Rotas de conteúdo `/annual-agendas/:id/meetings/:meetingId/...`
+conferem que a reunião pertence à agenda (IDOR → 404) e que a agenda está em
+`draft` (409 enviada/aprovada) antes de delegar às funções de `/meetings`.
+Payloads fechados (mass assignment recusado): criar tema (`POST .../temas`)
+aceita o cadastro do tema **ou** só `agendaTopicId` + duração/pauta (o servidor
+resolve o tema-mestre — o cliente não forja título, ficha nem origem); editar
+aceita os campos do cadastro, nunca os operacionais (`executionStatus` etc.). Associar
+exige mesmo órgão e mesmo ano no fuso da reunião e recusa reunião de outra
+agenda — validado na aplicação e por trigger no banco. A versão aprovada é
+imutável por privilégio (sem `DELETE`/`UPDATE` de conteúdo para `pcgp_app`) e
+por trigger. Associar não chama o Graph; o envio para aprovação reusa
+`Mail.Send` (nenhuma permissão nova).
+
 **Participantes externos (026).** `/external-participants` tem
 `requireAssessoriaOuAdmin` **no router** (mesma política dos cadastros
 funcionais; nenhuma App Role nova) — inclusive a leitura, porque a lista expõe
@@ -427,6 +441,49 @@ participantes de reunião (`/directory/users` já existente + lista local).
 Participante externo **não** cria linha em `users`, não recebe App Role e não
 autentica. Trilha: "Participante criado/atualizado/removido", com nome e id —
 sem e-mail nem telefone.
+
+**Classificação de pessoas e contexto global (027).** `/directory-people` tem
+`requireAssessoriaOuAdmin` no router (mesma política de Participantes). Vincular
+pessoa do Entra aceita só o `oid`: a existência é confirmada no Graph
+(`GET /users/{oid}`, `User.Read.All` já concedida; **fail closed** — sem
+verificação, 503) e nome/e-mail vêm do Graph, o tenant do token. Leitura,
+alteração e remoção filtram por tenant (IDOR). Nada cria `users`,
+`external_participants` ou App Role. Órgãos/temas inexistentes → 404; vínculos
+duplicados barrados por índice único. Auditoria consolidada por ato ("Vínculos
+de pessoa do diretório atualizados/removidos"), sem e-mail. O **Órgão colegiado
+do cabeçalho é filtro de navegação no navegador** — não é enviado à API e não
+concede acesso; o backend/App Roles seguem como autoridade.
+
+**Grupos de participação e exceção por reunião (031).** `/participation-groups`
+tem `requireAssessoriaOuAdmin` no router. Adicionar ao grupo do órgão aceita só
+`entraObjectId` **ou** `externalParticipantId` (corpo fechado; nome, e-mail,
+tenant e órgão nunca vêm do cliente); pessoa do Entra é confirmada no Graph
+(**fail closed**, 503); externo precisa existir (404). Remover filtra por órgão
+**e** tenant (IDOR → 404). Participantes padrão do tema seguem nas rotas e
+regras de `/agenda-topics`. A inclusão automática roda **só no servidor** (criação
+da reunião; entrada no grupo, nas reuniões abertas do órgão, travadas na mesma
+transação; tema da Biblioteca adicionado) e respeita
+`meeting_participant_exclusions`. "+ Novo tema" da Agenda cria o tema-mestre
+pela mesma função da Biblioteca (corpo fechado do contrato "novo"; tipo/natureza
+inexistentes → 404). **Pertencer a um grupo não é autorização**:
+não cria `users`, não dá App Role, não dá acesso ao PGCP. Trilha: entrada/saída
+do grupo (órgão + nome), inclusão automática consolidada por ato (contagem),
+exceção criada/removida — sem e-mail.
+
+**Agenda Anual → Pipeline.** Mutação em `/meetings/:id/...` de reunião cuja
+Agenda Anual não está aprovada → 409 ("em preparação na Agenda Anual"), por
+uma guarda única montada antes das rotas do router; leitura e
+`calendar-sync` seguem. A listagem expõe `releasedToPipeline` decidido no
+servidor. A Agenda gerencia participantes da reunião pelas próprias rotas
+(`PGCP.Assessoria`, agenda em `draft`, pertença conferida, mesmas regras de
+deduplicação/exceção da aba Participantes).
+
+**Documentos.** `GET /documents` (usuário ativo) só LISTA: Atas e versão
+vigente da Agenda Anual, com a cláusula de leitura de reunião
+(`clausulaDeReuniaoVisivel`). Query fechada e validada (UUIDs, enums, datas,
+limites; curingas do LIKE escapados). Nenhum caminho de arquivo trafega: o
+download é feito nas rotas de origem, com a autorização delas. Não há upload —
+nenhuma superfície de envio de arquivo foi aberta.
 
 **Mass assignment.** `origin`, `annualAgendaId`, `status` da Agenda Anual,
 `meeting_id` do item e tenant não são aceitos do corpo (allowlists fechadas,

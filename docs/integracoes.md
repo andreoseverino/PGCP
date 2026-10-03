@@ -680,8 +680,10 @@ convite desatualizou).
 
 **Desde a migration 025 o convite NÃO depende de pauta aprovada.** Agendar é
 reservar: o Calendário chama `POST /meetings` e, em seguida,
-`POST /meetings/:id/calendar-sync`; a Agenda Anual faz o mesmo na reserva
-(`POST /annual-agendas/:id/reserve`), antes da aprovação do planejamento. O
+`POST /meetings/:id/calendar-sync`, antes da aprovação do planejamento. A
+reserva pela Agenda Anual (`POST /annual-agendas/:id/reserve`) não tem mais ação
+na interface — a rota fica por compatibilidade; o fluxo começa pela reunião
+criada no Calendário. O
 gate `agenda_not_approved` (409) foi retirado; a aprovação das pautas continua
 exigida para **iniciar** a reunião (`meetings/meeting-start.ts`).
 
