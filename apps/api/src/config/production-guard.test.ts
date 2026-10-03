@@ -14,6 +14,8 @@ const PROD_SEGURO = {
   ENTRA_SPA_CLIENT_ID: "s",
   CORS_ORIGIN: "https://pgcp.example.com",
   DB_SSL: "true",
+  PGCP_DOCUMENTS_BUCKET: "bucket-de-teste",
+  AWS_REGION: "regiao-de-teste",
 };
 
 test("fora de producao nunca acusa problema", () => {
@@ -61,4 +63,11 @@ test("assertSafeProductionConfig lanca em producao insegura", () => {
     () => assertSafeProductionConfig({ ...PROD_SEGURO, DB_SSL: "false", CORS_ORIGIN: "*" }),
     /Configuracao insegura para producao/,
   );
+});
+
+test("producao sem armazenamento de documentos (S3) e recusada", () => {
+  const { PGCP_DOCUMENTS_BUCKET: _b, AWS_REGION: _r, ...semS3 } = PROD_SEGURO;
+  const problemas = collectProductionConfigIssues(semS3);
+  assert.equal(problemas.length, 2);
+  assert.ok(problemas.every((p) => /armazenamento de documentos \(AWS S3\)/.test(p)));
 });

@@ -35,6 +35,9 @@ import {
 } from "../meeting-minutes/routes.js";
 import { findMeetingMinutes } from "../meeting-minutes/service.js";
 import { exigirLiberadaParaPipeline } from "./pipeline-release.js";
+import express from "express";
+import { adicionarDocumentoDaReuniao } from "../documents/service.js";
+import { tamanhoMaximo, descreverTamanho } from "../documents/file-rules.js";
 import { gerarPdfDaAta, nomeDoArquivoDaAta, PDF_CONTENT_TYPE } from "../meeting-minutes/pdf.js";
 import {
   addAgendaItem,
@@ -590,6 +593,64 @@ meetingsRouter.post("/:id/agenda-approval", requirePgcpAssessoria, async (req, r
     res.json({ ...resultado, meeting: await findMeeting(req.params.id as string) });
   } catch (error) {
     sendError(res, error, "aprovar pautas");
+  }
+});
+
+/**
+ * POST /:id/documents — anexo da reunião (ou do tema DESTA reunião, via
+ * `?agendaItemId=`). Corpo = bytes do arquivo (`application/octet-stream`);
+ * nome e descrição em cabeçalho (URL-encoded). Pipeline: `PGCP.Assessoria` e a
+ * guarda de liberação (Agenda Anual aprovada) valem aqui como em toda mutação.
+ * Validação, S3 e metadado: `documents/service.ts`.
+ */
+meetingsRouter.post("/:id/documents", requirePgcpAssessoria, async (req: Request, res: Response) => {
+  const usuario = req.pgcpUser;
+  const principal = req.principal;
+  if (!usuario || !principal) {
+    res.status(500).json({ error: "Erro interno ao resolver a identidade." });
+    return;
+  }
+  const maximo = tamanhoMaximo();
+  try {
+    if (!req.is("application/octet-stream")) {
+      throw new HttpError(415, "Envie o arquivo como application/octet-stream.");
+    }
+    const conteudo = await new Promise<Buffer>((resolver, rejeitar) => {
+      express.raw({ type: "application/octet-stream", limit: maximo })(req, res, (erro?: unknown) => {
+        if ((erro as { type?: string } | undefined)?.type === "entity.too.large") {
+          rejeitar(new HttpError(413, `O arquivo excede o tamanho máximo de ${descreverTamanho(maximo)}.`));
+        } else if (erro) {
+          rejeitar(new HttpError(400, "Não foi possível ler o arquivo enviado."));
+        } else {
+          resolver(Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0));
+        }
+      });
+    });
+    const cabecalho = (nome: string) => {
+      const v = req.get(nome);
+      if (v === undefined) return undefined;
+      try {
+        return decodeURIComponent(v);
+      } catch {
+        throw new HttpError(400, `Cabeçalho ${nome} inválido.`);
+      }
+    };
+    for (const chave of Object.keys(req.query)) {
+      if (chave !== "agendaItemId") throw new HttpError(400, `O parâmetro '${chave}' não é suportado.`);
+    }
+    const documento = await adicionarDocumentoDaReuniao(
+      req.params.id as string,
+      {
+        nome: cabecalho("X-Document-Filename"),
+        descricao: cabecalho("X-Document-Description"),
+        agendaItemId: req.query.agendaItemId,
+        conteudo,
+      },
+      { userId: usuario.id, name: usuario.name, entraTenantId: principal.entraTenantId },
+    );
+    res.status(201).json({ document: documento });
+  } catch (error) {
+    sendError(res, error, "adicionar documento");
   }
 });
 

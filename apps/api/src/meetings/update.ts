@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { contarDocumentos } from "../documents/service.js";
 import pool from "../database.js";
 import { transacaoAmbiente } from "../transacao-ambiente.js";
 import { HttpError } from "../http-error.js";
@@ -1002,6 +1003,12 @@ export async function removeAgendaItem(
 
   await emTransacao(async (client) => {
     const titulo = await exigirReuniao(client, meetingId);
+
+    // Documento de governança não some junto com o tema (sem exclusão de
+    // documentos nesta versão; a FK RESTRICT é a última barreira).
+    if ((await contarDocumentos(client, { agendaItemId })) > 0) {
+      throw new HttpError(409, "Este tema tem documentos anexados e não pode ser removido. Os documentos da reunião são preservados.");
+    }
 
     const { rowCount } = await client.query(
       "DELETE FROM meeting_agenda_items WHERE id = $1 AND meeting_id = $2",

@@ -13,6 +13,7 @@
     "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1146.0",
     "@azure/msal-node": "^5.5.0",
     "express": "^5.1.0",
     "jose": "^6.2.9",

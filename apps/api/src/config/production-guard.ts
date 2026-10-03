@@ -64,6 +64,14 @@ export function collectProductionConfigIssues(env: EnvLike): string[] {
     problemas.push("DB_SSL diferente de 'true' em producao: a conexao com o PostgreSQL deve exigir TLS.");
   }
 
+  // 4. Documentos: o unico armazenamento e o AWS S3 (bucket privado). Sem ele,
+  //    upload/download nao funcionam e nao existe armazenamento local de reserva.
+  for (const nome of ["PGCP_DOCUMENTS_BUCKET", "AWS_REGION"]) {
+    if (!definido(env[nome])) {
+      problemas.push(`${nome} ausente: o armazenamento de documentos (AWS S3) e obrigatorio em producao.`);
+    }
+  }
+
   return problemas;
 }
 

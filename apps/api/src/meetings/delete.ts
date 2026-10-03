@@ -1,4 +1,5 @@
 import pool from "../database.js";
+import { contarDocumentos } from "../documents/service.js";
 import { HttpError } from "../http-error.js";
 import { recordAudit, recordAuditIn } from "../audit/service.js";
 import { findCalendarIntegration } from "../calendar/service.js";
@@ -51,6 +52,12 @@ export async function deleteMeeting(
   );
   const reuniao = rows[0];
   if (!reuniao) throw new HttpError(404, "Reunião não encontrada.");
+
+  // ANTES de cancelar o evento no Outlook: reunião com documentos não é
+  // excluída (documentos de governança não somem sem política explícita).
+  if ((await contarDocumentos(pool, { meetingId })) > 0) {
+    throw new HttpError(409, "Esta reunião tem documentos anexados e não pode ser excluída.");
+  }
 
   const integracao = await findCalendarIntegration(meetingId);
   if (integracao?.syncStatus === "synced" && integracao.providerEventId && reuniao.organizer_entra_object_id) {

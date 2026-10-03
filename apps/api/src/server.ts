@@ -73,7 +73,8 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS");
     // `Authorization` e obrigatorio: sem ele o preflight bloqueia toda chamada
     // autenticada. A origem continua restrita a allowlist acima — nunca "*".
-    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    // Upload de documento: nome/descrição do arquivo vão em cabeçalho (corpo = bytes).
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Document-Filename, X-Document-Description");
   }
 
   if (req.method === "OPTIONS") {

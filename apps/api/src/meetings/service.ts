@@ -146,6 +146,10 @@ export interface MeetingSummary {
   participantsCount: number;
   /** DERIVADO: COUNT em meeting_agenda_items. */
   agendaItemsCount: number;
+  /** Temas sem duração (impedem o cronograma). */
+  agendaItemsWithoutDuration: number;
+  /** Documentos ANEXADOS à reunião ou aos temas dela (`documents`). */
+  documentsCount: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -303,6 +307,8 @@ interface MeetingRow {
   organizer_name: string | null;
   participants_count: number;
   agenda_items_count: number;
+  agenda_items_without_duration: number;
+  documents_count: number;
 }
 
 interface ParticipantRow {
@@ -383,6 +389,8 @@ function toSummary(row: MeetingRow): MeetingSummary {
     pendingRequirements: row.pending_requirements,
     participantsCount: row.participants_count,
     agendaItemsCount: row.agenda_items_count,
+    agendaItemsWithoutDuration: row.agenda_items_without_duration,
+    documentsCount: row.documents_count,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -484,7 +492,9 @@ const SUMMARY_SELECT = `
          m.organizer_user_id,
          org.name AS organizer_name,
          (SELECT count(*) FROM meeting_participants mp WHERE mp.meeting_id = m.id)::int AS participants_count,
-         (SELECT count(*) FROM meeting_agenda_items ai WHERE ai.meeting_id = m.id)::int AS agenda_items_count
+         (SELECT count(*) FROM meeting_agenda_items ai WHERE ai.meeting_id = m.id)::int AS agenda_items_count,
+         (SELECT count(*) FROM meeting_agenda_items ai WHERE ai.meeting_id = m.id AND ai.duration_minutes IS NULL)::int AS agenda_items_without_duration,
+         (SELECT count(*) FROM documents dc WHERE dc.meeting_id = m.id)::int AS documents_count
     FROM meetings m
     JOIN governance_bodies gb ON gb.id = m.governance_body_id
     LEFT JOIN users org       ON org.id = m.organizer_user_id
