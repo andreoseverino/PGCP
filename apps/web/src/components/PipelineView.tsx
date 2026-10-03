@@ -4,6 +4,7 @@ import type { Meeting } from "../types";
 import { groupByStage, originLabel, PIPELINE_STAGES, type PipelineStage } from "../lib/pipeline";
 import { filtrarPorOrgao } from "../lib/governance-filter";
 import { operacionalNoPipeline } from "../lib/pipeline";
+import { lembrarModoDoPipeline, modoInicialDoPipeline, type ModoDoPipeline } from "../lib/pipeline-list";
 
 /**
  * PIPELINE — espaço operacional de PREPARAÇÃO.
@@ -55,7 +56,12 @@ export default function PipelineView({
   renderList
 }: PipelineViewProps) {
   const pt = language === "pt";
-  const [modo, setModo] = useState<"board" | "list">("board");
+  // Lista é o padrão; a última escolha (Lista/Quadro) fica no navegador.
+  const [modo, setModoState] = useState<ModoDoPipeline>(() => modoInicialDoPipeline());
+  const setModo = (novo: ModoDoPipeline) => {
+    setModoState(novo);
+    lembrarModoDoPipeline(novo);
+  };
   const [busca, setBusca] = useState("");
   const orgao = orgaoContexto;
 
@@ -95,8 +101,8 @@ export default function PipelineView({
         </div>
         <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl p-1 self-start md:self-auto">
           {([
-            ["board", Columns3, pt ? "Quadro" : "Board"],
-            ["list", List, pt ? "Lista" : "List"]
+            ["list", List, pt ? "Lista" : "List"],
+            ["board", Columns3, pt ? "Quadro" : "Board"]
           ] as const).map(([valor, Icone, rotulo]) => (
             <button
               key={valor}

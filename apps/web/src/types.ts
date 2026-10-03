@@ -273,6 +273,10 @@ export interface Meeting {
   status: "Scheduled" | "Draft" | "Needs Approval" | "In Progress" | "Done" | "Approved" | "Closed";
   expectedParticipantsCount: number;
   agendaItemsCount: number;
+  /** Temas sem duração (resumo do servidor). */
+  agendaItemsWithoutDuration?: number;
+  /** Anexos da reunião e dos temas (resumo do servidor). */
+  documentsCount?: number;
   description: string;
   organizer: string;
   meetingLink?: string;

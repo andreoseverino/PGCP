@@ -72,6 +72,10 @@ export interface ApiMeetingSummary {
   pendingRequirements: string | null;
   participantsCount: number;
   agendaItemsCount: number;
+  /** Temas sem duração definida (alerta do Pipeline). Ausente em APIs antigas. */
+  agendaItemsWithoutDuration?: number;
+  /** Anexos enviados à reunião/temas (migration 033). Ausente em APIs antigas. */
+  documentsCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -351,6 +355,8 @@ export function meetingFromApi(api: ApiMeetingSummary | ApiMeetingDetail): Meeti
     status: statusFromApi(api.status),
     expectedParticipantsCount: api.participantsCount,
     agendaItemsCount: api.agendaItemsCount,
+    agendaItemsWithoutDuration: api.agendaItemsWithoutDuration ?? 0,
+    documentsCount: api.documentsCount ?? 0,
     description: api.description ?? "",
     organizer: api.organizer?.name ?? "",
     meetingLink: api.meetingLink ?? undefined,

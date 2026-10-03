@@ -16,10 +16,16 @@ import {
   FileCheck,
   AlertCircle,
   Edit2,
+  FileText,
   Trash2
 } from "lucide-react";
 import { Meeting } from "../types";
-import { getAgendaProgress, readDoneTopicIdsFor, readPostponedTopicIdsFor } from "../lib/meeting-progress";
+import {
+  aplicarFiltrosDaLista,
+  FILTROS_DA_LISTA_VAZIOS,
+  pendenciasDaReuniao,
+  type FiltrosDaLista
+} from "../lib/pipeline-list";
 import {
   DEFAULT_PAGE_SIZE,
   PAGE_SIZE_OPTIONS,
@@ -67,7 +73,12 @@ export default function MeetingsView({
    * lista é o modo Lista do Pipeline, que já recebe as reuniões filtradas pelo
    * filtro comum de Órgão colegiado. Dois filtros do mesmo conceito confundiam.
    */
-  const [selectedMonth, setSelectedMonth] = useState("All Months");
+  /* Período (de/até), "com pendências" e "convite com falha": `lib/pipeline-list.ts`. */
+  const [filtros, setFiltros] = useState<FiltrosDaLista>(FILTROS_DA_LISTA_VAZIOS);
+  const mudarFiltro = (parcial: Partial<FiltrosDaLista>) => {
+    setFiltros((atual) => ({ ...atual, ...parcial }));
+    setCurrentPage(1);
+  };
   const [currentPage, setCurrentPage] = useState(1);
   /*
    * Quantidade por página. Client-side: `GET /meetings` não pagina — o contrato
@@ -99,42 +110,11 @@ export default function MeetingsView({
     
     // Header labels for the list/table view
     colDate: language === "en" ? "Date & Time" : "Data e Horário",
-    colMeeting: language === "en" ? "Meeting & Category" : "Reunião e Segmento",
+    colMeeting: language === "en" ? "Meeting" : "Reunião",
     colExpected: language === "en" ? "Participants" : "Participantes",
     colStatus: language === "en" ? "Status" : "Status",
     colActions: language === "en" ? "Actions" : "Ações"
   };
-
-  // Dynamically extract all unique month-years from meeting dates
-  const availableMonths = useMemo(() => {
-    const list: string[] = [];
-    meetings.forEach((m) => {
-      if (!m.date) return;
-      const dateObj = new Date(m.date + "T10:00:00");
-      const monthLabel = dateObj.toLocaleDateString(language === "en" ? "en-US" : "pt-BR", {
-        month: "long",
-        year: "numeric"
-      });
-      const capitalized = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
-      if (!list.includes(capitalized)) {
-        list.push(capitalized);
-      }
-    });
-
-    // Chronological sorting
-    return list.sort((a, b) => {
-      const getCompareDate = (monthStr: string) => {
-        const found = meetings.find(m => {
-          const d = new Date(m.date + "T10:00:00");
-          const lbl = d.toLocaleDateString(language === "en" ? "en-US" : "pt-BR", { month: "long", year: "numeric" });
-          const cap = lbl.charAt(0).toUpperCase() + lbl.slice(1);
-          return cap === monthStr;
-        });
-        return found ? found.date : "";
-      };
-      return getCompareDate(a).localeCompare(getCompareDate(b));
-    });
-  }, [meetings, language]);
 
   /*
    * Categorias reais, derivadas das reuniões — igual `availableMonths` acima.
@@ -145,7 +125,7 @@ export default function MeetingsView({
 
   // Filter meetings based on tab, search, status, category, and selected month
   const filteredMeetings = useMemo(() => {
-    return meetings.filter((m) => {
+    const porAba = meetings.filter((m) => {
       // 1. Tab check: "Past" corresponds to "Done" and "Closed"
       const isPast = m.status === "Done" || m.status === "Closed";
       if (activeTab === "Upcoming" && isPast) return false;
@@ -156,7 +136,8 @@ export default function MeetingsView({
         const query = searchQuery.toLowerCase();
         const matchesTitle = m.title.toLowerCase().includes(query);
         const matchesOrg = m.organizer.toLowerCase().includes(query);
-        if (!matchesTitle && !matchesOrg) return false;
+        const matchesBody = m.category.toLowerCase().includes(query);
+        if (!matchesTitle && !matchesOrg && !matchesBody) return false;
       }
 
       // 3. Status check:
@@ -164,17 +145,10 @@ export default function MeetingsView({
         if (m.status !== selectedStatus) return false;
       }
 
-      // 5. Month-Year limit filter check:
-      if (selectedMonth !== "All Months" && selectedMonth !== "Todos os Meses") {
-        const d = new Date(m.date + "T10:00:00");
-        const lbl = d.toLocaleDateString(language === "en" ? "en-US" : "pt-BR", { month: "long", year: "numeric" });
-        const capitalized = lbl.charAt(0).toUpperCase() + lbl.slice(1);
-        if (capitalized !== selectedMonth) return false;
-      }
-
       return true;
     });
-  }, [meetings, activeTab, searchQuery, selectedStatus, selectedMonth, language]);
+    return aplicarFiltrosDaLista(porAba, filtros);
+  }, [meetings, activeTab, searchQuery, selectedStatus, filtros]);
 
   /** Rótulo do mês da reunião, no mesmo formato usado pelo filtro de mês. */
   const monthLabelOf = (m: Meeting) => {
@@ -359,21 +333,43 @@ export default function MeetingsView({
             </select>
           </div>
 
-          {/* Month level selecting filter dropdown */}
-          <div className="relative">
-            <select
-              value={selectedMonth}
-              onChange={(e) => { setSelectedMonth(e.target.value); setCurrentPage(1); }}
-              className="appearance-none bg-slate-50 hover:bg-slate-100/50 text-slate-600 font-semibold text-xs border border-slate-200 rounded-xl pl-4 pr-9 py-2 cursor-pointer focus:ring-1 focus:ring-[#00658d] focus:bg-white focus:outline-none transition-all"
-            >
-              <option value="All Months">{t.optAllMonths}</option>
-              {availableMonths.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
+          {/* Período */}
+          <div className="flex items-center gap-1.5">
+            <input
+              type="date"
+              value={filtros.de}
+              onChange={(e) => mudarFiltro({ de: e.target.value })}
+              aria-label={language === "en" ? "From" : "De"}
+              className="bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-600 focus:ring-1 focus:ring-[#00658d] focus:outline-none"
+            />
+            <span className="text-slate-400">–</span>
+            <input
+              type="date"
+              value={filtros.ate}
+              onChange={(e) => mudarFiltro({ ate: e.target.value })}
+              aria-label={language === "en" ? "To" : "Até"}
+              className="bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-600 focus:ring-1 focus:ring-[#00658d] focus:outline-none"
+            />
           </div>
+
+          <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={filtros.comPendencias}
+              onChange={(e) => mudarFiltro({ comPendencias: e.target.checked })}
+              className="accent-[#00658d]"
+            />
+            {language === "en" ? "With alerts" : "Com pendências"}
+          </label>
+          <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={filtros.conviteComFalha}
+              onChange={(e) => mudarFiltro({ conviteComFalha: e.target.checked })}
+              className="accent-[#00658d]"
+            />
+            {language === "en" ? "Invite failed" : "Convite com falha"}
+          </label>
         </div>
       </section>
 
@@ -396,13 +392,15 @@ export default function MeetingsView({
                   coluna de Local. Porcentagem, e nao pixel, para o conjunto
                   continuar acompanhando a largura disponivel.
                 */}
-                <th className="py-4 px-5 font-bold w-[13%]">{t.colDate}</th>
-                <th className="py-4 px-5 font-bold w-full">{t.colMeeting}</th>
-                <th className="py-4 px-5 font-bold text-center w-[8%]">{t.labelAgendaItems}</th>
-                <th className="py-4 px-5 font-bold text-center w-[10%]">{t.colExpected}</th>
-                <th className="py-4 px-5 font-bold text-center w-[15%]">{t.colStatus}</th>
-                <th className="py-4 px-5 font-bold text-center w-[10%]">% Concluído</th>
-                <th className="py-4 px-5 font-bold text-right w-[8%]">{t.colActions}</th>
+                <th className="py-4 px-4 font-bold w-[11%]">{t.colDate}</th>
+                <th className="py-4 px-4 font-bold w-full">{t.colMeeting}</th>
+                <th className="py-4 px-4 font-bold w-[12%]">{language === "en" ? "Body" : "Órgão"}</th>
+                <th className="py-4 px-4 font-bold text-center w-[10%]">{t.colStatus}</th>
+                <th className="py-4 px-4 font-bold text-center w-[6%]">{language === "en" ? "Topics" : "Temas"}</th>
+                <th className="py-4 px-4 font-bold text-center w-[7%]">{t.colExpected}</th>
+                <th className="py-4 px-4 font-bold w-[14%]">{language === "en" ? "Alerts" : "Pendências"}</th>
+                <th className="py-4 px-4 font-bold text-center w-[7%]">{language === "en" ? "Documents" : "Documentos"}</th>
+                <th className="py-4 px-4 font-bold text-right w-[6%]">{t.colActions}</th>
               </tr>
             </thead>
 
@@ -416,14 +414,14 @@ export default function MeetingsView({
               */}
               {meetingsLoading ? (
                 <tr>
-                  <td colSpan={7} className="py-16 text-center text-slate-400 font-semibold text-xs">
+                  <td colSpan={9} className="py-16 text-center text-slate-400 font-semibold text-xs">
                     <span className="inline-block w-6 h-6 border-2 border-slate-200 border-t-[#00658d] rounded-full animate-spin mb-3" />
                     <div>{language === "en" ? "Loading meetings..." : "Carregando reuniões..."}</div>
                   </td>
                 </tr>
               ) : meetingsError ? (
                 <tr>
-                  <td colSpan={7} className="py-16 text-center">
+                  <td colSpan={9} className="py-16 text-center">
                     <div className="inline-flex flex-col items-center gap-3 max-w-md">
                       <AlertCircle className="w-9 h-9 text-rose-400" />
                       <p className="text-xs font-semibold text-rose-700 leading-relaxed">{meetingsError}</p>
@@ -441,7 +439,7 @@ export default function MeetingsView({
                 </tr>
               ) : meetings.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-16 text-center text-slate-400 font-semibold text-xs leading-relaxed">
+                  <td colSpan={9} className="py-16 text-center text-slate-400 font-semibold text-xs leading-relaxed">
                     <Calendar className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                     {language === "en"
                       ? "No meetings registered yet. Schedule the first one."
@@ -450,7 +448,7 @@ export default function MeetingsView({
                 </tr>
               ) : sortedMonthKeys.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-16 text-center text-slate-400 font-semibold text-xs leading-relaxed">
+                  <td colSpan={9} className="py-16 text-center text-slate-400 font-semibold text-xs leading-relaxed">
                     <Calendar className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                     {language === "en" ? "No meetings match your current filters." : "Nenhuma reunião corresponde aos filtros aplicados."}
                   </td>
@@ -460,7 +458,7 @@ export default function MeetingsView({
                   <React.Fragment key={grupo.key}>
                     {/* Month Section Header Row */}
                     <tr className="bg-slate-55 bg-slate-50/90 border-y border-slate-200 select-none">
-                      <td colSpan={7} className="py-2.5 px-5 font-bold font-sans text-[11px] text-[#00658d] uppercase tracking-wider">
+                      <td colSpan={9} className="py-2.5 px-5 font-bold font-sans text-[11px] text-[#00658d] uppercase tracking-wider">
                         {grupo.key}
                       </td>
                     </tr>
@@ -488,14 +486,8 @@ export default function MeetingsView({
                           return time;
                       }
 
-                      // Progresso REAL: mesma fonte usada na aba Anotações.
-                      // Adiadas são lidas à parte para não contarem como
-                      // concluídas. Sem pauta, não há métrica.
-                      const progress = getAgendaProgress(
-                        meet,
-                        readDoneTopicIdsFor(meet),
-                        readPostponedTopicIdsFor(meet)
-                      );
+                      // Só o que o servidor permite determinar (convite, duração, Ata).
+                      const pendencias = pendenciasDaReuniao(meet, language);
 
                       return (
                         <React.Fragment key={meet.id}>
@@ -505,7 +497,7 @@ export default function MeetingsView({
                           >
                             
                             {/* COLUMN 1: DATE & TIME */}
-                            <td className="py-4 px-5 align-middle whitespace-nowrap">
+                            <td className="py-4 px-4 align-middle whitespace-nowrap">
                               <div className="flex items-center gap-3">
                                 {/* Colorful Date box widget */}
                                 <div className="flex flex-col items-center justify-center w-11 h-11 rounded-lg bg-[#f1f5f9] group-hover:bg-[#e2e8f0] select-none shrink-0 leading-none transition-colors">
@@ -522,37 +514,27 @@ export default function MeetingsView({
                             </td>
                             
                             {/* COLUMN 2: MEETING & CATEGORY */}
-                            <td className="py-4 px-5 align-middle">
+                            <td className="py-4 px-4 align-middle">
                               <div className="min-w-0">
-                                <span className="px-2 py-0.5 rounded text-[9.5px] font-bold uppercase bg-slate-100 text-slate-500 border border-slate-200 inline-flex items-center gap-1 mb-1.5 leading-none">
-                                  <Layers className="w-2.5 h-2.5" />
-                                  {meet.category || "Governance"}
-                                </span>
                                 <div className="text-xs font-bold text-slate-900 group-hover:text-[#00658d] transition-colors leading-snug line-clamp-1">
                                   {meet.title}
                                 </div>
                                 <div className="text-[10.5px] text-slate-400 font-semibold mt-0.5 truncate">
-                                  {meet.description || "Nenhuma introdução adicional."}
+                                  {meet.description || (language === "en" ? "No description." : "Sem descrição.")}
                                 </div>
                               </div>
                             </td>
 
-                            {/* COLUMN 3: AGENDA ITEMS */}
-                            <td className="py-4 px-5 align-middle text-center">
-                                <span className="text-xs font-bold text-[#00658d] bg-[#00658d]/10 px-2.5 py-1 rounded-lg">
-                                    {meet.agenda ? meet.agenda.length : (meet.agendaItemsCount ?? 0)}
-                                </span>
-                            </td>
-                            
-                            {/* COLUMN 4: PARTICIPANTS */}
-                            <td className="py-4 px-5 align-middle text-center">
-                                <span className="text-xs font-bold text-slate-700 bg-slate-100 px-2.5 py-1 rounded-lg">
-                                    {meet.participants ? meet.participants.length : (meet.expectedParticipantsCount ?? 0)}
-                                </span>
+                            {/* ÓRGÃO */}
+                            <td className="py-4 px-4 align-middle">
+                              <span className="px-2 py-0.5 rounded text-[9.5px] font-bold uppercase bg-slate-100 text-slate-500 border border-slate-200 inline-flex items-center gap-1 leading-tight">
+                                <Layers className="w-2.5 h-2.5 shrink-0" />
+                                {meet.category}
+                              </span>
                             </td>
 
                             {/* COLUMN 5: STATUS BADGE */}
-                            <td className="py-4 px-5 align-middle text-center">
+                            <td className="py-4 px-4 align-middle text-center">
                               <span
                                 className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider whitespace-nowrap ${
                                   meet.status === "Needs Approval"
@@ -595,19 +577,61 @@ export default function MeetingsView({
                               </span>
                             </td>
                             
-                            {/* NEW COLUMN: PERCENTAGE */}
-                            <td className="py-4 px-5 align-middle text-center">
-                                <div className="w-20 bg-slate-200 rounded-full h-1.5 block mx-auto">
-                                    <div className="bg-emerald-600 h-1.5 rounded-full" style={{width: `${progress.percentage ?? 0}%`}}></div>
-                                </div>
-                                <span className="text-[10px] font-bold text-slate-600 mt-1 block">
-                                    {progress.percentage === null ? "—" : `${progress.percentage}%`}
+                            {/* COLUMN 3: AGENDA ITEMS */}
+                            <td className="py-4 px-4 align-middle text-center">
+                                <span className="text-xs font-bold text-[#00658d] bg-[#00658d]/10 px-2.5 py-1 rounded-lg">
+                                    {meet.agenda ? meet.agenda.length : (meet.agendaItemsCount ?? 0)}
+                                </span>
+                            </td>
+                            
+                            {/* COLUMN 4: PARTICIPANTS */}
+                            <td className="py-4 px-4 align-middle text-center">
+                                <span className="text-xs font-bold text-slate-700 bg-slate-100 px-2.5 py-1 rounded-lg">
+                                    {meet.participants ? meet.participants.length : (meet.expectedParticipantsCount ?? 0)}
                                 </span>
                             </td>
 
+                            {/* PENDÊNCIAS */}
+                            <td className="py-4 px-4 align-middle">
+                              {pendencias.length === 0 ? (
+                                <span className="text-[10px] text-slate-300">—</span>
+                              ) : (
+                                <div className="flex flex-col gap-1">
+                                  {pendencias.map((p) => (
+                                    <span
+                                      key={p.tipo}
+                                      className={`inline-flex items-center gap-1 text-[10px] font-bold whitespace-nowrap ${
+                                        p.grave ? "text-rose-600" : "text-amber-700"
+                                      }`}
+                                    >
+                                      <AlertCircle className="w-3 h-3 shrink-0" />
+                                      {p.texto}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </td>
+
+                            {/* DOCUMENTOS (anexos da reunião e dos temas) */}
+                            <td className="py-4 px-4 align-middle text-center">
+                              <span className="inline-flex items-center gap-1 text-xs font-bold text-slate-700">
+                                <FileText className="w-3.5 h-3.5 text-slate-400" />
+                                {meet.documentsCount ?? 0}
+                              </span>
+                            </td>
+
                             {/* COLUMN 6: ACTIONS */}
-                            <td className="py-4 px-5 align-middle text-right" onClick={(e) => e.stopPropagation()}>
+                            <td className="py-4 px-4 align-middle text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => onMeetingClick(meet)}
+                                  title={language === "en" ? "Open" : "Abrir"}
+                                  aria-label={language === "en" ? "Open" : "Abrir"}
+                                  className="p-1.5 text-slate-400 hover:text-[#00658d] bg-white hover:bg-slate-50 rounded-lg border border-slate-200 transition cursor-pointer"
+                                >
+                                  <ArrowRight className="w-3.5 h-3.5" />
+                                </button>
                                 {/* Cortesia com quem não pode: o servidor revalida PGCP.Assessoria. */}
                                 {canSchedule && (
                                   <button
@@ -633,7 +657,7 @@ export default function MeetingsView({
             </tbody>
             <tfoot className="border-t border-slate-100">
                 <tr>
-                    <td colSpan={7} className="py-4"></td>
+                    <td colSpan={9} className="py-4"></td>
                 </tr>
             </tfoot>
           </table>

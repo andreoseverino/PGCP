@@ -118,6 +118,15 @@ export async function apiRequest<T>(path: string, init?: ApiRequestInit): Promis
  */
 function nomeDoAnexo(response: Response): string | null {
   const cabecalho = response.headers.get("Content-Disposition");
+  // `filename*` (UTF-8, RFC 5987) preserva acentos; `filename` é o fallback ASCII.
+  const utf8 = cabecalho?.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8?.[1]) {
+    try {
+      return decodeURIComponent(utf8[1]);
+    } catch {
+      // Codificação inválida: cai no fallback ASCII.
+    }
+  }
   const casado = cabecalho?.match(/filename="([^"]+)"/);
   return casado?.[1] ?? null;
 }

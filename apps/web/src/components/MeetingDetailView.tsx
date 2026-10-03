@@ -31,7 +31,9 @@ import {
   X,
   CalendarDays,
   MapPin,
-  FolderPlus
+  FolderPlus,
+  FolderOpen,
+  Paperclip
 } from "lucide-react";
 import { Meeting, ActionItem, StandaloneAgenda, Participant, AgendaItem, SessionUser, GovernanceBody } from "../types";
 import { newId } from "../lib/id";
@@ -106,6 +108,8 @@ import {
   type ParticipanteSelecionado
 } from "../lib/participant-search";
 import { temasPorPauta } from "../lib/pipeline";
+import MeetingDocumentsPanel from "./MeetingDocumentsPanel";
+import UploadDocumentModal from "./UploadDocumentModal";
 import { getInitials } from "../lib/user";
 import { hrefSeguro } from "../lib/safe-url";
 import DirectoryUserPicker from "./DirectoryUserPicker";
@@ -194,6 +198,15 @@ export default function MeetingDetailView({
   governanceBodies = []
 }: MeetingDetailViewProps) {
   const [activeSubTab, setActiveSubTab] = useState<string>("Overview");
+
+  /*
+   * Documentos (Pipeline). Um só diálogo de envio: `undefined` = fechado,
+   * `null` = reunião inteira, id = tema DESTA reunião (botão do tema). Enviar
+   * exige PGCP.Assessoria e reunião liberada — o servidor revalida as duas.
+   */
+  const [envioDeDocumento, setEnvioDeDocumento] = useState<string | null | undefined>(undefined);
+  const [versaoDosDocumentos, setVersaoDosDocumentos] = useState(0);
+  const podeAdicionarDocumento = canSchedule && meeting.releasedToPipeline !== false;
 
   // Edição de pauta (PATCH /meetings/:id/agenda-items/:itemId). Campos suportados
   // pelo contrato: título, duração, responsável. UUID e agendaTopicId preservados
@@ -1851,6 +1864,7 @@ export default function MeetingDetailView({
             { id: "Overview", label: language === "en" ? "Overview" : "Visão Geral", icon: FileText },
             { id: "Agendas", label: language === "en" ? "Agenda" : "Pautas", icon: CheckSquare },
             { id: "Participants", label: language === "en" ? "Participants" : "Participantes", icon: Users },
+            { id: "Documents", label: language === "en" ? "Documents" : "Documentos", icon: FolderOpen },
             { id: "Minutes", label: language === "en" ? "Minutes" : "Ata", icon: FileCheck },
             { id: "Fup", label: "FUP", icon: AlertCircle }
           ].map((tab) => {
@@ -2837,6 +2851,21 @@ export default function MeetingDetailView({
 
                           {/* Quick action buttons */}
                           <div className="flex gap-1 items-center">
+                            {/* Documento do TEMA: mesmo diálogo da aba Documentos, com o tema já escolhido. */}
+                            {podeAdicionarDocumento && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEnvioDeDocumento(ag.id);
+                                }}
+                                className="p-1.5 text-slate-400 hover:text-[#00658d] hover:bg-slate-100 rounded transition-all cursor-pointer"
+                                title={language === "en" ? "Add document to this topic" : "Adicionar documento ao tema"}
+                                aria-label={language === "en" ? `Add document to ${ag.title}` : `Adicionar documento ao tema ${ag.title}`}
+                              >
+                                <Paperclip className="w-4 h-4" />
+                              </button>
+                            )}
                             {/* Editar pauta — modal com título, duração e
                                 responsável (PATCH). Preserva UUID e agendaTopicId.
                                 Só no planejamento e com canSchedule; o servidor revalida. */}
@@ -3223,6 +3252,34 @@ export default function MeetingDetailView({
           )}
           </div>
         </div>
+      )}
+
+      {activeSubTab === "Documents" && (
+        <MeetingDocumentsPanel
+          language={language}
+          meetingId={meeting.id}
+          podeAdicionar={podeAdicionarDocumento}
+          versao={versaoDosDocumentos}
+          onAdd={() => setEnvioDeDocumento(null)}
+          triggerToast={triggerToast}
+        />
+      )}
+
+      {/* Diálogo compartilhado: aberto pela aba Documentos ou pelo botão de um tema. */}
+      {envioDeDocumento !== undefined && (
+        <UploadDocumentModal
+          language={language}
+          meetingId={meeting.id}
+          temas={(meeting.agenda ?? []).map((t) => ({ id: t.id, title: t.title }))}
+          temaInicial={envioDeDocumento}
+          onClose={() => setEnvioDeDocumento(undefined)}
+          onUploaded={(nome) => {
+            setEnvioDeDocumento(undefined);
+            setVersaoDosDocumentos((v) => v + 1);
+            setMeetings((ms) => ms.map((m) => (m.id === meeting.id ? { ...m, documentsCount: (m.documentsCount ?? 0) + 1 } : m)));
+            triggerToast(language === "pt" ? `Documento "${nome}" adicionado.` : `Document "${nome}" added.`);
+          }}
+        />
       )}
 
       {activeSubTab === "Minutes" && (

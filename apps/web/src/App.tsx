@@ -1154,7 +1154,6 @@ export default function App() {
             language={language}
             governanceBodies={governanceBodies}
             meetings={meetings}
-            libraryTopics={standaloneAgendas.map((a) => ({ id: a.id, title: a.title }))}
             orgaoContexto={orgaoContexto}
             onOpenMeeting={(meetingId) => void openMeetingById(meetingId)}
             onOpenAnnualAgenda={() => setActiveTab("annual-agenda")}
