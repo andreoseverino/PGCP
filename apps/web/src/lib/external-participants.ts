@@ -14,9 +14,10 @@ import { apiRequest } from "./api";
 export {
   validateExternalParticipant,
   type ExternalParticipant,
-  type ExternalParticipantPayload
+  type ExternalParticipantPayload,
+  type DirectoryPerson
 } from "./external-participants-rules";
-import type { ExternalParticipant, ExternalParticipantPayload } from "./external-participants-rules";
+import type { DirectoryPerson, ExternalParticipant, ExternalParticipantPayload } from "./external-participants-rules";
 
 interface SaveResponse {
   participant: ExternalParticipant;
@@ -46,6 +47,12 @@ export const updateExternalParticipant = (id: string, payload: ExternalParticipa
 
 export const deleteExternalParticipant = (id: string) =>
   apiRequest<void>(`/external-participants/${id}`, { auth: true, method: "DELETE" });
+
+/** Pessoas do diretório JÁ vinculadas (nunca o tenant inteiro). */
+export async function listDirectoryPeople(signal?: AbortSignal): Promise<DirectoryPerson[]> {
+  const { people } = await apiRequest<{ people: DirectoryPerson[] }>("/directory-people", { auth: true, signal });
+  return people;
+}
 
 export function describeExternalParticipantError(error: unknown, language: "en" | "pt"): string {
   const pt = language === "pt";

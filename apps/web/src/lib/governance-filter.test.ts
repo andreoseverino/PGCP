@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { anosDasAgendas, filtrarAgendasAnuais, filtrarPorOrgao, TODOS_OS_ORGAOS } from "./governance-filter";
+import { filtrarPorOrgao } from "./governance-filter";
+import { TODOS } from "./governance-context";
 import { reunioesDoAno, reunioesPorDia } from "./annual-calendar";
 import { groupByStage, pipelineStage } from "./pipeline";
 import { meetingFromApi, type ApiMeetingSummary } from "./meeting-adapters";
@@ -37,7 +38,7 @@ const calendario = (orgaoId: string, ano: number) => {
 };
 
 test("Calendário: Todos mostra todas as reuniões do ano", () => {
-  assert.deepEqual(calendario(TODOS_OS_ORGAOS, 2027), {
+  assert.deepEqual(calendario(TODOS, 2027), {
     lista: ["exec-0802", "aud-0802", "exec-0310"],
     contador: 3,
     dias: ["2027-02-08", "2027-03-10"]
@@ -59,7 +60,7 @@ test("Calendário: troca de ano + filtro funcionam juntos", () => {
 // --- Pipeline ------------------------------------------------------------
 
 test("Pipeline: Todos x órgão, etapas preservadas", () => {
-  const todos = groupByStage(filtrarPorOrgao(reunioes, TODOS_OS_ORGAOS));
+  const todos = groupByStage(filtrarPorOrgao(reunioes, TODOS));
   assert.equal(Object.values(todos).flat().length, 4);
   const exec = groupByStage(filtrarPorOrgao(reunioes, "exec"));
   assert.deepEqual(exec.scheduled.map((m) => m.id), ["exec-0802"]);
@@ -70,22 +71,6 @@ test("Pipeline: Todos x órgão, etapas preservadas", () => {
   }
 });
 
-// --- Agenda Anual --------------------------------------------------------
-
-const agendas = [
-  { id: "a1", year: 2027, governanceBody: { id: "exec" } },
-  { id: "a2", year: 2027, governanceBody: { id: "aud" } },
-  { id: "a3", year: 2026, governanceBody: { id: "exec" } }
-];
-
-test("Agenda Anual: lista completa, por órgão e ano + órgão", () => {
-  assert.deepEqual(filtrarAgendasAnuais(agendas, null, "").map((a) => a.id), ["a1", "a2", "a3"]);
-  assert.deepEqual(filtrarAgendasAnuais(agendas, null, "exec").map((a) => a.id), ["a1", "a3"]);
-  assert.deepEqual(filtrarAgendasAnuais(agendas, 2027, "exec").map((a) => a.id), ["a1"]);
-  assert.deepEqual(filtrarAgendasAnuais(agendas, 2026, "aud"), []);
-  assert.deepEqual(anosDasAgendas(agendas), [2027, 2026]);
-});
-
 /** Sem comentários: a varredura enxerga código, não prosa. */
 const codigo = (arq: string) =>
   readFileSync(new URL(arq, import.meta.url), "utf8")
@@ -93,25 +78,30 @@ const codigo = (arq: string) =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^[ \t]*\/\/.*$/gm, "");
 
-test("filtro único nas três telas; agenda específica sem filtro redundante", () => {
-  for (const tela of ["CalendarView", "PipelineView", "AnnualAgendaView"]) {
-    assert.match(codigo(`../components/${tela}.tsx`), /<GovernanceBodyFilter/, tela);
+test("contexto global: um seletor no cabeçalho; telas sem filtro de órgão próprio", () => {
+  const app = codigo("../App.tsx");
+  // Um seletor por cabeçalho (desktop e barra mobile), ambos sobre o mesmo estado.
+  assert.equal((app.match(/<GovernanceBodyFilter/g) ?? []).length, 2, "seletor só nos cabeçalhos");
+  assert.equal((app.match(/onChange=\{mudarOrgaoContexto\}/g) ?? []).length, 2);
+  for (const tela of ["CalendarView", "PipelineView", "AnnualAgendaView", "DashboardView"]) {
+    const fonte = codigo(`../components/${tela}.tsx`);
+    assert.ok(!fonte.includes("<GovernanceBodyFilter"), `${tela} não duplica o filtro`);
+    assert.match(fonte, /orgaoContexto/, `${tela} lê o contexto global`);
   }
+  for (const tela of ["DashboardView", "CalendarView", "AnnualAgendaView", "PipelineView"]) {
+    const bloco = app.slice(app.indexOf(`<${tela}`), app.indexOf("/>", app.indexOf(`<${tela}`)));
+    assert.match(bloco, /orgaoContexto=\{orgaoContexto\}/, `${tela} recebe o contexto`);
+  }
+  // Agenda específica: sem filtro redundante. Calendário: clique segue ao Pipeline.
   const anual = codigo("../components/AnnualAgendaView.tsx");
-  const detalhe = anual.slice(anual.indexOf("function AgendaDetail("));
-  assert.ok(!detalhe.includes("GovernanceBodyFilter"), "dentro da agenda o órgão já está definido");
-  // Calendário: clique em reunião segue indo ao Pipeline.
-  assert.match(codigo("../App.tsx"), /onMeetingClick=\{abrirNoPipeline\}/);
+  assert.ok(!anual.slice(anual.indexOf("function AgendaDetail(")).includes("orgaoContexto"));
+  assert.match(app, /onMeetingClick=\{abrirNoPipeline\}/);
 });
 
-test("Agenda Anual histórica: órgão inativo continua filtrável; criação só com ativos", () => {
-  const app = codigo("../App.tsx");
-  const bloco = app.slice(app.indexOf("<AnnualAgendaView"), app.indexOf("/>", app.indexOf("<AnnualAgendaView")));
-  assert.match(bloco, /governanceBodies=\{governanceBodies\}/, "lista/filtro recebe todos os órgãos");
+test("Agenda Anual: preparar só com órgão ativo", () => {
   const anual = codigo("../components/AnnualAgendaView.tsx");
-  assert.match(anual, /governanceBodies\.filter\(\(b\) => b\.isActive\)\.map/, "nova agenda só com ativos");
-  // A regra pura não depende de o órgão estar ativo.
-  assert.deepEqual(filtrarAgendasAnuais([{ year: 2025, governanceBody: { id: "inativo" } }], 2025, "inativo").length, 1);
+  // Agenda só nasce por "Preparar Agenda Anual", e só para órgão ativo.
+  assert.match(anual, /canManage && grupo\.governanceBody\.isActive/, "preparar só com ativos");
 });
 
 test("Pipeline: um só filtro de órgão (o antigo de Categoria saiu do modo Lista)", () => {

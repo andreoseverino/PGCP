@@ -2,8 +2,9 @@
  * Estados visuais de um dia do Quadro Mensal da Visão Geral.
  *
  * "Hoje" e "dia selecionado" são DOIS canais independentes, e é isso que este
- * módulo garante: o fundo azul continua sendo o mapa de calor de reuniões, a
- * BORDA marca o dia de hoje e o ANEL marca a seleção. Selecionar o dia 15 não
+ * módulo garante: o fundo azul continua sendo o mapa de calor de reuniões
+ * (exceto hoje, que é PREENCHIDO na cor institucional), a BORDA marca o dia de
+ * hoje e o ANEL marca a seleção. Selecionar o dia 15 não
  * pode apagar a marca do dia 28 — antes, "hoje" era só um sublinhado no número
  * e sumia sob os estilos de dia com reunião.
  *
@@ -50,7 +51,12 @@ export function calendarDayState({
   const isToday = dateStr === todayStr;
   const isSelected = selectedDayStr !== null && selectedDayStr === dateStr;
 
-  const classes = [heatmapClasses(meetingCount, isSelected)];
+  // HOJE: quadrado PREENCHIDO na cor institucional (o número vai numa
+  // bolinha branca — ver DashboardView). Substitui o fundo do mapa de calor
+  // só neste dia; os demais dias seguem o volume de reuniões.
+  const classes = [
+    isToday ? "bg-[#00658d] text-white hover:bg-[#004e6d]" : heatmapClasses(meetingCount, isSelected)
+  ];
 
   // Canal 1 — HOJE: borda interna da cor institucional. Sempre presente,
   // esteja o dia selecionado ou não.

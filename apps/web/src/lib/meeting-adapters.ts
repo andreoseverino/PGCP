@@ -57,7 +57,14 @@ export interface ApiMeetingSummary {
   physicalLocation: PhysicalLocation | null;
   origin: "manual" | "annual_agenda";
   annualAgendaId: string | null;
+  annualAgendaStatus?: "draft" | "pending_approval" | "approved" | null;
+  /** Decidido no servidor (Agenda Anual aprovada ou reunião avulsa). */
+  releasedToPipeline?: boolean;
   calendarSyncStatus: "pending" | "synced" | "failed" | "stale" | null;
+  /** `meeting_minutes.status`; `null` = Ata não iniciada. Ausente em APIs antigas. */
+  minutesStatus?: "draft" | "under_review" | "approved" | "closed" | null;
+  /** Tipo (030); `null` = título livre (legado). */
+  sessionType?: "ordinary" | "extraordinary" | null;
   status: ApiMeetingStatus;
   /** Ciclo da PAUTA. Eixo separado de `status` e do estado do convite. */
   agendaValidation: AgendaValidation;
@@ -93,6 +100,8 @@ export interface ApiMeetingParticipant {
   roleInMeeting: string | null;
   isConfirmed: boolean;
   attended: boolean | null;
+  /** Pertence hoje ao grupo do órgão da reunião (informativo). */
+  inGovernanceBodyGroup?: boolean;
 }
 
 export interface ApiMeetingAgendaItem {
@@ -273,7 +282,8 @@ export function participantFromApi(p: ApiMeetingParticipant): Participant {
     entraObjectId: p.entraObjectId ?? undefined,
     // Endereço para o convite. Não é identidade; a tela usa para dizer quem
     // ainda não pode ser convidado.
-    email: p.email ?? undefined
+    email: p.email ?? undefined,
+    inGovernanceBodyGroup: p.inGovernanceBodyGroup === true
   };
 }
 
@@ -353,7 +363,12 @@ export function meetingFromApi(api: ApiMeetingSummary | ApiMeetingDetail): Meeti
     physicalLocation: api.physicalLocation ?? null,
     origin: api.origin ?? "manual",
     annualAgendaId: api.annualAgendaId ?? null,
+    annualAgendaStatus: api.annualAgendaStatus ?? null,
+    // Ausente (API antiga) = liberada: nunca esconder reunião por falta de campo.
+    releasedToPipeline: api.releasedToPipeline !== false,
     calendarSyncStatus: api.calendarSyncStatus ?? null,
+    minutesStatus: api.minutesStatus ?? null,
+    sessionType: api.sessionType ?? null,
     participants: detalhe ? detalhe.participants.map(participantFromApi) : undefined,
     // Passa adiante como veio: o estado da sincronização é do servidor, e
     // convertê-lo aqui abriria espaço para a tela "melhorar" um `failed`.
@@ -422,7 +437,10 @@ export interface CreateMeetingPayload {
   governanceBodyId: string;
   /** Ausente = quem cadastra também organiza. */
   organizer?: CreateOrganizerPayload;
-  title: string;
+  /** Ausente quando há `sessionType`: o servidor monta o título padronizado. */
+  title?: string;
+  /** Tipo (030). Com ele, o título é do servidor. */
+  sessionType?: "ordinary" | "extraordinary";
   description?: string;
   startAt: string;
   endAt: string;

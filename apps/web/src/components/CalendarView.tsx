@@ -1,8 +1,7 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { CalendarDays, CalendarPlus, ChevronLeft, ChevronRight, MapPin, MonitorSmartphone } from "lucide-react";
-import type { GovernanceBody, Meeting } from "../types";
-import GovernanceBodyFilter from "./GovernanceBodyFilter";
-import { filtrarPorOrgao, TODOS_OS_ORGAOS } from "../lib/governance-filter";
+import type { Meeting } from "../types";
+import { filtrarPorOrgao } from "../lib/governance-filter";
 import { DEFAULT_TIMEZONE, instantToLocal } from "../lib/meetings";
 import { originLabel } from "../lib/pipeline";
 import {
@@ -29,8 +28,8 @@ interface CalendarViewProps {
   language: "en" | "pt";
   meetings: Meeting[];
   meetingsLoading: boolean;
-  /** Opções do filtro "Órgão colegiado". */
-  governanceBodies: GovernanceBody[];
+  /** Órgão colegiado do CONTEXTO GLOBAL (""=Todos). */
+  orgaoContexto: string;
   /** Mostra "Nova reunião". Cortesia: o servidor exige `PGCP.Assessoria`. */
   canSchedule: boolean;
   onNewMeeting: (date: string) => void;
@@ -52,7 +51,7 @@ export default function CalendarView({
   language,
   meetings,
   meetingsLoading,
-  governanceBodies,
+  orgaoContexto,
   canSchedule,
   onNewMeeting,
   onMeetingClick
@@ -61,7 +60,9 @@ export default function CalendarView({
   const hoje = instantToLocal(new Date().toISOString(), DEFAULT_TIMEZONE).date;
   const [ano, setAno] = useState(() => Number(hoje.slice(0, 4)));
   const [destacado, setDestacado] = useState<string | null>(null);
-  const [orgao, setOrgao] = useState(TODOS_OS_ORGAOS);
+  const orgao = orgaoContexto;
+  // Trocar o contexto limpa o dia selecionado (pode não ter reunião no novo órgão).
+  useEffect(() => setDestacado(null), [orgaoContexto]);
 
   const meses = useMemo(() => mesesDoAno(ano), [ano]);
   // Filtro por órgão ANTES de tudo: dias destacados, lista e contador derivam
@@ -91,18 +92,7 @@ export default function CalendarView({
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-6 items-start">
         <section className="bg-white border border-slate-200 rounded-2xl p-4 md:p-5 min-w-0">
           <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-5">
-          <div className="sm:w-56">
-            <GovernanceBodyFilter
-              language={language}
-              id="calendario-orgao"
-              governanceBodies={governanceBodies}
-              value={orgao}
-              onChange={(id) => {
-                setOrgao(id);
-                setDestacado(null);
-              }}
-            />
-          </div>
+          <div className="hidden sm:block sm:w-56" />
           <div className="flex items-center justify-center gap-6">
             <button type="button" onClick={() => mudarAno(-1)} aria-label={pt ? "Ano anterior" : "Previous year"}
               className="p-1.5 rounded-lg hover:bg-slate-100 cursor-pointer">
@@ -156,7 +146,7 @@ export default function CalendarView({
           )}
         </section>
 
-        <aside className="bg-white border border-slate-200 rounded-2xl p-4 space-y-4 xl:sticky xl:top-4">
+        <aside className="bg-white border border-slate-200 rounded-2xl p-4 space-y-4 xl:sticky xl:top-24">
           {canSchedule && (
             <button
               type="button"

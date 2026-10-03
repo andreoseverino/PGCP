@@ -24,6 +24,7 @@ import {
 } from "./lib/action-items";
 import {
   agendaTopicToStandalone,
+  buildTopicFupPatch,
   buildTopicPayload,
   createAgendaTopic,
   deleteAgendaTopic as apiDeleteAgendaTopic,
@@ -74,6 +75,8 @@ import NewMeetingModal from "./components/NewMeetingModal";
 import CalendarView from "./components/CalendarView";
 import PipelineView from "./components/PipelineView";
 import AnnualAgendaView from "./components/AnnualAgendaView";
+import GovernanceBodyFilter from "./components/GovernanceBodyFilter";
+import { CHAVE_CONTEXTO_ORGAO, contextoValido, orgaoInicialParaCriacao } from "./lib/governance-context";
 import UnlinkedAgendasView from "./components/UnlinkedAgendasView";
 import FupListView from "./components/FupListView";
 import LoginView from "./components/LoginView";
@@ -227,6 +230,36 @@ export default function App() {
   // Órgãos de governança: única funcionalidade que já vem do PostgreSQL via API.
   // Não usa localStorage — recarregar a página busca de novo no banco.
   const [governanceBodies, setGovernanceBodies] = useState<GovernanceBody[]>([]);
+
+  /*
+   * ÓRGÃO COLEGIADO — CONTEXTO GLOBAL de navegação (seletor no cabeçalho).
+   * Visão Geral, Calendário, Pipeline e Agenda Anual leem este valor; trocar de
+   * aba não volta para "Todos". Preferência do dispositivo (localStorage), como
+   * o idioma. É FILTRO, não autorização: o backend continua decidindo o acesso.
+   */
+  const [orgaoContexto, setOrgaoContexto] = useState<string>(() => {
+    try {
+      return localStorage.getItem(CHAVE_CONTEXTO_ORGAO) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const mudarOrgaoContexto = (id: string) => {
+    setOrgaoContexto(id);
+    try {
+      if (id) localStorage.setItem(CHAVE_CONTEXTO_ORGAO, id);
+      else localStorage.removeItem(CHAVE_CONTEXTO_ORGAO);
+    } catch {
+      // Sem storage (aba privada): o contexto vale só nesta sessão.
+    }
+  };
+  // Órgão salvo que não existe mais volta para "Todos".
+  useEffect(() => {
+    if (governanceBodies.length === 0) return;
+    const valido = contextoValido(orgaoContexto, governanceBodies);
+    if (valido !== orgaoContexto) mudarOrgaoContexto(valido);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [governanceBodies]);
   const [governanceBodiesLoading, setGovernanceBodiesLoading] = useState(true);
   const [governanceBodiesError, setGovernanceBodiesError] = useState<string | null>(null);
 
@@ -291,7 +324,7 @@ export default function App() {
   }, [language]);
 
 
-  // --- Biblioteca de pautas: leitura real contra a API ------------------------
+  // --- Biblioteca de temas: leitura real contra a API ------------------------
   const loadAgendaTopics = async () => {
     setAgendaTopicsLoading(true);
     setAgendaTopicsError(null);
@@ -445,7 +478,21 @@ export default function App() {
    * Abre a reunião buscando o DETALHE na API — participantes e pautas só vêm
    * por ali. Não procura antes em `cielo_meetings`: a fonte é o banco.
    */
+  /** Reunião de Agenda Anual ainda não aprovada é preparada na Agenda, não no Pipeline. */
+  const aindaNaAgendaAnual = (meet: Pick<Meeting, "releasedToPipeline">) => {
+    if (meet.releasedToPipeline !== false) return false;
+    setSelectedMeeting(null);
+    setActiveTab("annual-agenda");
+    triggerToast(
+      language === "en"
+        ? "This meeting is still being prepared in the Annual plan and will reach the Pipeline after approval."
+        : "Esta reunião ainda está em preparação na Agenda Anual e será liberada para o Pipeline após a aprovação."
+    );
+    return true;
+  };
+
   const openMeeting = async (meet: Meeting) => {
+    if (aindaNaAgendaAnual(meet)) return;
     setSelectedMeeting(meet);
     try {
       setSelectedMeeting(meetingFromApi(await getMeeting(meet.id)));
@@ -561,6 +608,7 @@ export default function App() {
    * ao Pipeline.
    */
   const abrirNoPipeline = (meet: Meeting) => {
+    if (aindaNaAgendaAnual(meet)) return;
     setActiveTab("pipeline");
     void openMeeting(meet);
   };
@@ -568,7 +616,9 @@ export default function App() {
   /** Abre pelo id (Agenda Anual -> reunião reservada no Pipeline). */
   const openMeetingById = async (meetingId: string) => {
     try {
-      setSelectedMeeting(meetingFromApi(await getMeeting(meetingId)));
+      const reuniao = meetingFromApi(await getMeeting(meetingId));
+      if (aindaNaAgendaAnual(reuniao)) return;
+      setSelectedMeeting(reuniao);
       setActiveTab("pipeline");
     } catch (error) {
       triggerToast(describeMeetingError(error, language));
@@ -743,7 +793,7 @@ export default function App() {
     try {
       const criada = await createAgendaTopic(buildTopicPayload(input));
       await loadAgendaTopics();
-      triggerToast(`Pauta "${criada.title}" registrada na Biblioteca.`);
+      triggerToast(`Tema "${criada.title}" registrado na Biblioteca.`);
       // Devolve o tema criado: o drawer da reunião usa o `id` para VINCULAR o
       // item ao mestre (procedência + snapshot), em vez de criar item solto.
       return agendaTopicToStandalone(criada);
@@ -753,18 +803,29 @@ export default function App() {
     }
   };
 
+  /** Bandeira FUP da lista: PATCH parcial, preserva os demais campos do tema. */
+  const handleToggleTopicFup = async (id: string, marcado: boolean) => {
+    try {
+      const atualizada = await updateAgendaTopic(id, buildTopicFupPatch(marcado));
+      await loadAgendaTopics();
+      triggerToast(`Tema "${atualizada.title}" atualizado.`);
+    } catch (error) {
+      triggerToast(describeTopicError(error, language));
+    }
+  };
+
   const handleUpdateStandaloneAgenda = async (id: string, input: BibliotecaFormInput) => {
     try {
       const atualizada = await updateAgendaTopic(id, buildTopicPayload(input));
       await loadAgendaTopics();
-      triggerToast(`Pauta "${atualizada.title}" atualizada.`);
+      triggerToast(`Tema "${atualizada.title}" atualizado.`);
     } catch (error) {
       triggerToast(describeTopicError(error, language));
     }
   };
 
   /**
-   * Exclusão REAL. Pauta vinculada a reunião devolve 409 e a tela não remove
+   * Exclusão REAL. Tema vinculado a reunião devolve 409 e a tela não remove
    * nada — mostrar sucesso otimista aqui esconderia que o vínculo impediu.
    */
   const handleDeleteStandaloneAgenda = async (id: string) => {
@@ -772,7 +833,7 @@ export default function App() {
     try {
       await apiDeleteAgendaTopic(id);
       await loadAgendaTopics();
-      triggerToast("Pauta removida da Biblioteca.");
+      triggerToast("Tema removido da Biblioteca.");
     } catch (error) {
       triggerToast(describeTopicError(error, language));
     }
@@ -943,7 +1004,12 @@ export default function App() {
             setActionItems={setActionItems}
             myActionItems={myActionItems}
             podeGerenciarFup={podeGerenciarFup}
+            orgaoContexto={orgaoContexto}
             governanceBodies={governanceBodies}
+            meetingsLoading={meetingsLoading}
+            actionItemsLoading={actionItemsLoading}
+            governanceBodiesLoading={governanceBodiesLoading}
+            onViewCalendar={() => setActiveTab("calendar")}
             onMeetingClick={(meet) => void openMeeting(meet)}
             onViewAllMeetings={() => setActiveTab("pipeline")}
             onViewAllActionItems={() => setActiveTab("fup")}
@@ -957,7 +1023,7 @@ export default function App() {
             language={language}
             meetings={meetings}
             meetingsLoading={meetingsLoading}
-            governanceBodies={governanceBodies}
+            orgaoContexto={orgaoContexto}
             canSchedule={usuarioPodeAgendar}
             onNewMeeting={(date) => setNewMeetingDate(date)}
             onMeetingClick={abrirNoPipeline}
@@ -967,10 +1033,29 @@ export default function App() {
         return (
           <AnnualAgendaView
             language={language}
-            governanceBodies={governanceBodies}
+            orgaoContexto={orgaoContexto}
             canManage={usuarioPodeAgendar}
+            libraryTopics={standaloneAgendas.map((a) => ({
+              id: a.id,
+              title: a.title,
+              // "HH:mm" da Biblioteca -> minutos, para sugerir a duração do tema.
+              durationMinutes: /^\d{2}:\d{2}$/.test(a.duration)
+                ? Number(a.duration.slice(0, 2)) * 60 + Number(a.duration.slice(3, 5)) || null
+                : null,
+              tipo: a.pautaType ?? null,
+              natureza: a.pautaNature ?? null,
+              responsavel: a.author || null,
+              participantes: a.participantsCount ?? 0
+            }))}
+            pautaTypes={pautaTypes}
+            pautaNatures={pautaNatures}
+            onGoToCalendar={() => setActiveTab("calendar")}
             onOpenMeeting={(id) => void openMeetingById(id)}
-            onMeetingsChanged={() => void loadMeetings()}
+            onMeetingsChanged={() => {
+              // Conteúdo de reunião mudou; "+ Novo tema" também cadastra na Biblioteca.
+              void loadMeetings();
+              void loadAgendaTopics();
+            }}
             triggerToast={triggerToast}
           />
         );
@@ -983,7 +1068,7 @@ export default function App() {
             meetings={meetings}
             meetingsLoading={meetingsLoading}
             meetingsError={meetingsError}
-            governanceBodies={governanceBodies}
+            orgaoContexto={orgaoContexto}
             onReload={() => void loadMeetings()}
             onMeetingClick={(meet) => void openMeeting(meet)}
             renderList={(filtradas) => (
@@ -1042,6 +1127,8 @@ export default function App() {
             onCreateTaxonomy={handleCreateTaxonomy}
             onRenameTaxonomy={handleRenameTaxonomy}
             onDeleteTaxonomy={handleDeleteTaxonomy}
+            libraryTopics={standaloneAgendas.map((a) => ({ id: a.id, title: a.title, participantsCount: a.participantsCount ?? 0 }))}
+            onLibraryChanged={() => void loadAgendaTopics()}
           />
         );
       case "unlinked-agendas":
@@ -1055,6 +1142,7 @@ export default function App() {
             onAddStandaloneAgenda={handleRegisterStandaloneAgenda}
             onDeleteStandaloneAgenda={handleDeleteStandaloneAgenda}
             onUpdateStandaloneAgenda={handleUpdateStandaloneAgenda}
+            onToggleTopicFup={handleToggleTopicFup}
             pautaTypes={pautaTypes}
             pautaNatures={pautaNatures}
           />
@@ -1163,6 +1251,17 @@ export default function App() {
         setLanguage={setLanguage}
         canAdminister={usuarioPodeAdministrar}
         canOpenAdministration={usuarioPodeAbrirAdministracao}
+        mobileHeaderExtra={
+          // Contexto global no mobile: o cabeçalho desktop fica oculto.
+          <GovernanceBodyFilter
+            language={language}
+            id="contexto-orgao-mobile"
+            compact
+            governanceBodies={governanceBodies}
+            value={orgaoContexto}
+            onChange={mudarOrgaoContexto}
+          />
+        }
       />
 
       {/* Main Content Layout Pane wrapper.
@@ -1172,12 +1271,14 @@ export default function App() {
           a largura disponível e os contêineres overflow-x-auto passam a rolar
           internamente em vez de estourar o viewport. */}
       <main className="flex-1 md:pl-[280px] min-w-0 min-h-screen flex flex-col pt-16 md:pt-0">
-        {/* Barra superior desktop: logo + busca global à esquerda, perfil e
-            sair à direita — nenhum dos dois com faixa/fundo atrás, cada um
-            seu próprio elemento flutuante. Só desktop: no mobile o topo já
-            é ocupado pela barra com o menu de gaveta. */}
-        <div className="hidden md:flex items-center justify-between gap-4 px-8 pt-4 shrink-0">
-          <div className="flex items-center gap-3 min-w-0 flex-1 max-w-md">
+        {/* Barra superior desktop — HEADER GLOBAL STICKY (única instância):
+            busca à esquerda; órgão colegiado, perfil e sair à direita. O
+            wrapper tem a cor da página e cobre a pequena margem acima do
+            container arredondado, para o conteúdo não aparecer por cima ao
+            rolar. Só desktop: no mobile o topo é a barra fixa do menu. */}
+        <div className="hidden md:block sticky top-0 z-40 shrink-0 bg-[#eaedf1] px-10 pt-3 pb-2">
+        <div className="flex items-center justify-between gap-3 lg:gap-4 rounded-2xl bg-white/85 backdrop-blur-md border border-slate-200/70 shadow-xs px-3 lg:px-4 py-2">
+          <div className="flex items-center gap-3 min-w-[140px] flex-1 max-w-md">
             <form
               className="relative flex-1 min-w-0"
               onSubmit={(e) => {
@@ -1194,7 +1295,7 @@ export default function App() {
                 onFocus={() => setIsGlobalSearchFocused(true)}
                 onBlur={() => setIsGlobalSearchFocused(false)}
                 placeholder={language === "en" ? "Search meetings..." : "Buscar reuniões..."}
-                className="w-full pl-9 pr-3 py-2 rounded-full border border-slate-200 bg-white shadow-xs text-xs text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#00658d] focus:border-[#00658d] transition"
+                className="w-full pl-9 pr-3 py-2 rounded-full border border-slate-200 bg-slate-50/80 text-xs text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#00658d] focus:border-[#00658d] transition"
               />
 
               {/* Resultados ao vivo, digitando — sem precisar dar Enter. Some
@@ -1246,11 +1347,25 @@ export default function App() {
             </form>
           </div>
 
-          <div className="flex items-center gap-2 pl-2 pr-1.5 py-1.5 rounded-full border border-slate-200 bg-white shadow-xs shrink-0">
+          <div className="flex items-center gap-2 lg:gap-3 shrink-0 min-w-0">
+          {/* Contexto global — controle principal, ao lado do usuário. */}
+          <GovernanceBodyFilter
+            language={language}
+            id="contexto-orgao"
+            compact
+            governanceBodies={governanceBodies}
+            value={orgaoContexto}
+            onChange={mudarOrgaoContexto}
+          />
+          <div
+            className="flex items-center gap-2 pl-1.5 lg:pl-2 pr-1.5 py-1 rounded-full border border-slate-200 bg-white shrink-0"
+            title={currentUser.name}
+          >
             <div className="w-7 h-7 rounded-full bg-[#94a4bd] text-[#0b1c30] flex items-center justify-center font-semibold text-[10px] shrink-0 select-none">
               {getInitials(currentUser.name)}
             </div>
-            <span className="text-xs font-semibold text-slate-700 max-w-[160px] truncate">
+            {/* 768–1024px: só avatar + sair (nome no title) para não espremer. */}
+            <span className="hidden lg:inline text-xs font-semibold text-slate-700 max-w-[160px] truncate">
               {currentUser.name}
             </span>
             <button
@@ -1261,6 +1376,8 @@ export default function App() {
               <LogOut className="w-3.5 h-3.5" />
             </button>
           </div>
+          </div>
+        </div>
         </div>
 
         <div className="p-6 md:p-10 w-full min-w-0 flex-1 pb-16">
@@ -1273,6 +1390,7 @@ export default function App() {
         <NewMeetingModal
           language={language}
           initialDate={newMeetingDate}
+          initialGovernanceBodyId={orgaoInicialParaCriacao(orgaoContexto, governanceBodies)}
           onClose={() => setNewMeetingDate(null)}
           governanceBodies={governanceBodies.filter((b) => b.isActive)}
           onCreated={handleMeetingCreated}
@@ -1309,8 +1427,8 @@ export default function App() {
               </p>
               <p className="text-xs text-slate-400 font-medium leading-relaxed mt-2">
                 {language === "pt"
-                  ? "As pautas continuam disponíveis na Biblioteca."
-                  : "Agenda topics remain available in the Library."}
+                  ? "Os temas utilizados na reunião continuam disponíveis na Biblioteca de Temas."
+                  : "The topics used in the meeting remain available in the Topic library."}
               </p>
             </div>
             <div className="bg-slate-50 px-6 py-4 flex items-center justify-end gap-2 border-t border-slate-100">

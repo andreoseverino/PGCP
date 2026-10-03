@@ -1,12 +1,11 @@
 import { apiRequest, apiRequestBlob } from "./api";
-import type { CreateOrganizerPayload, CreateParticipantPayload } from "./meeting-adapters";
+import type { CreateParticipantPayload } from "./meeting-adapters";
 
 /**
- * AGENDA ANUAL — planejamento das reuniões de um órgão no ano.
- *
- * Reservar cria as reuniões e os convites Outlook/Teams SEM esperar a
- * aprovação do planejamento (regra de produto). Aprovação e reserva são eixos
- * independentes; a tela mostra os dois lado a lado.
+ * AGENDA ANUAL — consolida as reuniões (do Calendário) de um órgão no ano,
+ * prepara Pauta -> Tema nas MESMAS entidades da reunião e passa por aprovação.
+ * Aprovada, a versão enviada (snapshot) fica bloqueada; o Pipeline segue
+ * operando as reuniões.
  */
 
 export type AnnualAgendaStatus = "draft" | "pending_approval" | "approved";
@@ -22,6 +21,8 @@ export interface AnnualAgendaSummary {
   approvedAt: string | null;
   itemsCount: number;
   reservedCount: number;
+  /** Reuniões associadas (qualquer origem). */
+  meetingsCount: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -43,21 +44,73 @@ export interface AnnualAgendaItem {
   } | null;
 }
 
+export interface AnnualAgendaMeeting {
+  id: string;
+  title: string;
+  startAt: string;
+  endAt: string;
+  timezone: string;
+  status: string;
+  origin: "manual" | "annual_agenda";
+  calendarSyncStatus: "pending" | "synced" | "failed" | "stale" | null;
+  /** Nasceu da reserva de uma data planejada (não pode ser desassociada). */
+  plannedItemId: string | null;
+  agendas: Array<{ id: string; title: string; position: number }>;
+  /** Temas na ordem GLOBAL da reunião, com cronograma calculado no servidor. */
+  items: Array<{
+    id: string;
+    title: string;
+    position: number;
+    agendaId: string | null;
+    agendaTopicId: string | null;
+    durationMinutes: number | null;
+    /** Ficha do tema (a mesma do Pipeline). */
+    responsibleLabel: string | null;
+    responsibleEntraObjectId: string | null;
+    typeId: string | null;
+    natureId: string | null;
+    isCircularTheme: boolean;
+    description: string | null;
+    inicio: string;
+    fim: string | null;
+    /** Participantes vinculados AO TEMA. */
+    participants: Array<{ id: string; name: string }>;
+  }>;
+  tempo: { reuniaoMin: number; temasMin: number; semDuracao: number; excessoMin: number; disponivelMin: number };
+  /** Participantes DA REUNIÃO (`meeting_participants`), uma vez cada. */
+  participants: Array<{ id: string; name: string; email: string | null; external: boolean; inGovernanceBodyGroup: boolean }>;
+  /** Como estava na versão enviada/aprovada. */
+  sent: { title: string; startAt: string; endAt: string; timezone: string } | null;
+  changedAfterSending: { data: boolean; titulo: boolean } | null;
+}
+
+export interface AnnualAgendaVersion {
+  id: string;
+  number: number;
+  state: "open" | "approved";
+  sentAt: string;
+  sentTo: string;
+  approvedAt: string | null;
+  approvedByName: string | null;
+}
+
 export interface AnnualAgendaDetail extends AnnualAgendaSummary {
+  editable: boolean;
+  /** Datas planejadas (reserva). */
   items: AnnualAgendaItem[];
-}
-
-export interface ReservePayload {
-  modality: "online" | "in_person";
-  physicalLocationKey?: string;
-  organizer?: CreateOrganizerPayload;
-  participants: CreateParticipantPayload[];
-}
-
-export interface ReserveResult {
-  created: number;
-  invitations: Array<{ meetingId: string; title: string; syncStatus: string; error?: string }>;
-  agenda: AnnualAgendaDetail;
+  meetings: AnnualAgendaMeeting[];
+  candidates: Array<{
+    id: string;
+    title: string;
+    startAt: string;
+    endAt: string;
+    timezone: string;
+    origin: "manual" | "annual_agenda";
+    linkedToOtherAgenda: boolean;
+  }>;
+  removedAfterSending: Array<{ title: string; startAt: string; timezone: string }>;
+  version: AnnualAgendaVersion | null;
+  totals: { reunioes: number; pautas: number; temas: number };
 }
 
 const json = (method: string, body?: unknown) => ({
@@ -76,6 +129,34 @@ export async function listAnnualAgendas(signal?: AbortSignal): Promise<AnnualAge
   return annualAgendas;
 }
 
+/** Ano -> órgão -> agenda formal (ou não) -> reuniões do Calendário. */
+export interface AnnualOverviewGroup {
+  governanceBody: { id: string; name: string; isActive: boolean };
+  agenda: { id: string; title: string; status: AnnualAgendaStatus; meetingsCount: number } | null;
+  meetings: Array<{
+    id: string;
+    title: string;
+    startAt: string;
+    endAt: string;
+    timezone: string;
+    status: string;
+    origin: "manual" | "annual_agenda";
+    annualAgendaId: string | null;
+  }>;
+}
+
+/** Somente leitura: abrir a visão NÃO cria Agenda Anual. */
+export async function getAnnualOverview(
+  year: number,
+  signal?: AbortSignal
+): Promise<{ years: number[]; groups: AnnualOverviewGroup[] }> {
+  const { years, groups } = await apiRequest<{ year: number; years: number[]; groups: AnnualOverviewGroup[] }>(
+    `/annual-agendas/overview?year=${encodeURIComponent(String(year))}`,
+    { auth: true, signal }
+  );
+  return { years, groups };
+}
+
 export const getAnnualAgenda = (id: string, signal?: AbortSignal) =>
   apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}`, { auth: true, signal });
 
@@ -85,33 +166,110 @@ export const createAnnualAgenda = (payload: { governanceBodyId: string; year: nu
 export const deleteAnnualAgenda = (id: string) =>
   apiRequest<void>(`/annual-agendas/${id}`, { auth: true, method: "DELETE" });
 
-export interface AnnualItemPayload {
-  title: string;
-  startAt: string;
-  endAt: string;
-  timezone: string;
-}
-
-export const addAnnualAgendaItem = (id: string, payload: AnnualItemPayload) =>
-  apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/items`, json("POST", payload));
-
-export const updateAnnualAgendaItem = (id: string, itemId: string, payload: AnnualItemPayload) =>
-  apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/items/${itemId}`, json("PATCH", payload));
-
-export const deleteAnnualAgendaItem = (id: string, itemId: string) =>
-  apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/items/${itemId}`, { auth: true, method: "DELETE" });
-
-export const reserveAnnualAgenda = (id: string, payload: ReservePayload) =>
-  apiRequest<ReserveResult>(`/annual-agendas/${id}/reserve`, json("POST", payload));
-
 export const requestAnnualAgendaApproval = (id: string, approverEmail: string) =>
   apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/approval-request`, json("POST", { approverEmail }));
 
 export const markAnnualAgendaApproved = (id: string) =>
   apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/approval`, json("POST"));
 
+/** PRÉVIA: estado atual (não é o documento aprovado). */
 export const downloadAnnualAgendaPdf = (id: string) =>
   apiRequestBlob(`/annual-agendas/${id}/pdf`, { auth: true });
+
+/** Documento da versão enviada/aprovada (snapshot gravado). */
+export const downloadAnnualAgendaDocument = (id: string) =>
+  apiRequestBlob(`/annual-agendas/${id}/document`, { auth: true });
+
+export const withdrawAnnualAgendaApproval = (id: string) =>
+  apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/withdraw`, json("POST"));
+
+/** Associa reunião existente (só o vínculo; nenhum convite novo). */
+export const associateAnnualMeeting = (id: string, meetingId: string) =>
+  apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/meetings`, json("POST", { meetingId }));
+
+export const dissociateAnnualMeeting = (id: string, meetingId: string) =>
+  apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/meetings/${meetingId}`, { auth: true, method: "DELETE" });
+
+// Pauta -> Tema pela Agenda Anual (mesmas entidades da reunião).
+const conteudo = (id: string, meetingId: string) => `/annual-agendas/${id}/meetings/${meetingId}`;
+
+export const renameAnnualPauta = (id: string, meetingId: string, agendaId: string, title: string) =>
+  apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agendas/${agendaId}`, json("PATCH", { title }));
+
+export const deleteAnnualPauta = (id: string, meetingId: string, agendaId: string) =>
+  apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agendas/${agendaId}`, { auth: true, method: "DELETE" });
+
+/** Edição pela Agenda Anual: campos do cadastro do tema, só nesta reunião (nunca o tema-mestre). */
+export const updateAnnualTema = (
+  id: string,
+  meetingId: string,
+  itemId: string,
+  payload: {
+    title?: string;
+    agendaId?: string;
+    durationMinutes?: number | null;
+    responsibleLabel?: string | null;
+    responsibleEntraObjectId?: string | null;
+    agendaTopicTypeId?: string | null;
+    agendaTopicNatureId?: string | null;
+    isCircularTheme?: boolean;
+    description?: string | null;
+  }
+) => apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agenda-items/${itemId}`, json("PATCH", payload));
+
+/**
+ * Cadastro completo do "+ Novo tema": o servidor cadastra o tema na Biblioteca
+ * (participantes viram os participantes padrão) e cria a instância na reunião.
+ */
+export interface NovoTemaPayload {
+  title: string;
+  durationMinutes: number;
+  responsibleLabel?: string;
+  responsibleEntraObjectId?: string;
+  agendaTopicTypeId?: string;
+  agendaTopicNatureId?: string;
+  isCircularTheme: boolean;
+  description?: string;
+  agendaId?: string;
+  participants: CreateParticipantPayload[];
+}
+
+/** Tema da Biblioteca: só o id (+ duração/pauta); o servidor resolve o resto. */
+export interface TemaDaBibliotecaPayload {
+  agendaTopicId: string;
+  durationMinutes?: number;
+  agendaId?: string;
+}
+
+/**
+ * "+ Novo tema" / "Adicionar da Biblioteca": tema direto na reunião. Sem pauta,
+ * o servidor cria a pauta padrão na mesma transação.
+ */
+export const createAnnualTema = (id: string, meetingId: string, payload: NovoTemaPayload | TemaDaBibliotecaPayload) =>
+  apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/temas`, json("POST", payload));
+
+/** Ordem dos temas (arrastar e soltar); horários recalculados no servidor. */
+export const reorderAnnualTemas = (id: string, meetingId: string, agendaItemIds: string[]) =>
+  apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agenda-items/order`, json("PUT", { agendaItemIds }));
+
+/** Participantes DA REUNIÃO pela Agenda (em elaboração; mesmas regras da aba Participantes do Pipeline). */
+export const addAnnualMeetingParticipant = (id: string, meetingId: string, payload: CreateParticipantPayload) =>
+  apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/participants`, json("POST", payload));
+
+export const removeAnnualMeetingParticipant = (id: string, meetingId: string, participantId: string) =>
+  apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/participants/${participantId}`, { auth: true, method: "DELETE" });
+
+export const linkAnnualTemaParticipant = (id: string, meetingId: string, itemId: string, payload: CreateParticipantPayload) =>
+  apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agenda-items/${itemId}/participants`, json("POST", payload));
+
+export const unlinkAnnualTemaParticipant = (id: string, meetingId: string, itemId: string, participantId: string) =>
+  apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agenda-items/${itemId}/participants/${participantId}`, {
+    auth: true,
+    method: "DELETE"
+  });
+
+export const deleteAnnualTema = (id: string, meetingId: string, itemId: string) =>
+  apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agenda-items/${itemId}`, { auth: true, method: "DELETE" });
 
 export function annualStatusLabel(status: AnnualAgendaStatus, language: "en" | "pt"): string {
   const pt = language === "pt";

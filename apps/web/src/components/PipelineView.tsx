@@ -1,9 +1,9 @@
 import React, { useMemo, useState } from "react";
 import { Columns3, List, MapPin, MonitorSmartphone, RefreshCw, Search, Users, Workflow } from "lucide-react";
-import type { GovernanceBody, Meeting } from "../types";
+import type { Meeting } from "../types";
 import { groupByStage, originLabel, PIPELINE_STAGES, type PipelineStage } from "../lib/pipeline";
-import GovernanceBodyFilter from "./GovernanceBodyFilter";
-import { filtrarPorOrgao, TODOS_OS_ORGAOS } from "../lib/governance-filter";
+import { filtrarPorOrgao } from "../lib/governance-filter";
+import { operacionalNoPipeline } from "../lib/pipeline";
 
 /**
  * PIPELINE — espaço operacional de PREPARAÇÃO.
@@ -21,7 +21,8 @@ interface PipelineViewProps {
   meetings: Meeting[];
   meetingsLoading: boolean;
   meetingsError: string | null;
-  governanceBodies: GovernanceBody[];
+  /** Órgão colegiado do CONTEXTO GLOBAL (""=Todos): vale no Quadro e na Lista. */
+  orgaoContexto: string;
   onReload: () => void;
   onMeetingClick: (meeting: Meeting) => void;
   /** Tela de lista existente, renderizada no modo "Lista", já filtrada por órgão. */
@@ -48,7 +49,7 @@ export default function PipelineView({
   meetings,
   meetingsLoading,
   meetingsError,
-  governanceBodies,
+  orgaoContexto,
   onReload,
   onMeetingClick,
   renderList
@@ -56,10 +57,12 @@ export default function PipelineView({
   const pt = language === "pt";
   const [modo, setModo] = useState<"board" | "list">("board");
   const [busca, setBusca] = useState("");
-  const [orgao, setOrgao] = useState(TODOS_OS_ORGAOS);
+  const orgao = orgaoContexto;
 
   // Órgão vale para Quadro e Lista; a busca textual é do Quadro.
-  const doOrgao = useMemo(() => filtrarPorOrgao(meetings, orgao), [meetings, orgao]);
+  // Reuniões de Agenda Anual ainda não aprovada ficam na Agenda (servidor decide).
+  const emPreparacao = useMemo(() => filtrarPorOrgao(meetings, orgao).filter((m) => !operacionalNoPipeline(m)).length, [meetings, orgao]);
+  const doOrgao = useMemo(() => filtrarPorOrgao(meetings, orgao).filter(operacionalNoPipeline), [meetings, orgao]);
   const filtradas = useMemo(() => {
     const termo = busca.trim().toLowerCase();
     return doOrgao.filter(
@@ -79,9 +82,16 @@ export default function PipelineView({
           </h2>
           <p className="text-xs text-slate-500 font-medium mt-1">
             {pt
-              ? "Todas as reuniões agendadas — pelo Calendário ou pela Agenda Anual. Abra uma reunião para preparar pautas, temas, participantes e documentos."
-              : "Every scheduled meeting — from the Calendar or the Annual plan. Open a meeting to prepare agendas, topics, participants and documents."}
+              ? "Reuniões em operação: avulsas do Calendário e as de Agendas Anuais já aprovadas. Abra uma reunião para preparar pautas, temas, participantes e documentos."
+              : "Meetings in operation: standalone Calendar meetings and those from approved Annual plans. Open a meeting to prepare agendas, topics, participants and documents."}
           </p>
+          {emPreparacao > 0 && (
+            <p className="text-[11px] text-slate-500 font-semibold mt-1">
+              {pt
+                ? `${emPreparacao} ${emPreparacao === 1 ? "reunião está" : "reuniões estão"} em preparação na Agenda Anual e ${emPreparacao === 1 ? "entra" : "entram"} aqui após a aprovação.`
+                : `${emPreparacao} meeting(s) are being prepared in the Annual plan and will appear here after approval.`}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl p-1 self-start md:self-auto">
           {([
@@ -102,16 +112,6 @@ export default function PipelineView({
             </button>
           ))}
         </div>
-      </div>
-
-      <div className="sm:w-64">
-        <GovernanceBodyFilter
-          language={language}
-          id="pipeline-orgao"
-          governanceBodies={governanceBodies}
-          value={orgao}
-          onChange={setOrgao}
-        />
       </div>
 
       {modo === "list" ? (

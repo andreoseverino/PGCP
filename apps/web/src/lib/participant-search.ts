@@ -1,6 +1,6 @@
 import { enderecoDoDiretorio } from "./corporate-email";
 import type { DirectoryUser } from "./directory";
-import type { ExternalParticipant } from "./external-participants-rules";
+import type { DirectoryPerson, ExternalParticipant } from "./external-participants-rules";
 import type { CreateParticipantPayload } from "./meeting-adapters";
 
 /**
@@ -100,4 +100,95 @@ export function selecionadoComoConvidado(s: ParticipanteSelecionado, role: strin
   return s.origem === "entra"
     ? { name: nomeDoSelecionado(s), role, confirmed: false, entraObjectId: s.user.id, email: enderecoDoDiretorio(s.user) }
     : { name: s.participante.fullName, role, confirmed: false, entraObjectId: undefined, email: s.participante.email };
+}
+
+// ---------------------------------------------------------------------------
+// SUGESTÕES por classificação (027) — priorização simples e previsível.
+// ---------------------------------------------------------------------------
+//
+//   1º  relacionados ao órgão E ao tema (quando há tema)
+//   2º  relacionados só ao órgão
+//
+// Sem pontuação/score. Ninguém é adicionado automaticamente: a sugestão só
+// aparece para clique, e a busca geral (Entra + PGCP) continua disponível.
+
+export interface ContextoSugestao {
+  /** Órgão da reunião/agenda (ou do contexto global). */
+  governanceBodyId?: string;
+  /** Tema da Biblioteca ligado ao tema da reunião (`agendaTopicId`), quando houver. */
+  agendaTopicId?: string;
+}
+
+export type Sugerido =
+  | { origem: "entra"; pessoa: DirectoryPerson }
+  | { origem: "pgcp"; participante: ExternalParticipant };
+
+export interface Sugestoes {
+  orgaoETema: Sugerido[];
+  orgao: Sugerido[];
+}
+
+const LIMITE_SUGESTOES = 10;
+
+function classificacaoDe(s: Sugerido) {
+  return s.origem === "entra" ? s.pessoa : s.participante;
+}
+
+export function nomeDoSugerido(s: Sugerido): string {
+  return s.origem === "entra" ? s.pessoa.displayName : s.participante.fullName;
+}
+
+export function sugerirParticipantes(
+  locais: readonly ExternalParticipant[],
+  diretorio: readonly DirectoryPerson[],
+  ctx: ContextoSugestao,
+  jaEscolhidos: { entraIds?: readonly string[]; emails?: readonly string[] } = {}
+): Sugestoes {
+  const vazio: Sugestoes = { orgaoETema: [], orgao: [] };
+  if (!ctx.governanceBodyId && !ctx.agendaTopicId) return vazio;
+
+  const ids = new Set((jaEscolhidos.entraIds ?? []).map((x) => x.toLowerCase()));
+  const emails = new Set((jaEscolhidos.emails ?? []).filter(Boolean).map((x) => x.toLowerCase()));
+  const todos: Sugerido[] = [
+    ...diretorio
+      .filter((p) => !ids.has(p.entraObjectId.toLowerCase()) && !(p.email && emails.has(p.email.toLowerCase())))
+      .map((pessoa) => ({ origem: "entra" as const, pessoa })),
+    ...locais
+      .filter((p) => !emails.has(p.email.toLowerCase()))
+      .map((participante) => ({ origem: "pgcp" as const, participante }))
+  ];
+
+  const temOrgao = (s: Sugerido) =>
+    Boolean(ctx.governanceBodyId) && classificacaoDe(s).governanceBodies.some((g) => g.id === ctx.governanceBodyId);
+  const temTema = (s: Sugerido) =>
+    Boolean(ctx.agendaTopicId) && classificacaoDe(s).topics.some((t) => t.id === ctx.agendaTopicId);
+  const porNome = (a: Sugerido, b: Sugerido) => nomeDoSugerido(a).localeCompare(nomeDoSugerido(b), "pt-BR");
+
+  // Sem órgão no contexto, o tema sozinho forma o 1º grupo.
+  const primeiro = todos.filter((s) => (ctx.governanceBodyId ? temOrgao(s) && temTema(s) : temTema(s))).sort(porNome);
+  const noPrimeiro = new Set(primeiro);
+  const segundo = todos.filter((s) => !noPrimeiro.has(s) && temOrgao(s)).sort(porNome);
+  return { orgaoETema: primeiro.slice(0, LIMITE_SUGESTOES), orgao: segundo.slice(0, LIMITE_SUGESTOES) };
+}
+
+/** Sugestão escolhida → mesma seleção da busca (Entra pela identidade; externo por e-mail). */
+export function sugeridoParaSelecionado(s: Sugerido): ParticipanteSelecionado {
+  if (s.origem === "pgcp") return { origem: "pgcp", participante: s.participante };
+  return {
+    origem: "entra",
+    user: {
+      id: s.pessoa.entraObjectId,
+      displayName: s.pessoa.displayName,
+      mail: s.pessoa.email,
+      userPrincipalName: null,
+      jobTitle: null,
+      userType: null,
+      accountEnabled: null
+    }
+  };
+}
+
+/** "Comitê Executivo · Finanças" — classificação exibida junto à pessoa. */
+export function rotuloClassificacao(c: { governanceBodies: { name: string }[]; topics: { title: string }[] }): string {
+  return [...c.governanceBodies.map((g) => g.name), ...c.topics.map((t) => t.title)].join(" · ");
 }

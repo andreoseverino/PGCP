@@ -123,3 +123,16 @@ test("dia comum não recebe borda visível", () => {
   });
   assert.match(estado.className, /border border-transparent/);
 });
+
+// --- hoje preenchido ---------------------------------------------------------
+
+test("hoje: quadrado preenchido na cor institucional, com ou sem reunião", () => {
+  for (const meetingCount of [0, 1, 4]) {
+    const estado = calendarDayState({ dateStr: HOJE, todayStr: HOJE, selectedDayStr: null, meetingCount });
+    assert.match(estado.className, /bg-\[#00658d\] text-white/);
+    assert.doesNotMatch(estado.className, /bg-blue-|bg-slate-100/, "fundo do mapa de calor não vale para hoje");
+  }
+  // Os outros dias continuam no mapa de calor.
+  const outro = calendarDayState({ dateStr: "2026-08-10", todayStr: HOJE, selectedDayStr: null, meetingCount: 1 });
+  assert.doesNotMatch(outro.className, /bg-\[#00658d\]/);
+});

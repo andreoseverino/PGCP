@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { buildNewMeetingPayload, MODALITY_DISCLAIMER, validateNewMeeting, type NewMeetingForm } from "./new-meeting";
 
 const form = (extra: Partial<NewMeetingForm> = {}): NewMeetingForm => ({
-  title: "Comitê Executivo — Janeiro",
+  sessionType: "ordinary",
   date: "2027-01-20",
   startTime: "09:00",
   endTime: "11:00",
@@ -50,8 +50,8 @@ test("payload correto: instantes no fuso da reunião, órgão e participantes", 
   }
 });
 
-test("validação básica: título, horário coerente e órgão", () => {
-  assert.ok(validateNewMeeting(form({ title: " " }), "pt"));
+test("validação básica: tipo, horário coerente e órgão", () => {
+  assert.match(validateNewMeeting(form({ sessionType: "" }), "pt") ?? "", /Ordinária ou Extraordinária/);
   assert.ok(validateNewMeeting(form({ endTime: "08:00" }), "pt"));
   assert.ok(validateNewMeeting(form({ governanceBodyId: "" }), "pt"));
 });

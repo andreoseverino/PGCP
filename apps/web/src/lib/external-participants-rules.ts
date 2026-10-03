@@ -9,16 +9,21 @@ export interface ExternalParticipant {
   fullName: string;
   email: string;
   phone: string;
-  governanceBody: { id: string; name: string } | null;
+  /** Classificação (027): só sugestão, nunca autorização ou inclusão automática. */
+  governanceBodies: Array<{ id: string; name: string }>;
+  topics: Array<{ id: string; title: string }>;
   createdAt: string;
   updatedAt: string;
 }
 
+/**
+ * Cadastro da pessoa externa (Pessoas externas). Órgãos/temas NÃO vão aqui:
+ * a API mantém os grupos da pessoa intactos quando eles não são informados.
+ */
 export interface ExternalParticipantPayload {
   fullName: string;
   email: string;
   phone: string;
-  governanceBodyId: string | null;
 }
 
 /** Validação local espelhando a API (a autoridade continua sendo o servidor). */
@@ -35,4 +40,20 @@ export function validateExternalParticipant(p: ExternalParticipantPayload, langu
       : "Phone: digits, spaces and + ( ) -, at least 8 digits.";
   }
   return null;
+}
+
+/**
+ * Pessoa do Microsoft Entra ID com classificação no PGCP (`/directory-people`).
+ * A identidade é do Entra; aqui só o vínculo para sugestão. Não é usuário.
+ */
+export interface DirectoryPerson {
+  id: string;
+  origin: "entra";
+  entraObjectId: string;
+  displayName: string;
+  email: string | null;
+  governanceBodies: Array<{ id: string; name: string }>;
+  topics: Array<{ id: string; title: string }>;
+  createdAt: string;
+  updatedAt: string;
 }

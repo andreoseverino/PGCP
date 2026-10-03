@@ -17,7 +17,8 @@ const externo = (id: string, fullName: string, email: string): ExternalParticipa
   fullName,
   email,
   phone: "11 3333 4444",
-  governanceBody: null,
+  governanceBodies: [],
+  topics: [],
   createdAt: "",
   updatedAt: ""
 });
@@ -90,4 +91,52 @@ test("nenhuma pessoa externa ganha App Role, usuário ou identidade Entra", () =
   for (const campo of ["entraObjectId", "entraTenantId", "userId", "appRoles"]) {
     assert.equal(payload[campo], undefined, campo);
   }
+});
+
+// --- Sugestões por classificação (027) ------------------------------------
+
+import { sugerirParticipantes, sugeridoParaSelecionado, nomeDoSugerido } from "./participant-search";
+import type { DirectoryPerson } from "./external-participants-rules";
+
+const classif = (gs: string[], ts: string[]) => ({
+  governanceBodies: gs.map((id) => ({ id, name: id })),
+  topics: ts.map((id) => ({ id, title: id }))
+});
+const pessoa = (id: string, nome: string, gs: string[], ts: string[]): DirectoryPerson => ({
+  id, origin: "entra", entraObjectId: `oid-${id}`, displayName: nome, email: `${id}@empresa.com`,
+  createdAt: "", updatedAt: "", ...classif(gs, ts)
+});
+const ext = (id: string, nome: string, gs: string[], ts: string[]) => ({ ...externo(id, nome, `${id}@externo.com`), ...classif(gs, ts) });
+
+const dir = [pessoa("joao", "João", ["exec"], ["fin"]), pessoa("ana", "Ana", ["exec"], []), pessoa("rui", "Rui", ["aud"], ["fin"])];
+const exts = [ext("maria", "Maria", ["exec"], ["fin"]), ext("carlos", "Carlos", ["exec"], ["aud"]), ext("lia", "Lia", [], [])];
+
+test("contexto órgão: prioriza relacionados ao órgão (Entra e PGCP)", () => {
+  const s = sugerirParticipantes(exts, dir, { governanceBodyId: "exec" });
+  assert.deepEqual(s.orgaoETema, []);
+  assert.deepEqual(s.orgao.map(nomeDoSugerido), ["Ana", "Carlos", "João", "Maria"]);
+});
+
+test("órgão + tema: primeiro quem tem os dois, depois só o órgão", () => {
+  const s = sugerirParticipantes(exts, dir, { governanceBodyId: "exec", agendaTopicId: "fin" });
+  assert.deepEqual(s.orgaoETema.map(nomeDoSugerido), ["João", "Maria"]);
+  assert.deepEqual(s.orgao.map(nomeDoSugerido), ["Ana", "Carlos"]);
+});
+
+test("não classificados não são sugeridos, mas continuam pesquisáveis", () => {
+  const s = sugerirParticipantes(exts, dir, { governanceBodyId: "exec", agendaTopicId: "fin" });
+  assert.ok(![...s.orgaoETema, ...s.orgao].some((x) => nomeDoSugerido(x) === "Lia"));
+  assert.deepEqual(combinarResultados([], exts, "lia").pgcp.map((p) => p.id), ["lia"]);
+});
+
+test("sem contexto não sugere; já escolhidos não voltam; sugestão não adiciona sozinha", () => {
+  assert.deepEqual(sugerirParticipantes(exts, dir, {}), { orgaoETema: [], orgao: [] });
+  const s = sugerirParticipantes(exts, dir, { governanceBodyId: "exec" }, { entraIds: ["OID-JOAO"], emails: ["maria@externo.com"] });
+  assert.deepEqual(s.orgao.map(nomeDoSugerido), ["Ana", "Carlos"]);
+  // Escolher uma sugestão vira a MESMA seleção da busca: Entra por identidade, externo por e-mail.
+  const entra = sugeridoParaSelecionado({ origem: "entra", pessoa: dir[0]! });
+  assert.equal(selecionadoParaPayload(entra).entraObjectId, "oid-joao");
+  const pg = selecionadoParaPayload(sugeridoParaSelecionado({ origem: "pgcp", participante: exts[0]! }));
+  assert.equal(pg.entraObjectId, undefined);
+  assert.equal(pg.participantType, "external");
 });

@@ -4,12 +4,16 @@ import {
   type CreateOrganizerPayload
 } from "./meeting-adapters";
 import type { Participant } from "../types";
+import type { SessionType } from "./meeting-title";
+import { ehHorarioValido } from "./time-options";
 
 /**
  * Agendamento pelo CALENDÁRIO — o cadastro inicial, deliberadamente simples.
  *
- * Só o essencial para reservar a agenda e enviar o convite: título, data,
- * horários, órgão, modalidade, local (presencial), organizador e participantes.
+ * Só o essencial para reservar a agenda e enviar o convite: data, horários,
+ * órgão, formato (Presencial/Videoconferência), local (presencial), tipo
+ * (Ordinária/Extraordinária), organizador e participantes. O TÍTULO não é
+ * digitado: o servidor monta o padrão a partir desses campos (030).
  * Pautas, temas, documentos, decisões, ações e ata NÃO entram aqui: são
  * preparação, e acontecem depois, pelo Pipeline.
  *
@@ -25,7 +29,8 @@ export const MODALITY_DISCLAIMER = {
 } as const;
 
 export interface NewMeetingForm {
-  title: string;
+  /** Ordinária/Extraordinária. "" = ainda não escolhido. */
+  sessionType: SessionType | "";
   /** Data local, YYYY-MM-DD. */
   date: string;
   startTime: string;
@@ -47,10 +52,13 @@ export interface NewMeetingForm {
  */
 export function validateNewMeeting(form: NewMeetingForm, language: "en" | "pt"): string | null {
   const pt = language === "pt";
-  if (!form.title.trim()) return pt ? "Informe o título da reunião." : "Enter the meeting title.";
+  if (!form.sessionType) return pt ? "Selecione o tipo: Ordinária ou Extraordinária." : "Select the type: Ordinary or Extraordinary.";
   if (!form.date) return pt ? "Informe a data." : "Enter the date.";
   if (!form.startTime || !form.endTime) {
     return pt ? "Informe os horários de início e término." : "Enter the start and end times.";
+  }
+  if (!ehHorarioValido(form.startTime) || !ehHorarioValido(form.endTime)) {
+    return pt ? "Use horários em intervalos de 5 minutos (HH:mm)." : "Use times in 5-minute steps (HH:mm).";
   }
   if (form.endTime <= form.startTime) {
     return pt
@@ -69,10 +77,11 @@ export function validateNewMeeting(form: NewMeetingForm, language: "en" | "pt"):
  * leva local físico no presencial — a API recusaria local em reunião online.
  */
 export function buildNewMeetingPayload(form: NewMeetingForm): CreateMeetingPayload {
-  const payload = buildCreatePayload({
+  // Sem título no corpo: com `sessionType`, a API monta o padrão e recusaria um título.
+  const { title: _semTitulo, ...payload } = buildCreatePayload({
     governanceBodyId: form.governanceBodyId,
     organizer: form.organizer,
-    title: form.title,
+    title: "",
     date: form.date,
     startTime: form.startTime,
     endTime: form.endTime,
@@ -83,6 +92,7 @@ export function buildNewMeetingPayload(form: NewMeetingForm): CreateMeetingPaylo
 
   return {
     ...payload,
+    sessionType: form.sessionType || undefined,
     modality: form.modality,
     ...(form.modality === "in_person" ? { physicalLocationKey: form.physicalLocationKey } : {})
   };

@@ -46,6 +46,10 @@ interface AdministrationViewProps {
   onRenameTaxonomy: (kind: TaxonomyKind, id: string, name: string) => Promise<void>;
   /** Exclusão REAL. Cadastro em uso devolve 409 e nada sai da tela. */
   onDeleteTaxonomy: (kind: TaxonomyKind, id: string) => Promise<void>;
+  /** Temas da Biblioteca — grupos de participantes padrão (Participantes → Grupos). */
+  libraryTopics: Array<{ id: string; title: string; participantsCount?: number }>;
+  /** Participantes padrão de um tema mudaram: recarrega a Biblioteca. */
+  onLibraryChanged?: () => void;
 }
 
 export default function AdministrationView({
@@ -61,7 +65,9 @@ export default function AdministrationView({
   pautaNatures = [],
   onCreateTaxonomy,
   onRenameTaxonomy,
-  onDeleteTaxonomy
+  onDeleteTaxonomy,
+  libraryTopics,
+  onLibraryChanged
 }: AdministrationViewProps) {
   /*
    * Aba inicial depende de quem entrou: a Assessoria não tem a aba de usuários,
@@ -298,7 +304,7 @@ export default function AdministrationView({
           {language === "en" ? "Debate Natures" : "Naturezas de Pauta"}
         </button>
 
-        {/* Participantes: Microsoft (leitura) + externos do PGCP (cadastro). */}
+        {/* Participantes: pessoas externas + grupos de participação (órgão, tema). */}
         <button
           onClick={() => { setActiveTab("participants"); setSearchQuery(""); resetGovernanceBodyForm(); }}
           className={`px-4 py-2.5 rounded-t-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
@@ -312,7 +318,7 @@ export default function AdministrationView({
       </div>
 
       {activeTab === "participants" ? (
-        <ParticipantsPanel language={language} governanceBodies={governanceBodies.filter((b) => b.isActive)} />
+        <ParticipantsPanel language={language} libraryTopics={libraryTopics} onLibraryChanged={onLibraryChanged} />
       ) : (
       /* TWO-COLUMN GRID */
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

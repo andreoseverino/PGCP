@@ -2,12 +2,23 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Search } from "lucide-react";
 import { describeDirectoryError, searchDirectoryUsers, type DirectoryUser } from "../lib/directory";
 import { enderecoDoDiretorio } from "../lib/corporate-email";
-import { listExternalParticipants, type ExternalParticipant } from "../lib/external-participants";
+import {
+  listDirectoryPeople,
+  listExternalParticipants,
+  type DirectoryPerson,
+  type ExternalParticipant
+} from "../lib/external-participants";
 import {
   combinarResultados,
   deveBuscarNoEntra,
   ENTRA_MIN_QUERY,
-  type ParticipanteSelecionado
+  nomeDoSugerido,
+  rotuloClassificacao,
+  sugeridoParaSelecionado,
+  sugerirParticipantes,
+  type ContextoSugestao,
+  type ParticipanteSelecionado,
+  type Sugerido
 } from "../lib/participant-search";
 
 /**
@@ -20,6 +31,10 @@ import {
  *
  * Só para PARTICIPAR. Responsável, organizador e demais funções que exigem
  * identidade corporativa continuam no `DirectoryUserPicker`.
+ *
+ * SUGESTÕES (027): ao focar sem digitar, mostra quem está classificado no
+ * órgão (e no tema) do contexto. Só sugere — nada entra sem clique — e a busca
+ * geral continua valendo para qualquer pessoa.
  */
 
 interface ParticipantPickerProps {
@@ -31,6 +46,8 @@ interface ParticipantPickerProps {
   /** Mostra a orientação sobre as duas origens (usar no seletor principal). */
   showHint?: boolean;
   disabled?: boolean;
+  /** Órgão/tema para priorizar sugestões, com rótulos para o título do grupo. */
+  sugestao?: ContextoSugestao & { rotuloOrgao?: string; rotuloTema?: string };
 }
 
 const DEBOUNCE_MS = 400;
@@ -41,12 +58,14 @@ export default function ParticipantPicker({
   jaEscolhidos,
   placeholder,
   showHint = false,
-  disabled = false
+  disabled = false,
+  sugestao
 }: ParticipantPickerProps) {
   const pt = language === "pt";
   const [termo, setTermo] = useState("");
   const [aberto, setAberto] = useState(false);
   const [locais, setLocais] = useState<ExternalParticipant[]>([]);
+  const [classificados, setClassificados] = useState<DirectoryPerson[]>([]);
   const [entra, setEntra] = useState<DirectoryUser[]>([]);
   const [buscandoEntra, setBuscandoEntra] = useState(false);
   const [erroEntra, setErroEntra] = useState<string | null>(null);
@@ -56,6 +75,8 @@ export default function ParticipantPicker({
   useEffect(() => {
     const c = new AbortController();
     listExternalParticipants(undefined, c.signal).then(setLocais).catch(() => setLocais([]));
+    // Só as pessoas do diretório JÁ classificadas (nunca o tenant).
+    listDirectoryPeople(c.signal).then(setClassificados).catch(() => setClassificados([]));
     return () => c.abort();
   }, []);
 
@@ -97,6 +118,15 @@ export default function ParticipantPicker({
     [entra, locais, termo, jaEscolhidos]
   );
 
+  const sugeridos = useMemo(
+    () => (sugestao ? sugerirParticipantes(locais, classificados, sugestao, jaEscolhidos) : { orgaoETema: [], orgao: [] }),
+    [locais, classificados, sugestao, jaEscolhidos]
+  );
+  const classificacaoEntra = useMemo(
+    () => new Map(classificados.map((p) => [p.entraObjectId.toLowerCase(), p])),
+    [classificados]
+  );
+
   const escolher = (s: ParticipanteSelecionado) => {
     onSelect(s);
     setTermo("");
@@ -136,6 +166,42 @@ export default function ParticipantPicker({
         </p>
       )}
 
+      {aberto && !termo.trim() && (sugeridos.orgaoETema.length > 0 || sugeridos.orgao.length > 0) && (
+        <div className="absolute z-30 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-72 overflow-y-auto">
+          {([
+            [
+              sugeridos.orgaoETema,
+              sugestao?.governanceBodyId
+                ? `${pt ? "Sugeridos para" : "Suggested for"} ${sugestao?.rotuloOrgao ?? ""} ${pt ? "e" : "and"} ${sugestao?.rotuloTema ?? ""}`
+                : `${pt ? "Sugeridos para" : "Suggested for"} ${sugestao?.rotuloTema ?? ""}`
+            ],
+            [sugeridos.orgao, `${pt ? "Sugeridos para" : "Suggested for"} ${sugestao?.rotuloOrgao ?? ""}`]
+          ] as Array<[Sugerido[], string]>).map(([lista, titulo]) =>
+            lista.length === 0 ? null : (
+              <div key={titulo}>
+                {grupo(titulo)}
+                {lista.map((s) => {
+                  const c = s.origem === "entra" ? s.pessoa : s.participante;
+                  return (
+                    <button key={`${s.origem}:${c.id}`} type="button" onClick={() => escolher(sugeridoParaSelecionado(s))}
+                      className="w-full text-left px-3 py-1.5 hover:bg-slate-50 cursor-pointer">
+                      <span className="block text-[12px] font-bold text-slate-800">{nomeDoSugerido(s)}</span>
+                      <span className="block text-[10px] text-slate-500">
+                        {s.origem === "entra" ? "Microsoft Entra ID" : pt ? "PGCP / Externo" : "PGCP / External"}
+                        {rotuloClassificacao(c) ? ` · ${rotuloClassificacao(c)}` : ""}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )
+          )}
+          <p className="px-3 py-2 text-[10px] text-slate-400 font-semibold">
+            {pt ? "Digite para buscar outras pessoas (Entra ID e externos)." : "Type to search other people."}
+          </p>
+        </div>
+      )}
+
       {aberto && termo.trim() && (
         <div className="absolute z-30 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-72 overflow-y-auto">
           {resultado.entra.length > 0 && (
@@ -145,7 +211,12 @@ export default function ParticipantPicker({
                 <button key={`ms:${u.id}`} type="button" onClick={() => escolher({ origem: "entra", user: u })}
                   className="w-full text-left px-3 py-1.5 hover:bg-slate-50 cursor-pointer">
                   <span className="block text-[12px] font-bold text-slate-800">{u.displayName ?? enderecoDoDiretorio(u)}</span>
-                  <span className="block text-[10px] text-slate-500">{enderecoDoDiretorio(u) ?? "—"}</span>
+                  <span className="block text-[10px] text-slate-500">
+                    {enderecoDoDiretorio(u) ?? "—"}
+                    {classificacaoEntra.get(u.id.toLowerCase()) && rotuloClassificacao(classificacaoEntra.get(u.id.toLowerCase())!)
+                      ? ` · ${rotuloClassificacao(classificacaoEntra.get(u.id.toLowerCase())!)}`
+                      : ""}
+                  </span>
                 </button>
               ))}
             </>
@@ -158,7 +229,7 @@ export default function ParticipantPicker({
                   className="w-full text-left px-3 py-1.5 hover:bg-slate-50 cursor-pointer">
                   <span className="block text-[12px] font-bold text-slate-800">{p.fullName}</span>
                   <span className="block text-[10px] text-slate-500">
-                    {p.email}{p.governanceBody ? ` · ${p.governanceBody.name}` : ""}
+                    {p.email}{rotuloClassificacao(p) ? ` · ${rotuloClassificacao(p)}` : ""}
                   </span>
                 </button>
               ))}

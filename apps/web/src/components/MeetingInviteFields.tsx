@@ -85,9 +85,9 @@ export function ModalityFields({ language, modality, physicalLocationKey, onChan
 
   return (
     <div className="space-y-2">
-      <span className={LABEL}>{pt ? "Modalidade" : "Format"} *</span>
+      <span className={LABEL}>{pt ? "Formato" : "Format"} *</span>
       <div className="flex gap-2">
-        {opcao("online", "Online", MonitorSmartphone)}
+        {opcao("online", pt ? "Videoconferência" : "Video conference", MonitorSmartphone)}
         {opcao("in_person", pt ? "Presencial" : "In person", MapPin)}
       </div>
 
@@ -136,6 +136,8 @@ interface OrganizerAndParticipantsProps {
   onOrganizerChange: (user: DirectoryUser | null) => void;
   participants: InviteParticipant[];
   onParticipantsChange: (list: InviteParticipant[]) => void;
+  /** Órgão da reunião/agenda para sugerir pessoas classificadas (027). */
+  sugestao?: { governanceBodyId?: string; rotuloOrgao?: string };
 }
 
 /**
@@ -147,7 +149,8 @@ export function OrganizerAndParticipants({
   organizer,
   onOrganizerChange,
   participants,
-  onParticipantsChange
+  onParticipantsChange,
+  sugestao
 }: OrganizerAndParticipantsProps) {
   const pt = language === "pt";
 
@@ -183,11 +186,18 @@ export function OrganizerAndParticipants({
           <Users className="w-3 h-3" />
           {pt ? "Participantes (convite)" : "Participants (invite)"}
         </span>
+        {/* Grupo do órgão (Administração → Participantes): incluído pelo servidor ao agendar. */}
+        <span className="text-[10px] text-slate-400 font-semibold">
+          {pt
+            ? "Quem faz parte do grupo do órgão colegiado entra automaticamente ao agendar."
+            : "Members of the governance body's group are added automatically when scheduling."}
+        </span>
         {/* Participar: Entra ID + externos do PGCP. O organizador (acima)
             continua só do diretório: é de quem é o calendário. */}
         <ParticipantPicker
           language={language}
           showHint
+          sugestao={sugestao}
           placeholder={pt ? "Adicionar participante..." : "Add participant..."}
           jaEscolhidos={{
             entraIds: participants.map((p) => p.entraObjectId ?? "").filter(Boolean),

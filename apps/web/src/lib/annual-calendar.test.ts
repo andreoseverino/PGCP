@@ -80,7 +80,7 @@ test("data sugerida para Nova reunião acompanha o ano exibido", () => {
 
 test("criação pelo Calendário continua sem Pauta/Tema", () => {
   const payload = buildNewMeetingPayload({
-    title: "Comitê",
+    sessionType: "ordinary",
     date: dataSugerida(2027, "2026-09-30", null),
     startTime: "09:00",
     endTime: "11:00",

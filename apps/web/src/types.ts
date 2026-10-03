@@ -69,6 +69,11 @@ export interface Participant {
    */
   entraObjectId?: string;
   /**
+   * Pertence HOJE ao grupo do órgão colegiado da reunião (Administração →
+   * Participantes → Grupos). Informativo: origem discreta e texto da remoção.
+   */
+  inGovernanceBodyGroup?: boolean;
+  /**
    * Endereço para o convite de calendário.
    *
    * NÃO é identidade — quem identifica é `entraObjectId` (Microsoft) ou o
@@ -289,8 +294,19 @@ export interface Meeting {
   /** Origem: Calendário (manual) ou reserva da Agenda Anual. */
   origin?: "manual" | "annual_agenda";
   annualAgendaId?: string | null;
+  /** Status da Agenda Anual da reunião (`null` = avulsa). */
+  annualAgendaStatus?: "draft" | "pending_approval" | "approved" | null;
+  /**
+   * Operacional no Pipeline (decidido no servidor): avulsa sempre; com Agenda
+   * Anual, só depois de aprovada. Antes disso a reunião é preparada na Agenda.
+   */
+  releasedToPipeline?: boolean;
   /** Estado do convite também no resumo (Pipeline). */
   calendarSyncStatus?: "pending" | "synced" | "failed" | "stale" | null;
+  /** Situação da Ata (`meeting_minutes.status`); `null` = não iniciada. */
+  minutesStatus?: "draft" | "under_review" | "approved" | "closed" | null;
+  /** Tipo (030). Preenchido = título padronizado; `null` = legado. */
+  sessionType?: "ordinary" | "extraordinary" | null;
   missingRequirementText?: string;
   recurrence?: string;
   /**

@@ -11,7 +11,7 @@ const codigo = (arq: string) =>
     .replace(/^[ \t]*\/\/.*$/gm, "");
 
 test("validação: nome, e-mail e telefone obrigatórios; órgão colegiado opcional", () => {
-  const ok = { fullName: "Maria Souza", email: "maria@parceiro.com.br", phone: "(11) 3333-4444", governanceBodyId: null };
+  const ok = { fullName: "Maria Souza", email: "maria@parceiro.com.br", phone: "(11) 3333-4444", governanceBodyIds: [], topicIds: [] };
   assert.equal(validateExternalParticipant(ok, "pt"), null);
   assert.ok(validateExternalParticipant({ ...ok, fullName: "" }, "pt"));
   assert.ok(validateExternalParticipant({ ...ok, email: "maria" }, "pt"));
@@ -19,14 +19,17 @@ test("validação: nome, e-mail e telefone obrigatórios; órgão colegiado opci
   assert.ok(validateExternalParticipant({ ...ok, phone: "abc12345678" }, "pt"));
 });
 
-test("Administração → Participantes trabalha só com cadastros locais: sem Entra", () => {
+test("Administração → Participantes não navega o tenant: Entra só pela busca explícita de quem adiciona", () => {
   const painel = codigo("../components/ParticipantsPanel.tsx");
-  assert.ok(!/searchDirectoryUsers|DirectoryUserPicker|ParticipantPicker|\/directory/.test(painel), "não busca o diretório");
-  assert.ok(!/Microsoft|Entra|Origem/.test(painel.replace(/"[^"]*n[aã]o pertencem[^"]*"/g, "")), "não lista origem Microsoft");
+  // Nenhuma listagem do diretório: o painel lista externos e membros de grupo.
+  assert.ok(!/searchDirectoryUsers|\/directory\/users/.test(painel), "não lista o diretório");
   assert.match(painel, /listExternalParticipants\(\)/);
+  // Adicionar ao grupo usa a busca única (Entra a partir de 3 letras + externos).
+  assert.equal((painel.match(/<ParticipantPicker/g) ?? []).length, 1);
 });
 
-test("cliente administrativo só fala com /external-participants", () => {
+test("cliente administrativo: externos e pessoas JÁ vinculadas — nunca busca no diretório", () => {
   const cliente = codigo("./external-participants.ts");
-  assert.ok(!/\/directory|searchDirectoryUsers/.test(cliente));
+  assert.ok(!/\/directory\/users|searchDirectoryUsers/.test(cliente));
+  assert.match(cliente, /"\/directory-people"/);
 });

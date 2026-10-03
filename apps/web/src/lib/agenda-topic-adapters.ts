@@ -223,13 +223,23 @@ export interface BibliotecaFormInput {
   /** IDENTIDADE do cadastro, não o rótulo. */
   typeId?: string;
   natureId?: string;
-  generatesActionItem?: boolean;
   /** PADRÃO de tema circular. Default Não no formulário. */
   isCircularTheme?: boolean;
   participants?: TopicParticipantPayload[];
 }
 
-/** Monta o corpo do POST/PATCH a partir do formulário. */
+/**
+ * PATCH da bandeira FUP da lista: SÓ o campo alterado.
+ *
+ * No PATCH da API, campo omitido fica como está e `null` APAGA. Por isso a
+ * alteração rápida não passa por `buildTopicPayload` (formulário completo),
+ * que envia descrição/duração/responsável/tipo/natureza — `null` quando vazios.
+ */
+export function buildTopicFupPatch(generatesActionItem: boolean): AgendaTopicPayload {
+  return { generatesActionItem };
+}
+
+/** Monta o corpo do POST/PATCH a partir do formulário completo (Novo/Editar tema). */
 export function buildTopicPayload(input: BibliotecaFormInput): AgendaTopicPayload {
   const label = input.responsibleLabel?.trim() || undefined;
 
@@ -237,13 +247,15 @@ export function buildTopicPayload(input: BibliotecaFormInput): AgendaTopicPayloa
     title: input.title.trim(),
     description: input.description?.trim() || null,
     estimatedDurationMinutes: input.durationMinutes ?? null,
-    generatesActionItem: input.generatesActionItem ?? false,
     responsibleLabel: label ?? null,
     // Identidade só acompanha rótulo — a API recusa o contrário, e com razão:
     // a tela precisaria do Graph só para escrever quem responde.
     responsibleEntraObjectId: label ? (input.responsibleEntraObjectId ?? null) : null,
     agendaTopicTypeId: input.typeId ?? null,
     agendaTopicNatureId: input.natureId ?? null,
+    // Sem FUP: o formulário não tem o campo. Na criação vale o default do
+    // backend (false); na edição o valor gravado é preservado. A bandeira da
+    // lista usa `buildTopicFupPatch`.
     // Só emite quando o formulário informou o campo. Um PATCH parcial que não o
     // traz (ex.: alternar FUP) NÃO deve zerar um "Sim" já gravado.
     ...(input.isCircularTheme !== undefined ? { isCircularTheme: input.isCircularTheme } : {}),

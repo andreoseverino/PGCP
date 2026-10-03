@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  buildTopicFupPatch,
   buildTopicPayload,
   ensureResponsibleTopicParticipant,
   isResponsibleTopicParticipant,
@@ -65,4 +66,36 @@ test("PATCH distingue participants ausente de participants vazio", () => {
   const empty = buildTopicPayload({ title: "Pauta", participants: [] });
   assert.equal(Object.hasOwn(empty, "participants"), true);
   assert.deepEqual(empty.participants, []);
+});
+
+test("bandeira FUP: PATCH só com generatesActionItem — nenhum campo não relacionado (nem null)", () => {
+  assert.deepEqual(buildTopicFupPatch(true), { generatesActionItem: true });
+  assert.deepEqual(buildTopicFupPatch(false), { generatesActionItem: false });
+});
+
+test("formulário Novo/Editar tema: sem FUP no corpo (criação usa default; edição preserva o gravado)", () => {
+  const corpo = buildTopicPayload({
+    title: "Resultado Financeiro",
+    description: "Análise trimestral",
+    durationMinutes: 90,
+    responsibleLabel: "Usuário X",
+    responsibleEntraObjectId: MARIA,
+    typeId: "tipo",
+    natureId: "natureza",
+    isCircularTheme: true
+  });
+  assert.equal(Object.hasOwn(corpo, "generatesActionItem"), false);
+  assert.deepEqual(
+    { ...corpo },
+    {
+      title: "Resultado Financeiro",
+      description: "Análise trimestral",
+      estimatedDurationMinutes: 90,
+      responsibleLabel: "Usuário X",
+      responsibleEntraObjectId: MARIA,
+      agendaTopicTypeId: "tipo",
+      agendaTopicNatureId: "natureza",
+      isCircularTheme: true
+    }
+  );
 });

@@ -33,6 +33,8 @@ interface SidebarProps {
    * `App.tsx` também recusa renderizar a área.
    */
   canOpenAdministration?: boolean;
+  /** Controle extra na barra superior mobile (seletor de contexto global). */
+  mobileHeaderExtra?: React.ReactNode;
 }
 
 export default function Sidebar({
@@ -42,6 +44,7 @@ export default function Sidebar({
   setLanguage,
   canAdminister = false,
   canOpenAdministration = false,
+  mobileHeaderExtra,
 }: SidebarProps) {
   const [isOpen, setIsOpen] = React.useState(false);
 
@@ -161,9 +164,9 @@ export default function Sidebar({
     <>
       {/* Mobile Top Header Bar */}
       <div className="md:hidden fixed top-0 left-0 w-full z-50 flex justify-between items-center px-5 h-16 bg-white/90 backdrop-blur-md border-b border-slate-200">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <CieloLogo variant="wordmark" className="h-7 w-auto shrink-0" />
-          <div className="leading-tight text-left min-w-0">
+          <div className="hidden sm:block leading-tight text-left min-w-0">
             <span className="font-extrabold text-[14px] tracking-tight text-slate-800 uppercase block">
               PGCP
             </span>
@@ -172,7 +175,8 @@ export default function Sidebar({
             </span>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          {mobileHeaderExtra}
           <button
             onClick={() => setIsOpen(!isOpen)}
             className="text-slate-600 hover:text-[#00658d] p-1"

@@ -110,7 +110,10 @@ export function describeMeetingError(error: unknown, language: "en" | "pt"): str
 
 /** Campos de cabeçalho e o status formal. Nunca filhos da reunião. */
 export interface UpdateMeetingPayload {
+  /** Só reunião sem tipo (legado). Com tipo, o servidor monta o título. */
   title?: string;
+  /** Tipo (030): define o título padronizado, recomposto pelo servidor. */
+  sessionType?: "ordinary" | "extraordinary";
   description?: string | null;
   governanceBodyId?: string;
   startAt?: string;

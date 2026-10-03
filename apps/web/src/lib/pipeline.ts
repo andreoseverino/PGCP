@@ -26,6 +26,15 @@ export const PIPELINE_STAGES: ReadonlyArray<{ id: PipelineStage; pt: string; en:
 
 type MeetingParaEtapa = Pick<Meeting, "status" | "agendaItemsCount" | "agendaValidation">;
 
+/**
+ * Reunião operacional no Pipeline? A decisão é do servidor
+ * (`releasedToPipeline`): de Agenda Anual, só depois de aprovada; avulsa,
+ * sempre. O servidor também recusa as mutações (409) — isto só organiza a tela.
+ */
+export function operacionalNoPipeline(meeting: { releasedToPipeline?: boolean }): boolean {
+  return meeting.releasedToPipeline !== false;
+}
+
 export function pipelineStage(meeting: MeetingParaEtapa): PipelineStage {
   if (meeting.status === "Done" || meeting.status === "Approved" || meeting.status === "Closed") {
     return "done";

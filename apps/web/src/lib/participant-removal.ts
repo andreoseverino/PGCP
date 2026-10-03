@@ -65,12 +65,20 @@ export function confirmacaoRemoverDoTema(
 export function confirmacaoRemoverDaReuniao(
   nome: string,
   temas: readonly string[],
-  language: "en" | "pt"
+  language: "en" | "pt",
+  /** Órgão colegiado cujo grupo a pessoa integra (inclusão automática), se houver. */
+  grupoDoOrgao?: string | null
 ): ConfirmacaoRemocao {
   const pt = language === "pt";
-  const cadastro = pt
-    ? "O cadastro da pessoa no PGCP não será excluído."
-    : "The person's PGCP record will not be deleted.";
+  // Remover vale só para ESTA reunião: grupos não mudam, e a inclusão
+  // automática não traz a pessoa de volta a esta reunião (exceção 031).
+  const cadastro = grupoDoOrgao
+    ? pt
+      ? `${nome} continuará no grupo “${grupoDoOrgao}” e poderá ser incluído(a) automaticamente nas próximas reuniões. Nesta reunião, não volta automaticamente.`
+      : `${nome} stays in the “${grupoDoOrgao}” group and may be included automatically in future meetings. Not re-added to this one.`
+    : pt
+      ? "O cadastro da pessoa no PGCP e os grupos de participação não serão alterados."
+      : "The person's PGCP record and participation groups will not change.";
   const impacto =
     temas.length > 0
       ? pt
@@ -80,9 +88,9 @@ export function confirmacaoRemoverDaReuniao(
         ? `${nome} será removido(a) desta reunião. Atualmente não está vinculado(a) a nenhum tema desta reunião.`
         : `${nome} will be removed from this meeting. They are not linked to any topic of this meeting.`;
   return {
-    titulo: pt ? "Remover participante da reunião?" : "Remove participant from the meeting?",
+    titulo: pt ? `Remover ${nome} desta reunião?` : `Remove ${nome} from this meeting?`,
     paragrafos: [impacto, cadastro],
     temas: [...temas],
-    acao: pt ? "Remover da reunião" : "Remove from meeting"
+    acao: pt ? "Remover desta reunião" : "Remove from this meeting"
   };
 }

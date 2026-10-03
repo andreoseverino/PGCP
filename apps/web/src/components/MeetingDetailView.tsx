@@ -92,6 +92,8 @@ import {
 import { locationLabel, ModalityFields } from "./MeetingInviteFields";
 import ParticipantPicker from "./ParticipantPicker";
 import ConfirmRemovalDialog from "./ConfirmRemovalDialog";
+import { previaDoTitulo, SESSION_TYPE_OPTIONS, type SessionType } from "../lib/meeting-title";
+import { cronogramaDosTemas } from "../lib/agenda-schedule";
 import {
   confirmacaoRemoverDaReuniao,
   confirmacaoRemoverDoTema,
@@ -218,6 +220,8 @@ export default function MeetingDetailView({
   // Edit Meeting
   const [isEditingMeeting, setIsEditingMeeting] = useState(false);
   const [editedTitle, setEditedTitle] = useState(meeting.title);
+  /** Tipo (030). Com tipo, o título é montado pelo servidor; "" = legado (título livre). */
+  const [editedSessionType, setEditedSessionType] = useState<SessionType | "">(meeting.sessionType ?? "");
   const [editedDescription, setEditedDescription] = useState(meeting.description);
   const [editedDate, setEditedDate] = useState(meeting.date);
   const [editedStartTime, setEditedStartTime] = useState(meeting.startTime);
@@ -1071,14 +1075,13 @@ export default function MeetingDetailView({
   /** Recalcula os horários em cascata a partir do início da reunião. */
   const recalculateAgendaTimes = (agendaArray: AgendaItem[]): AgendaItem[] => {
     if (agendaArray.length === 0) return [];
-
-    let currentMinutes = parseTimeToMinutes(meeting.startTime);
-
-    return agendaArray.map((item) => {
-      const time = formatMinutesAsTime(currentMinutes);
-      currentMinutes += parseDurationMinutes(item.duration);
-      return { ...item, time };
-    });
+    // Mesma regra de cronograma da Agenda Anual (lib/agenda-schedule). O
+    // Pipeline mantém o seu padrão de duração (parseDurationMinutes).
+    const horarios = cronogramaDosTemas(
+      meeting.startTime,
+      agendaArray.map((item) => ({ id: item.id, durationMinutes: parseDurationMinutes(item.duration) }))
+    );
+    return agendaArray.map((item, i) => ({ ...item, time: horarios[i]!.inicio }));
   };
 
   const handleMoveAgendaItem = (index: number, direction: "up" | "down") => {
@@ -1290,6 +1293,9 @@ export default function MeetingDetailView({
         nome,
         temasDoParticipante(meeting.agenda || [], participantId),
         language === "en" ? "en" : "pt",
+        (meeting.participants || []).find((x) => x.participantId === participantId)?.inGovernanceBodyGroup
+          ? meeting.category
+          : null,
       ),
     });
 
@@ -1794,6 +1800,7 @@ export default function MeetingDetailView({
                 <button 
                   onClick={() => {
                     setEditedTitle(meeting.title || "");
+                    setEditedSessionType(meeting.sessionType ?? "");
                     setEditedDescription(meeting.description || "");
                     setEditedDate(meeting.date || "");
                     setEditedStartTime(meeting.startTime || "");
@@ -3073,6 +3080,7 @@ export default function MeetingDetailView({
                           <label className="text-[10px] font-extrabold text-slate-500 uppercase">Participantes da pauta</label>
                           <ParticipantPicker
                             language={language}
+                            sugestao={{ governanceBodyId: meeting.governanceBodyId, rotuloOrgao: meeting.category }}
                             placeholder="Adicionar participante..."
                             jaEscolhidos={{
                               entraIds: extraParticipants.flatMap((x) => (x.origem === "entra" ? [x.user.id] : [])),
@@ -3957,6 +3965,7 @@ export default function MeetingDetailView({
                     <ParticipantPicker
                       language={language}
                       showHint
+                      sugestao={{ governanceBodyId: meeting.governanceBodyId, rotuloOrgao: meeting.category }}
                       disabled={isPersisting}
                       jaEscolhidos={{
                         entraIds: (meeting.participants || []).map((p) => p.entraObjectId ?? "").filter(Boolean),
@@ -4066,6 +4075,12 @@ export default function MeetingDetailView({
                           <div className="leading-tight">
                             <h4 className="text-xs font-extrabold text-[#001e2d]">{p.name}</h4>
                             <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">{p.role}</p>
+                            {/* Origem discreta: integra o grupo do órgão (inclusão automática). */}
+                            {p.inGovernanceBodyGroup && (
+                              <p className="text-[10px] text-slate-400 font-semibold mt-0.5" title={language === "pt" ? "Faz parte do grupo de participação deste órgão colegiado" : "Member of this governance body's participation group"}>
+                                {language === "pt" ? `Grupo: ${meeting.category}` : `Group: ${meeting.category}`}
+                              </p>
+                            )}
                           </div>
                         </div>
                         <span className="flex items-center gap-1.5">
@@ -4139,18 +4154,53 @@ export default function MeetingDetailView({
 
             {/* Modal Body / Form */}
             <form onSubmit={(e) => e.preventDefault()} className="p-6 space-y-5">
-              {/* Title */}
+              {/*
+                Tipo + TÍTULO PADRONIZADO (030). Com tipo, o título é montado pelo
+                servidor a partir de hora, órgão, formato e tipo — e recomposto a
+                cada alteração aqui. A versão aprovada da Agenda Anual não muda
+                (snapshot). Reunião antiga sem tipo mantém o título livre até
+                alguém escolher o tipo.
+              */}
+              <div className="space-y-1.5">
+                <label htmlFor="editSessionType" className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
+                  {language === "en" ? "Type" : "Tipo"}
+                </label>
+                <select
+                  id="editSessionType"
+                  value={editedSessionType}
+                  onChange={(e) => setEditedSessionType(e.target.value as SessionType | "")}
+                  className="w-full text-sm font-semibold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-3 outline-none cursor-pointer"
+                >
+                  {!meeting.sessionType && (
+                    <option value="">{language === "en" ? "No type (keep free title)" : "Sem tipo (manter título atual)"}</option>
+                  )}
+                  {SESSION_TYPE_OPTIONS.map((o) => <option key={o.id} value={o.id}>{language === "en" ? o.en : o.pt}</option>)}
+                </select>
+              </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                  {language === "en" ? "Meeting Title" : "Título da Reunião"}
+                  {editedSessionType
+                    ? language === "en" ? "Meeting Title (generated)" : "Título da Reunião (gerado automaticamente)"
+                    : language === "en" ? "Meeting Title" : "Título da Reunião"}
                 </label>
-                <input 
-                  type="text"
-                  value={editedTitle}
-                  onChange={(e) => setEditedTitle(e.target.value)}
-                  className="w-full text-sm font-bold text-slate-800 placeholder-slate-400 bg-slate-50/50 hover:bg-slate-50/80 focus:bg-white border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-[#00658d]/10"
-                  placeholder={language === "en" ? "Enter meeting title..." : "Digite o título da reunião..."}
-                />
+                {editedSessionType ? (
+                  <p className="w-full text-sm font-bold text-slate-700 bg-slate-50 border border-dashed border-slate-200 rounded-xl px-4 py-3 break-words">
+                    {previaDoTitulo({
+                      startTime: editedStartTime,
+                      orgao: governanceBodies.find((b) => b.id === (editedGovernanceBodyId || meeting.governanceBodyId))?.name ?? meeting.category,
+                      tipo: editedSessionType,
+                      modalidade: editedModality
+                    }) ?? meeting.title}
+                  </p>
+                ) : (
+                  <input
+                    type="text"
+                    value={editedTitle}
+                    onChange={(e) => setEditedTitle(e.target.value)}
+                    className="w-full text-sm font-bold text-slate-800 placeholder-slate-400 bg-slate-50/50 hover:bg-slate-50/80 focus:bg-white border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-[#00658d]/10"
+                    placeholder={language === "en" ? "Enter meeting title..." : "Digite o título da reunião..."}
+                  />
+                )}
               </div>
 
               {/* Date, Start Time, End Time Row */}
@@ -4306,7 +4356,8 @@ export default function MeetingDetailView({
                   void persistir(
                     () =>
                       apiUpdateMeeting(meeting.id, {
-                        title: editedTitle,
+                        // Com tipo, o servidor monta o título; sem tipo (legado), título livre.
+                        ...(editedSessionType ? { sessionType: editedSessionType } : { title: editedTitle }),
                         description: editedDescription,
                         startAt: localToInstant(editedDate, editedStartTime, meeting.timeZone),
                         endAt: localToInstant(editedDate, editedEndTime, meeting.timeZone),
@@ -4546,6 +4597,13 @@ export default function MeetingDetailView({
                       <>
                         <ParticipantPicker
                           language={language}
+                          sugestao={{
+                            governanceBodyId: meeting.governanceBodyId,
+                            rotuloOrgao: meeting.category,
+                            // Tema da Biblioteca ligado a este tema (quando houver).
+                            agendaTopicId: itemAtual.agendaTopicId,
+                            rotuloTema: itemAtual.title
+                          }}
                           placeholder={language === "pt" ? "Adicionar participante..." : "Add participant..."}
                           jaEscolhidos={{
                             emails: (meeting.participants || [])

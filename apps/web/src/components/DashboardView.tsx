@@ -9,12 +9,10 @@ import {
   Calendar,
   ChevronLeft,
   ChevronRight,
-  TrendingUp,
   Layers,
   CheckCircle,
   Clock,
   Users,
-  Activity,
   Check
 } from "lucide-react";
 import {
@@ -30,7 +28,10 @@ import {
 import { Meeting, ActionItem, GovernanceBody } from "../types";
 import { classificarPendencia, ordenarPendencias } from "../lib/action-items";
 import { calendarDayState } from "../lib/calendar-day-style";
+import { filtrarPorOrgao } from "../lib/governance-filter";
 import { DEFAULT_TIMEZONE, instantToLocal } from "../lib/meeting-adapters";
+import { calcularResumoOperacional } from "../lib/dashboard-kpis";
+import { listAnnualAgendas, type AnnualAgendaSummary } from "../lib/annual-agendas";
 
 /** Quantos itens a Visão Geral mostra. A gestão detalhada é na página de FUPs. */
 const LIMITE_PENDENCIAS_VISIVEIS = 4;
@@ -47,8 +48,15 @@ interface DashboardViewProps {
   myActionItems?: ActionItem[];
   /** O ator pode alterar este FUP? Cortesia; o servidor revalida. */
   podeGerenciarFup?: (item: ActionItem) => boolean;
-  /** Órgãos vindos da API. Alimentam o filtro do cabeçalho. */
-  governanceBodies: GovernanceBody[];
+  /** Órgão colegiado do CONTEXTO GLOBAL (""=Todos). Filtro, não autorização. */
+  orgaoContexto: string;
+  governanceBodies?: GovernanceBody[];
+  /** Cargas do App: enquanto `true`, o card mostra carregando — nunca um 0 falso. */
+  meetingsLoading?: boolean;
+  actionItemsLoading?: boolean;
+  governanceBodiesLoading?: boolean;
+  /** Card "Reuniões da semana" → Calendário. */
+  onViewCalendar?: () => void;
   /*
    * SEM "Nova reunião" aqui (025): agendar é exclusivo do Calendário.
    */
@@ -67,7 +75,12 @@ export default function DashboardView({
   setActionItems,
   myActionItems = [],
   podeGerenciarFup = () => true,
+  orgaoContexto,
   governanceBodies = [],
+  meetingsLoading = false,
+  actionItemsLoading = false,
+  governanceBodiesLoading = false,
+  onViewCalendar,
   onMeetingClick,
   onViewAllMeetings,
   onViewAllActionItems,
@@ -176,37 +189,8 @@ export default function DashboardView({
     [selectedDayStr, outlookByDayMap]
   );
 
-  // Filtro por órgão de governança. "" = Todos.
-  const [selectedBodyId, setSelectedBodyId] = useState<string>("");
-
-  const activeBodies = useMemo(
-    () => governanceBodies.filter((b) => b.isActive),
-    [governanceBodies]
-  );
-
-  /**
-   * Associação TEMPORÁRIA entre reunião e órgão.
-   *
-   * As reuniões vêm do PostgreSQL, mas o view model `Meeting` não carrega
-   * `governance_body_id` — só o nome do órgão, em `category`. Até esse id
-   * chegar ao frontend, o vínculo é feito comparando
-   * `meeting.category` com `governanceBody.name` de forma normalizada
-   * (sem acento, sem caixa, sem espaços nas pontas).
-   */
-  const normalize = (value: string) =>
-    value
-      .trim()
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[̀-ͯ]/g, "");
-
-  const selectedBody = activeBodies.find((b) => b.id === selectedBodyId);
-
-  const filteredMeetings = useMemo(() => {
-    if (!selectedBody) return meetings;
-    const target = normalize(selectedBody.name);
-    return meetings.filter((m) => normalize(m.category || "") === target);
-  }, [meetings, selectedBody]);
+  // Órgão colegiado = CONTEXTO GLOBAL (cabeçalho). "" = Todos. Agora por id.
+  const filteredMeetings = useMemo(() => filtrarPorOrgao(meetings, orgaoContexto), [meetings, orgaoContexto]);
 
   /** FUPs concluídos nesta sessão — saem da lista antes do próximo recarregamento. */
   const [completedItems, setCompletedItems] = useState<Record<string, boolean>>({});
@@ -215,12 +199,6 @@ export default function DashboardView({
   const t = {
     dashboardTitle: language === "en" ? "Dashboard Portal" : "Plataforma de Governança Corporativa",
     
-    // KPI Cards
-    activeCouncils: language === "en" ? "Active Councils" : "Conselhos & Comitês",
-    activeCouncilsSub: language === "en" ? "active governance boards" : "estruturas colegiadas",
-    pendingFollowUps: language === "en" ? "Pending Follow-Ups" : "Ações Regulatórias Pendentes",
-    pendingFollowUpsSub: language === "en" ? "pending strategic actions" : "follow-ups aguardando retorno",
-
     // Filtro de órgão
     bodyFilterLabel: language === "en" ? "Governance Body" : "Órgão de Governança",
     bodyFilterAll: language === "en" ? "All" : "Todos",
@@ -243,14 +221,113 @@ export default function DashboardView({
     chartAppointmentsSub: language === "en" ? "Quantity of registered meetings in each month of the year." : "Quantidade de reuniões registradas em cada mês do ano.",
   };
 
-  // Compute stats — responde ao filtro de órgão.
-  const totalMeetingsCount = filteredMeetings.length;
+  /*
+   * Agenda Anual: única carga extra da Visão Geral (aprovações pendentes).
+   * Falha não derruba a tela: o card de aprovações mostra "—".
+   */
+  const [agendasAnuais, setAgendasAnuais] = useState<AnnualAgendaSummary[] | null>(null);
+  const [agendasAnuaisEstado, setAgendasAnuaisEstado] = useState<"loading" | "ready" | "error">("loading");
+  useEffect(() => {
+    const controlador = new AbortController();
+    listAnnualAgendas(controlador.signal)
+      .then((lista) => {
+        setAgendasAnuais(lista);
+        setAgendasAnuaisEstado("ready");
+      })
+      .catch((erro) => {
+        if ((erro as Error)?.name === "AbortError") return;
+        setAgendasAnuaisEstado("error");
+      });
+    return () => controlador.abort();
+  }, []);
 
-  // FUPs NÃO são filtrados por órgão: ActionItem.origin é texto livre e não
-  // tem relação confiável com governance_bodies. Filtrar inventaria vínculo.
-  const pendingActionsList = useMemo(() => {
-    return actionItems.filter(item => !completedItems[item.id] && item.status !== "Completed");
-  }, [actionItems, completedItems]);
+  // FUPs concluídos nesta sessão já saem da conta, como na lista abaixo.
+  const resumo = useMemo(
+    () =>
+      calcularResumoOperacional({
+        orgaoContexto,
+        hoje: todayStr,
+        governanceBodies,
+        meetings,
+        actionItems: actionItems.filter((item) => !completedItems[item.id]),
+        annualAgendas: agendasAnuais
+      }),
+    [orgaoContexto, todayStr, governanceBodies, meetings, actionItems, completedItems, agendasAnuais]
+  );
+
+  const pt = language === "pt";
+  /** `null` = carregando; `undefined` = indisponível ("—"). */
+  const valorOu = (carregando: boolean, valor: number, indisponivel = false) =>
+    carregando ? null : indisponivel ? undefined : valor;
+  const nomeDoContexto = governanceBodies.find((b) => b.id === orgaoContexto)?.name;
+  const cardsResumo: Array<{
+    id: string;
+    titulo: string;
+    valor: number | null | undefined;
+    auxiliar: string;
+    icone: string;
+    corIcone: string;
+    destaque?: boolean;
+    onClick?: () => void;
+  }> = [
+    {
+      id: "orgaos",
+      titulo: pt ? "Órgãos colegiados" : "Governance bodies",
+      valor: valorOu(governanceBodiesLoading, resumo.orgaos),
+      auxiliar: orgaoContexto
+        ? nomeDoContexto ?? (pt ? "órgão selecionado" : "selected body")
+        : pt ? `${resumo.orgaos} ${resumo.orgaos === 1 ? "estrutura ativa" : "estruturas ativas"}` : "active bodies",
+      icone: "account_balance",
+      corIcone: "bg-[#00658d]/5 text-[#00658d]"
+    },
+    {
+      id: "aprovacoes",
+      titulo: pt ? "Pendências de aprovação" : "Pending approvals",
+      valor: valorOu(meetingsLoading || agendasAnuaisEstado === "loading", resumo.aprovacoes, agendasAnuaisEstado === "error"),
+      auxiliar: agendasAnuaisEstado === "error"
+        ? (pt ? "indisponível no momento" : "unavailable")
+        : pt ? "aguardando aprovação" : "awaiting approval",
+      icone: "approval",
+      corIcone: "bg-amber-50 text-amber-600"
+    },
+    {
+      id: "fup-vencidos",
+      titulo: pt ? "FUP vencidos" : "Overdue FUPs",
+      valor: valorOu(actionItemsLoading || (Boolean(orgaoContexto) && meetingsLoading), resumo.fupVencidos),
+      auxiliar: pt ? "prazo expirado" : "past due",
+      icone: "event_busy",
+      corIcone: "bg-rose-50 text-rose-600",
+      // Informativo: a página de FUP não aceita filtro de entrada.
+      destaque: resumo.fupVencidos > 0
+    },
+    {
+      id: "reunioes-semana",
+      titulo: pt ? "Reuniões da semana" : "Meetings this week",
+      valor: valorOu(meetingsLoading, resumo.reunioesSemana),
+      auxiliar: pt ? "próximos 7 dias" : "next 7 days",
+      icone: "calendar_month",
+      corIcone: "bg-sky-50 text-[#00aeef]",
+      onClick: onViewCalendar
+    },
+    {
+      id: "atas",
+      titulo: pt ? "Atas pendentes" : "Pending minutes",
+      valor: valorOu(meetingsLoading, resumo.atasPendentes),
+      auxiliar: pt ? "aguardando conclusão" : "awaiting completion",
+      icone: "description",
+      corIcone: "bg-indigo-50 text-indigo-600",
+      onClick: onViewAllMeetings
+    },
+    {
+      id: "acoes",
+      titulo: pt ? "Ações pendentes" : "Open actions",
+      valor: valorOu(actionItemsLoading || (Boolean(orgaoContexto) && meetingsLoading), resumo.acoesPendentes),
+      auxiliar: pt ? "FUPs em aberto" : "open FUPs",
+      icone: "task_alt",
+      // Informativo: a página de FUP não aceita filtro de entrada.
+      corIcone: "bg-emerald-50 text-emerald-600"
+    }
+  ];
 
   /*
    * MINHAS PENDÊNCIAS — derivação, nunca persistência.
@@ -421,7 +498,7 @@ export default function DashboardView({
   }, [filteredMeetings, currentYear, language]);
 
   return (
-    <div className="space-y-6 font-sans select-none animate-in fade-in duration-300">
+    <div className="space-y-8 font-sans select-none animate-in fade-in duration-300">
       
       {/* 1. Dashboard Header Section — sem cartão atrás, só os elementos. */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 px-1">
@@ -437,80 +514,63 @@ export default function DashboardView({
         </div>
 
         <div className="flex flex-col sm:flex-row sm:items-center gap-3 shrink-0">
-          {/* Filtro por órgão de governança */}
-          <div className="flex flex-col gap-1 min-w-0 sm:min-w-[190px]">
-            <label
-              htmlFor="bodyFilter"
-              className="text-[9px] font-bold text-slate-400 uppercase tracking-wider"
-            >
-              {t.bodyFilterLabel}
-            </label>
-            <select
-              id="bodyFilter"
-              value={selectedBodyId}
-              onChange={(e) => setSelectedBodyId(e.target.value)}
-              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-700 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d] transition-all"
-            >
-              <option value="">{t.bodyFilterAll}</option>
-              {activeBodies.map((body) => (
-                <option key={body.id} value={body.id}>
-                  {body.name}
-                </option>
-              ))}
-            </select>
-          </div>
 
         </div>
       </div>
 
-      {/* 2. Stunning KPI Stat Cards (Styled exactly like first screenshot, but simplified with no shadows & 2 cards) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        
-        {/* KPI 1: Active Meetings / Total Sessions */}
-        <div className="bg-white border border-slate-100 rounded-2xl p-4 flex flex-col justify-between h-[105px] transition-all duration-200 hover:border-slate-200">
-          <div className="flex items-start justify-between">
-            <div className="space-y-0.5">
-              <p className="text-slate-400 font-bold text-[10px] uppercase tracking-wider leading-none">
-                {t.activeCouncils}
-              </p>
-              <h3 className="text-2xl font-extrabold text-[#001e2d] tracking-tight">{totalMeetingsCount}</h3>
-            </div>
-            <div className="w-8 h-8 rounded-lg bg-[#00658d]/5 text-[#00658d] border border-[#00658d]/10 flex items-center justify-center">
-              <span className="material-symbols-outlined text-lg">calendar_today</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div className="text-[10px] text-emerald-600 font-extrabold flex items-center bg-emerald-50 px-1.5 py-0.5 rounded">
-              <TrendingUp className="w-3 h-3 pr-0.5" />
-              +12%
-            </div>
-            <p className="text-[9px] text-slate-500 font-semibold">{t.activeCouncilsSub}</p>
-          </div>
+      {/* 2. RESUMO OPERACIONAL — uma única linha de cards; sem quebra.
+          Faltando largura, a linha rola na horizontal (inclusive no mobile).
+          Números de `calcularResumoOperacional` (lib/dashboard-kpis). */}
+      <section aria-labelledby="resumo-operacional-titulo" className="space-y-3">
+        <div className="px-1">
+          <h2 id="resumo-operacional-titulo" className="text-sm font-extrabold text-[#001e2d] tracking-tight">
+            {language === "pt" ? "Resumo operacional" : "Operational summary"}
+          </h2>
+          <p className="text-[11px] text-slate-500 font-medium">
+            {language === "pt" ? "Indicadores que exigem atenção no dia a dia" : "Indicators that need day-to-day attention"}
+          </p>
         </div>
-
-        {/* KPI 2: Pending FUPs */}
-        <div className="bg-white border border-slate-100 rounded-2xl p-4 flex flex-col justify-between h-[105px] transition-all duration-200 hover:border-slate-200">
-          <div className="flex items-start justify-between">
-            <div className="space-y-0.5">
-              <p className="text-slate-400 font-bold text-[10px] uppercase tracking-wider leading-none">
-                {t.pendingFollowUps}
-              </p>
-              <h3 className="text-2xl font-extrabold text-[#001e2d] tracking-tight">{pendingActionsList.length}</h3>
-            </div>
-            <div className="w-8 h-8 rounded-lg bg-sky-50 text-[#00aeef] border border-sky-100 flex items-center justify-center">
-              <span className="material-symbols-outlined text-lg">task_alt</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div className="text-[10px] text-indigo-600 font-extrabold flex items-center bg-indigo-50 px-1.5 py-0.5 rounded">
-              <Activity className="w-3 h-3 pr-0.5" />
-              FUP Ativos
-            </div>
-            <p className="text-[9px] text-slate-500 font-semibold">{t.pendingFollowUpsSub}</p>
-          </div>
+        <div className="flex flex-nowrap gap-3 overflow-x-auto pb-2 snap-x snap-mandatory scrollbar-thin" role="list">
+          {cardsResumo.map((card) => {
+            const corpo = (
+              <>
+                <p className="text-[11px] font-bold text-slate-500 truncate" title={card.titulo}>{card.titulo}</p>
+                <div className="flex items-center justify-between gap-2 mt-1">
+                  <span className={`text-2xl font-extrabold tracking-tight ${card.destaque ? "text-rose-600" : "text-[#001e2d]"}`}>
+                    {card.valor === null ? (
+                      <span className="inline-block w-8 h-6 rounded bg-slate-100 animate-pulse align-middle" aria-label={language === "pt" ? "Carregando" : "Loading"} />
+                    ) : card.valor === undefined ? (
+                      "—"
+                    ) : (
+                      card.valor
+                    )}
+                  </span>
+                  <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${card.corIcone}`}>
+                    <span className="material-symbols-outlined text-base" aria-hidden="true">{card.icone}</span>
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-400 font-semibold truncate mt-0.5" title={card.auxiliar}>{card.auxiliar}</p>
+              </>
+            );
+            const classe = "min-w-[150px] flex-1 shrink-0 snap-start bg-white border border-slate-100 rounded-2xl px-3.5 py-3 text-left";
+            return card.onClick ? (
+              <button
+                key={card.id}
+                type="button"
+                role="listitem"
+                onClick={card.onClick}
+                className={`${classe} cursor-pointer transition hover:border-[#00658d]/30 hover:shadow-xs focus:outline-none focus:ring-2 focus:ring-[#00658d]/20`}
+              >
+                {corpo}
+              </button>
+            ) : (
+              <div key={card.id} role="listitem" className={classe}>
+                {corpo}
+              </div>
+            );
+          })}
         </div>
-
-      </div>
+      </section>
 
       {/* 3. CALENDAR HEATMAP CONTAINER - HIGHLIGHTED AS THE FIRST GRAPHIC BLOCK */}
       <div className="bg-white border border-slate-100 rounded-2xl p-5 md:p-6 flex flex-col lg:flex-row gap-6">
@@ -644,14 +704,13 @@ export default function DashboardView({
                 >
                   <span className="text-[10px] leading-none shrink-0 flex items-center gap-1 font-bold">
                     {/*
-                      Pastilha sólida para hoje: contraste garantido sobre
-                      qualquer tom do mapa de calor, inclusive o azul cheio dos
-                      dias com 4+ reuniões, onde uma borda sozinha sumiria.
+                      Hoje: quadrado preenchido na cor institucional e número
+                      numa bolinha BRANCA com o número na mesma cor do fundo.
                     */}
                     <span
                       className={
                         isToday
-                          ? "w-4 h-4 rounded-full bg-[#00658d] text-white font-black flex items-center justify-center"
+                          ? "w-4 h-4 rounded-full bg-white text-[#00658d] font-black flex items-center justify-center"
                           : ""
                       }
                     >
@@ -664,7 +723,7 @@ export default function DashboardView({
                     */}
                     {hasOutlook && (
                       <span
-                        className="w-1.5 h-1.5 rounded-full bg-violet-500 shrink-0"
+                        className={`w-1.5 h-1.5 rounded-full bg-violet-500 shrink-0 ${isToday ? "ring-1 ring-white" : ""}`}
                         aria-hidden="true"
                       />
                     )}
