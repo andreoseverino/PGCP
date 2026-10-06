@@ -32,7 +32,9 @@ import {
   lerSnapshot,
   montarSnapshot,
   totaisDoSnapshot,
+  type ReuniaoNoSnapshot,
   type SnapshotDaAgenda,
+  type TemaNoSnapshot,
 } from "./snapshot.js";
 import { addAgenda, parseAgendaInput, removeAgenda, updateAgenda } from "../meetings/agendas.js";
 import { inserirTemaNaBiblioteca } from "../agenda-topics/write.js";
@@ -174,9 +176,25 @@ export interface AnnualAgendaMeeting {
   tempo: TempoDaReuniao;
   /** Participantes DA REUNIÃO (`meeting_participants`), uma vez cada. */
   participants: Array<{ id: string; name: string; email: string | null; external: boolean; inGovernanceBodyGroup: boolean }>;
+  /**
+   * Título/horário EXIBIDOS acima (`title`/`startAt`/`endAt`/`timezone`): a
+   * versão enviada/aprovada quando existe, nunca o valor ao vivo — a Agenda
+   * Anual não muda com o Pipeline. `current` é o valor AO VIVO, só para
+   * avisar a divergência; `null` quando não há diferença ou a agenda ainda
+   * está em elaboração (nada foi congelado).
+   */
+  current: { title: string; startAt: string; endAt: string; timezone: string } | null;
   /** Como a reunião está na versão enviada/aprovada; `null` = não estava. */
   sent: { title: string; startAt: string; endAt: string; timezone: string } | null;
   changedAfterSending: { data: boolean; titulo: boolean } | null;
+  /**
+   * Estava na versão enviada/aprovada e foi excluída do Pipeline depois.
+   * `true` = este cartão inteiro vem do SNAPSHOT (a reunião não existe mais em
+   * `meetings`); ids de pauta/tema são os originais (preservados na foto),
+   * ids de participante são sintéticos (snapshot só guarda nome/e-mail).
+   * Ausente/`false` nos demais — comportamento inalterado.
+   */
+  removedFromPipeline?: boolean;
 }
 
 export interface AnnualAgendaDetail extends AnnualAgendaSummary {
@@ -711,10 +729,11 @@ async function carregarConteudo(db: Executor, id: string) {
     timezone: string;
     status: string;
     origin: "manual" | "annual_agenda";
+    modality: "online" | "in_person";
     sync_status: CalendarSyncStatus | null;
     planned_item_id: string | null;
   }>(
-    `SELECT m.id, m.title, m.start_at, m.end_at, m.timezone, m.status, m.origin,
+    `SELECT m.id, m.title, m.start_at, m.end_at, m.timezone, m.status, m.origin, m.modality,
             ci.sync_status, i.id AS planned_item_id
        FROM meetings m
        LEFT JOIN meeting_calendar_integrations ci ON ci.meeting_id = m.id AND ci.provider = 'outlook'
@@ -845,6 +864,7 @@ function snapshotDoConteudo(conteudo: Awaited<ReturnType<typeof carregarConteudo
       startAt: m.start_at.toISOString(),
       endAt: m.end_at.toISOString(),
       timezone: m.timezone,
+      modality: m.modality,
     })),
     pautas: conteudo.pautas.map((p) => ({ id: p.id, meetingId: p.meeting_id, title: p.title, position: p.position })),
     temas: conteudo.temas.map((t) => ({
@@ -900,6 +920,82 @@ async function versaoVigente(db: Executor, id: string): Promise<VersaoRow | null
   return rows[0] ?? null;
 }
 
+/**
+ * Monta o cartão de uma reunião que estava na versão enviada/aprovada e foi
+ * excluída do Pipeline depois — inteiramente a partir do SNAPSHOT, já que a
+ * linha em `meetings` não existe mais.
+ *
+ * Ids de pauta/tema são os ORIGINAIS (o snapshot os preserva); ids de
+ * participante são sintéticos, porque o snapshot só guarda nome e e-mail, não
+ * o id da linha. Sem problema: o cartão é somente leitura (ver
+ * `removedFromPipeline` em `AnnualAgendaMeeting`).
+ */
+function reuniaoCongeladaParaDetail(r: ReuniaoNoSnapshot): AnnualAgendaMeeting {
+  const todosOsTemas = [...r.pautas.flatMap((p) => p.temas), ...r.temasSemPauta];
+
+  const item = (t: TemaNoSnapshot, agendaId: string | null, position: number) => ({
+    id: t.id,
+    title: t.title,
+    position,
+    agendaId,
+    // Não preservados no snapshot (que guarda só o nome do tipo/natureza, não
+    // o id da taxonomia) — o cartão congelado não exibe esses dois badges.
+    agendaTopicId: null,
+    durationMinutes: t.durationMinutes ?? null,
+    responsibleLabel: t.responsavel ?? null,
+    responsibleEntraObjectId: null,
+    typeId: null,
+    natureId: null,
+    isCircularTheme: t.circular ?? false,
+    description: t.descricao ?? null,
+    inicio: t.inicio ?? "00:00",
+    fim: t.fim ?? null,
+    participants: (t.pessoas ?? []).map((p, i) => ({ id: `${t.id}-p${i}`, name: p.nome })),
+  });
+
+  // Participantes DA REUNIÃO = união dos participantes de todos os temas,
+  // sem repetir — a mesma regra que liga tema -> reunião no Pipeline.
+  const participantesUnicos = new Map<string, { id: string; name: string; email: string | null }>();
+  for (const t of todosOsTemas) {
+    for (const p of t.pessoas ?? []) {
+      const chave = p.email?.trim().toLowerCase() || p.nome;
+      if (!participantesUnicos.has(chave)) {
+        participantesUnicos.set(chave, { id: `participante-${chave}`, name: p.nome, email: p.email });
+      }
+    }
+  }
+
+  return {
+    id: r.meetingId!,
+    title: r.title,
+    startAt: r.startAt,
+    endAt: r.endAt,
+    timezone: r.timezone,
+    status: "removed",
+    origin: "manual",
+    calendarSyncStatus: null,
+    plannedItemId: null,
+    agendas: r.pautas.map((p, i) => ({ id: p.id, title: p.title, position: i })),
+    items: [
+      ...r.pautas.flatMap((p) => p.temas.map((t, i) => item(t, p.id, i))),
+      ...r.temasSemPauta.map((t, i) => item(t, null, i)),
+    ],
+    tempo: tempoDaReuniao(
+      minutosDaReuniao(new Date(r.startAt), new Date(r.endAt)),
+      todosOsTemas.map((t) => ({ id: t.id, durationMinutes: t.durationMinutes ?? null })),
+    ),
+    participants: Array.from(participantesUnicos.values()).map((p) => ({
+      ...p,
+      external: false,
+      inGovernanceBodyGroup: false,
+    })),
+    current: null,
+    sent: null,
+    changedAfterSending: null,
+    removedFromPipeline: true,
+  };
+}
+
 export async function findAnnualAgenda(id: string): Promise<AnnualAgendaDetail> {
   assertId(id);
   const conteudo = await carregarConteudo(pool, id);
@@ -952,7 +1048,13 @@ export async function findAnnualAgenda(id: string): Promise<AnnualAgendaDetail> 
           }
         : null,
     })),
-    meetings: reunioes.map((m) => {
+    /*
+     * Ordem cronológica preservada mesmo misturando as duas origens: reuniões
+     * ao vivo (a maioria) e as excluídas do Pipeline depois do envio, cujo
+     * cartão vem inteiro do snapshot (`reuniaoCongeladaParaDetail`).
+     */
+    meetings: [
+      ...reunioes.map((m) => {
       const atual = {
         title: m.title,
         startAt: m.start_at.toISOString(),
@@ -964,10 +1066,21 @@ export async function findAnnualAgenda(id: string): Promise<AnnualAgendaDetail> 
       const horarios = new Map(
         cronogramaDosTemas(horaLocal(atual.startAt, m.timezone), noCronograma).map((h) => [h.id, h]),
       );
+      /*
+       * Título/horário EXIBIDOS: a versão enviada/aprovada quando existe —
+       * a Agenda Anual não muda com o Pipeline. `current` carrega o valor
+       * AO VIVO à parte, só para o aviso de divergência comparar contra.
+       * Sem versão ainda (rascunho), exibe o valor ao vivo mesmo — nada foi
+       * congelado.
+       */
+      const exibido = naVersao ?? { ...atual, timezone: m.timezone };
+      const diferencas = naVersao ? diferencasAposEnvio(naVersao, atual) : null;
       return {
         id: m.id,
-        ...atual,
-        timezone: m.timezone,
+        title: exibido.title,
+        startAt: exibido.startAt,
+        endAt: exibido.endAt,
+        timezone: naVersao ? naVersao.timezone : m.timezone,
         status: m.status,
         origin: m.origin,
         calendarSyncStatus: m.sync_status,
@@ -998,9 +1111,18 @@ export async function findAnnualAgenda(id: string): Promise<AnnualAgendaDetail> 
         sent: naVersao
           ? { title: naVersao.title, startAt: naVersao.startAt, endAt: naVersao.endAt, timezone: naVersao.timezone }
           : null,
-        changedAfterSending: naVersao ? diferencasAposEnvio(naVersao, atual) : null,
+        changedAfterSending: diferencas,
+        /** Valor AO VIVO no Pipeline, só para o aviso comparar — `null` quando igual ao exibido (nada mudou) ou sem versão ainda. */
+        current:
+          diferencas && (diferencas.data || diferencas.titulo)
+            ? { title: atual.title, startAt: atual.startAt, endAt: atual.endAt, timezone: m.timezone }
+            : null,
       };
-    }),
+      }),
+      ...(enviado?.reunioes ?? [])
+        .filter((r) => r.meetingId && !idsAtuais.has(r.meetingId))
+        .map(reuniaoCongeladaParaDetail),
+    ].sort((a, b) => a.startAt.localeCompare(b.startAt) || a.id.localeCompare(b.id)),
     removedAfterSending: (enviado?.reunioes ?? [])
       .filter((r) => r.meetingId && !idsAtuais.has(r.meetingId))
       .map((r) => ({ title: r.title, startAt: r.startAt, timezone: r.timezone })),
@@ -1103,6 +1225,76 @@ export function exigirEmElaboracao(status: AnnualAgendaStatus): void {
       "Agenda Anual enviada para aprovação: o conteúdo está bloqueado. Retire-a da aprovação para voltar a editar.",
     );
   }
+}
+
+export interface ReuniaoCongeladaDoCalendario {
+  id: string;
+  title: string;
+  startAt: string;
+  endAt: string;
+  timezone: string;
+  modality: "online" | "in_person" | null;
+  governanceBody: { id: string; name: string };
+  /** A reunião ainda existe em `meetings`? Abrir no Pipeline só faz sentido quando `true`. */
+  existsLive: boolean;
+}
+
+/**
+ * Reuniões de TODA Agenda Anual aprovada, na versão congelada — para o
+ * Calendário mostrar o aprovado em vez do que está ao vivo no Pipeline,
+ * mesma regra da Agenda Anual (`findAnnualAgenda`). Só a versão APROVADA
+ * conta: "Enviada" ainda pode ser retirada e voltar a editar, então o
+ * Calendário continua ao vivo até a aprovação.
+ */
+export async function reunioesCongeladasParaCalendario(): Promise<ReuniaoCongeladaDoCalendario[]> {
+  const { rows } = await pool.query<{
+    snapshot: unknown;
+    governance_body_id: string;
+    governance_body_name: string;
+  }>(
+    `SELECT DISTINCT ON (v.annual_agenda_id)
+            v.snapshot, a.governance_body_id, g.name AS governance_body_name
+       FROM annual_agenda_versions v
+       JOIN annual_agendas a ON a.id = v.annual_agenda_id
+       JOIN governance_bodies g ON g.id = a.governance_body_id
+      WHERE v.approved_at IS NOT NULL
+      ORDER BY v.annual_agenda_id, v.version DESC`,
+  );
+  if (rows.length === 0) return [];
+
+  const porAgenda = rows.map((r) => ({
+    snapshot: lerSnapshot(r.snapshot),
+    governanceBody: { id: r.governance_body_id, name: r.governance_body_name },
+  }));
+
+  const idsDasReunioes = new Set<string>();
+  for (const { snapshot } of porAgenda) {
+    for (const r of snapshot.reunioes) if (r.meetingId) idsDasReunioes.add(r.meetingId);
+  }
+
+  const { rows: vivas } = await pool.query<{ id: string }>(
+    `SELECT id FROM meetings WHERE id = ANY($1::uuid[])`,
+    [Array.from(idsDasReunioes)],
+  );
+  const idsVivos = new Set(vivas.map((v) => v.id));
+
+  const resultado: ReuniaoCongeladaDoCalendario[] = [];
+  for (const { snapshot, governanceBody } of porAgenda) {
+    for (const r of snapshot.reunioes) {
+      if (!r.meetingId) continue;
+      resultado.push({
+        id: r.meetingId,
+        title: r.title,
+        startAt: r.startAt,
+        endAt: r.endAt,
+        timezone: r.timezone,
+        modality: r.modality ?? null,
+        governanceBody,
+        existsLive: idsVivos.has(r.meetingId),
+      });
+    }
+  }
+  return resultado;
 }
 
 export async function createAnnualAgenda(

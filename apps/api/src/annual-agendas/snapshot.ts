@@ -60,6 +60,8 @@ export interface ReuniaoNoSnapshot {
   startAt: string;
   endAt: string;
   timezone: string;
+  /** Opcional: snapshots anteriores (antes do Calendário congelar) não têm. */
+  modality?: "online" | "in_person";
   pautas: PautaNoSnapshot[];
   /** Temas sem pauta (itens anteriores a 025). */
   temasSemPauta: TemaNoSnapshot[];
@@ -85,6 +87,7 @@ export interface ReuniaoDaAgenda {
   startAt: string;
   endAt: string;
   timezone: string;
+  modality?: "online" | "in_person";
 }
 
 export interface PautaDaReuniao {
@@ -164,6 +167,7 @@ export function montarSnapshot(dados: {
       startAt: r.startAt,
       endAt: r.endAt,
       timezone: r.timezone,
+      ...(r.modality !== undefined ? { modality: r.modality } : {}),
       pautas: pautasDaReuniao.map((p) => ({
         id: p.id,
         title: p.title,

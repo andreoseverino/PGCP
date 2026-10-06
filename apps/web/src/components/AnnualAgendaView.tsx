@@ -612,14 +612,6 @@ function AgendaDetail({
             onOpenMeeting={onOpenMeeting}
           />
         ))}
-        {agenda.removedAfterSending.length > 0 && (
-          <p className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-            {pt ? "Estavam na versão enviada e não estão mais (excluídas pelo Pipeline): " : "In the sent version but no longer present: "}
-            {agenda.removedAfterSending
-              .map((r) => `${r.title} (${local(r.startAt, r.timezone).date.split("-").reverse().join("/")})`)
-              .join("; ")}
-          </p>
-        )}
       </div>
 
       {/* Reuniões do Calendário ainda fora desta agenda (mesmo órgão e ano) */}

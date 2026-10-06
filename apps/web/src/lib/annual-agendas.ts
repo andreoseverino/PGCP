@@ -79,9 +79,21 @@ export interface AnnualAgendaMeeting {
   tempo: { reuniaoMin: number; temasMin: number; semDuracao: number; excessoMin: number; disponivelMin: number };
   /** Participantes DA REUNIÃO (`meeting_participants`), uma vez cada. */
   participants: Array<{ id: string; name: string; email: string | null; external: boolean; inGovernanceBodyGroup: boolean }>;
+  /**
+   * `title`/`startAt`/`endAt`/`timezone` acima mostram a versão
+   * enviada/aprovada quando existe — a Agenda Anual não muda com o Pipeline.
+   * `current` é o valor AO VIVO, só para o aviso de divergência comparar.
+   */
+  current: { title: string; startAt: string; endAt: string; timezone: string } | null;
   /** Como estava na versão enviada/aprovada. */
   sent: { title: string; startAt: string; endAt: string; timezone: string } | null;
   changedAfterSending: { data: boolean; titulo: boolean } | null;
+  /**
+   * Estava na versão enviada/aprovada e foi excluída do Pipeline depois —
+   * o cartão inteiro vem do snapshot (a reunião não existe mais). Somente
+   * leitura: não abre no Pipeline, não edita.
+   */
+  removedFromPipeline?: boolean;
 }
 
 export interface AnnualAgendaVersion {
@@ -127,6 +139,30 @@ export async function listAnnualAgendas(signal?: AbortSignal): Promise<AnnualAge
     signal
   });
   return annualAgendas;
+}
+
+/**
+ * Reunião de uma Agenda Anual APROVADA, na versão congelada — o Calendário
+ * usa isso para não mudar com o Pipeline. `existsLive` diz se ainda dá pra
+ * abrir no Pipeline (a reunião pode ter sido excluída depois da aprovação).
+ */
+export interface FrozenCalendarMeeting {
+  id: string;
+  title: string;
+  startAt: string;
+  endAt: string;
+  timezone: string;
+  modality: "online" | "in_person" | null;
+  governanceBody: { id: string; name: string };
+  existsLive: boolean;
+}
+
+export async function listFrozenCalendarMeetings(signal?: AbortSignal): Promise<FrozenCalendarMeeting[]> {
+  const { meetings } = await apiRequest<{ meetings: FrozenCalendarMeeting[] }>("/annual-agendas/frozen-calendar", {
+    auth: true,
+    signal
+  });
+  return meetings;
 }
 
 /** Ano -> órgão -> agenda formal (ou não) -> reuniões do Calendário. */

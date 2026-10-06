@@ -3,13 +3,16 @@ import { mockTestPeople } from "./auth/mock-login-people";
 import { Meeting, AuditLog, ActionItem, StandaloneAgenda, GovernanceBody, GovernanceBodyChairInput, SessionUser, TestProfile } from "./types";
 import { ApiError, apiRequest } from "./lib/api";
 import {
+  DEFAULT_TIMEZONE,
   deleteMeeting as apiDeleteMeeting,
   describeMeetingError,
   getMeeting,
+  instantToLocal,
   listMeetings,
   meetingFromApi,
   updateMeeting
 } from "./lib/meetings";
+import { listFrozenCalendarMeetings, type FrozenCalendarMeeting } from "./lib/annual-agendas";
 import {
   actionItemFromApi,
   buildActionItemPayload,
@@ -207,6 +210,50 @@ export default function App() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [meetingsLoading, setMeetingsLoading] = useState(true);
   const [meetingsError, setMeetingsError] = useState<string | null>(null);
+
+  /**
+   * Reuniões CONGELADAS de toda Agenda Anual aprovada — o Calendário troca a
+   * reunião ao vivo pela versão aprovada quando existe uma (abaixo, em
+   * `calendarMeetings`). Carregada à parte: não é "a lista de reuniões", é
+   * só o que está congelado.
+   */
+  const [frozenCalendarMeetings, setFrozenCalendarMeetings] = useState<FrozenCalendarMeeting[]>([]);
+
+  /**
+   * O que o Calendário efetivamente mostra: reuniões ao vivo, exceto as que
+   * têm versão congelada (Agenda Anual aprovada) — essas entram com o
+   * título/horário/modalidade da versão aprovada, não o que está no Pipeline
+   * agora. `existsLive=false` continua aparecendo (a reunião foi excluída
+   * depois da aprovação); abrir cai no erro normal de "não encontrada", já
+   * tratado em `openMeeting`.
+   */
+  const calendarMeetings = useMemo<Meeting[]>(() => {
+    if (frozenCalendarMeetings.length === 0) return meetings;
+    const congeladas = new Map(frozenCalendarMeetings.map((m) => [m.id, m]));
+    const aoVivoSemCongelada = meetings.filter((m) => !congeladas.has(m.id));
+    const doSnapshot: Meeting[] = frozenCalendarMeetings.map((m) => {
+      const inicio = instantToLocal(m.startAt, m.timezone);
+      const fim = instantToLocal(m.endAt, m.timezone);
+      return {
+        id: m.id,
+        title: m.title,
+        date: inicio.date,
+        startTime: inicio.time,
+        endTime: fim.time,
+        timeZone: m.timezone,
+        category: m.governanceBody.name,
+        governanceBodyId: m.governanceBody.id,
+        status: "Scheduled",
+        expectedParticipantsCount: 0,
+        agendaItemsCount: 0,
+        description: "",
+        organizer: "",
+        modality: m.modality ?? undefined,
+        origin: "annual_agenda"
+      };
+    });
+    return [...aoVivoSemCongelada, ...doSnapshot];
+  }, [meetings, frozenCalendarMeetings]);
 
   /** Resultados ao vivo da busca do topo — mesma lógica da aba "Busca Rápida". */
   const globalSearchResults = useMemo(
@@ -474,6 +521,26 @@ export default function App() {
       setMeetingsLoading(false);
     }
   };
+
+  /** Reuniões congeladas (Agenda Anual aprovada) para o Calendário. */
+  const loadFrozenCalendarMeetings = async () => {
+    try {
+      setFrozenCalendarMeetings(await listFrozenCalendarMeetings());
+    } catch {
+      // Silencioso: o Calendário cai de volta pro ao vivo, que já é o que
+      // mostrava antes desta funcionalidade existir — não é um erro que
+      // trava a tela.
+    }
+  };
+
+  /*
+   * Recarrega sempre que o Calendário é aberto — aprovar uma Agenda Anual
+   * acontece em outra tela (Agenda Anual), e o Calendário só precisa estar
+   * em dia no momento em que a pessoa olha para ele.
+   */
+  useEffect(() => {
+    if (activeTab === "calendar" && isAuthenticated) void loadFrozenCalendarMeetings();
+  }, [activeTab, isAuthenticated]);
 
   /**
    * Abre a reunião buscando o DETALHE na API — participantes e pautas só vêm
@@ -1022,7 +1089,7 @@ export default function App() {
         return (
           <CalendarView
             language={language}
-            meetings={meetings}
+            meetings={calendarMeetings}
             meetingsLoading={meetingsLoading}
             orgaoContexto={orgaoContexto}
             canSchedule={usuarioPodeAgendar}

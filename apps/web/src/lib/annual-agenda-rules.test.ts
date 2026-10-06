@@ -7,7 +7,7 @@ import { candidatasAssociaveis, mensagemDeBloqueio, pautasComTemas, podeEditarAg
 const reuniao = (id: string, extra: Partial<AnnualAgendaMeeting> = {}): AnnualAgendaMeeting => ({
   id, title: id, startAt: "2027-01-20T12:00:00Z", endAt: "2027-01-20T14:00:00Z", timezone: "America/Sao_Paulo",
   status: "scheduled", origin: "manual", calendarSyncStatus: "synced", plannedItemId: null,
-  agendas: [], items: [], participants: [], sent: null, changedAfterSending: null,
+  agendas: [], items: [], participants: [], current: null, sent: null, changedAfterSending: null,
   tempo: { reuniaoMin: 120, temasMin: 0, semDuracao: 0, excessoMin: 0, disponivelMin: 120 }, ...extra
 });
 const tema = (id: string, position: number, agendaId: string | null, extra: Record<string, unknown> = {}) => ({

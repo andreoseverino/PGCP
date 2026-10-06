@@ -562,19 +562,26 @@ export default function AnnualAgendaMeetingCard({
             <span>· {originLabel(meeting.origin, language)}</span>
             <span>· {meeting.agendas.length} {pt ? "pauta(s)" : "agenda(s)"} · {meeting.items.length} {pt ? "tema(s)" : "topic(s)"}</span>
           </p>
-          {meeting.sent && meeting.changedAfterSending && (meeting.changedAfterSending.data || meeting.changedAfterSending.titulo) && (
+          {meeting.removedFromPipeline && (
+            <p className="mt-1 text-[10px] font-semibold text-rose-700 bg-rose-50 border border-rose-100 rounded-lg px-2 py-1">
+              {pt
+                ? `Excluída do Pipeline após ${approved ? "a aprovação" : "o envio"} — este cartão é a versão ${approved ? "aprovada" : "enviada"}, somente leitura.`
+                : `Removed from the Pipeline after ${approved ? "approval" : "sending"} — this card is the ${approved ? "approved" : "sent"} version, read-only.`}
+            </p>
+          )}
+          {!meeting.removedFromPipeline && meeting.current && meeting.changedAfterSending && (
             <p className="mt-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1">
               {meeting.changedAfterSending.data &&
                 (pt
-                  ? `Data ${approved ? "aprovada" : "enviada"}: ${quando(meeting.sent.startAt, meeting.sent.timezone)} · Data atual: ${quando(meeting.startAt, meeting.timezone)}. `
-                  : `${approved ? "Approved" : "Sent"} date: ${quando(meeting.sent.startAt, meeting.sent.timezone)} · Current: ${quando(meeting.startAt, meeting.timezone)}. `)}
-              {meeting.changedAfterSending.titulo && (pt ? `Título ${approved ? "aprovado" : "enviado"}: “${meeting.sent.title}”. ` : `${approved ? "Approved" : "Sent"} title: “${meeting.sent.title}”. `)}
-              {pt ? `Alterada após ${approved ? "aprovação" : "envio"} (pelo Pipeline).` : `Changed after ${approved ? "approval" : "sending"} (in the Pipeline).`}
+                  ? `Data ${approved ? "aprovada" : "enviada"}: ${quando(meeting.startAt, meeting.timezone)} · Data atual no Pipeline: ${quando(meeting.current.startAt, meeting.current.timezone)}. `
+                  : `${approved ? "Approved" : "Sent"} date: ${quando(meeting.startAt, meeting.timezone)} · Current in the Pipeline: ${quando(meeting.current.startAt, meeting.current.timezone)}. `)}
+              {meeting.changedAfterSending.titulo && (pt ? `Título ${approved ? "aprovado" : "enviado"}: “${meeting.title}”. ` : `${approved ? "Approved" : "Sent"} title: “${meeting.title}”. `)}
+              {pt ? `Alterada no Pipeline após ${approved ? "a aprovação" : "o envio"} — este cartão mostra a versão ${approved ? "aprovada" : "enviada"}.` : `Changed in the Pipeline after ${approved ? "approval" : "sending"} — this card shows the ${approved ? "approved" : "sent"} version.`}
             </p>
           )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          {approved && (
+          {approved && !meeting.removedFromPipeline && (
             <button type="button" onClick={() => onOpenMeeting(meeting.id)} className="p-1.5 text-[#00658d] hover:bg-sky-50 rounded-lg cursor-pointer" title={pt ? "Abrir no Pipeline" : "Open in Pipeline"} aria-label={pt ? "Abrir no Pipeline" : "Open in Pipeline"}>
               <ExternalLink className="w-3.5 h-3.5" />
             </button>

@@ -41,6 +41,7 @@ import {
   parseReserveInput,
   registrarAprovacao,
   reserveAnnualAgenda,
+  reunioesCongeladasParaCalendario,
   solicitarAprovacao,
   updateAnnualAgenda,
   updateAnnualAgendaItem,
@@ -109,6 +110,19 @@ annualAgendasRouter.get("/overview", requireActivePgcpUser, async (req, res) => 
     res.json(await visaoAnual(parseAnoDaVisao(req.query.year)));
   } catch (error) {
     sendError(res, error, "visão anual");
+  }
+});
+
+/**
+ * Reuniões CONGELADAS de toda Agenda Anual aprovada — para o Calendário
+ * exibir a versão aprovada em vez da reunião ao vivo. Somente leitura;
+ * declarada antes de "/:id".
+ */
+annualAgendasRouter.get("/frozen-calendar", requireActivePgcpUser, async (_req, res) => {
+  try {
+    res.json({ meetings: await reunioesCongeladasParaCalendario() });
+  } catch (error) {
+    sendError(res, error, "reuniões congeladas do calendário");
   }
 });
 
