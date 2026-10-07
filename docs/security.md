@@ -259,6 +259,7 @@ Chave = `oid` do principal → **isolamento por usuário**.
 | `GET /calendar/me` | **30 / 10 s** | Agenda própria via Graph (OBO); cobre recargas sem martelar o Graph. |
 | `POST /meetings/:id/agenda-items/:agendaItemId/teams-message` e `…/teams-call` | **10 / 60 s** compartilhado | Cada uso faz até duas chamadas Graph por participante (chat 1:1 + mensagem); limita abuso e protege a cota do tenant. |
 | `POST /integrations/:id/test` | **10 / 60 s** | Admin; dispara probe de rede (banco, OIDC, Graph, DocuSign) — evita virar scanner contra hosts externos. |
+| `GET /meetings/export` | **10 / 60 s** | Gera PDF/Excel do calendário no servidor (CPU/memória); corta extração em massa roteirizada. |
 
 Ao estourar: **HTTP 429** `{code:"rate_limited"}` + `Retry-After` + cabeçalhos
 `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset` (draft IETF).
@@ -358,6 +359,51 @@ quem precisa das duas recebe as duas atribuições no Entra. Exceção deliberad
 cadastros funcionais (órgãos, tipos, naturezas) aceitam `PGCP.Assessoria` **OU**
 `PGCP.Admin`.
 
+### Revisão 10/2026 — aprovações removidas, descrição rica, versões, exportação
+
+- **Sem aprovação obrigatória.** Iniciar reunião exige só o convite; a
+  validação de pautas virou opcional. A Agenda Anual não tem aprovação: as
+  rotas de aprovação respondem **410** (com `PGCP.Assessoria` mantida na rota)
+  e a guarda de "liberação para o Pipeline" saiu. Mutações seguem exigindo
+  `PGCP.Assessoria` em cada rota — remover a aprovação não abriu escrita a
+  ninguém.
+- **XSS na descrição.** O servidor reescreve o HTML a partir de lista fechada,
+  sem atributos (`meetings/rich-text.ts`), antes de gravar e antes do Graph;
+  limite de 60 000 caracteres na entrada e 20 000 saneados. A web exibe só via
+  `RichTextView`, que saneia de novo (mesmo algoritmo, teste de paridade).
+- **Versões (034).** Leitura com a política de reunião
+  (`podeVisualizarReuniao`); versão buscada pelo par (reunião, versão) — id de
+  outra reunião = 404 (sem IDOR). Imutáveis por privilégio + trigger.
+- **Exportação.** `GET /meetings/export`: usuário ativo, cláusula de
+  visibilidade no SQL, query fechada (parâmetro desconhecido = 400), teto de
+  2 000 reuniões (413), rate limit `calendar-export` (10/min por pessoa). O
+  arquivo **não** leva descrição, e-mails, conteúdo de tema, Ata nem ids
+  internos; células de texto do Excel são `inlineStr` (sem fórmula). Nome do
+  arquivo montado no servidor, só ASCII. Leitura não vai a `audit_logs` (mesma
+  regra de todo GET).
+- **Exclusão de reunião = cancelamento lógico (036).** Nada é apagado
+  (versões, documentos, Ata, trilha); `pcgp_app` sem `DELETE` em `meetings`;
+  versões sem cascata; reunião cancelada somente leitura no router (409) e no
+  banco (trigger). Exclusão segue exigindo `PGCP.Assessoria`.
+- **Locais (038).** Cadastro sob `PGCP.Assessoria` OU `PGCP.Admin` no router
+  (mesma política dos cadastros funcionais); allowlist fechada de campos
+  (status, autoria, id e `legacy_key` nunca vêm do corpo); UF por lista fixa,
+  CEP só dígitos; id validado como UUID (400) e inexistente 404. Sem DELETE
+  (nem rota nem privilégio). A reunião recebe só `physicalLocationId`: a cópia
+  do endereço é montada no servidor (cliente não injeta endereço), local novo
+  precisa estar ativo. Nome/endereço vão escapados no corpo HTML do convite.
+- **Participantes (038).** Telefone opcional, ainda validado quando informado;
+  empresa texto de uma linha sem controle, ≤ 200.
+- **Biblioteca (037).** Favoritos só para documentos visíveis (404 fora do
+  alcance, sem revelar existência); lista de favoritos e armazenamento sempre
+  pela mesma CTE de visibilidade; filtro `format` por lista fechada de
+  extensões (parâmetro, nunca concatenado); nomes de arquivo exibidos como
+  texto; sem preview que baixe arquivo. Download segue pela API, autorizado
+  por contexto (IDOR inalterado).
+- **Externos.** Participante externo e Presidente da Mesa externo não viram
+  `users`, não recebem App Role e não autenticam; nenhum caminho novo escreve
+  em `users`.
+
 ### Ciclo de vida da reunião — eixos independentes (revisado na migration 025)
 
 **Mudança de regra de produto (025).** Até a 024 o convite só saía depois das
@@ -371,8 +417,8 @@ Pipeline: Pautas → Temas → validação das pautas → aprovação → INICIA
 ```
 
 O gate do convite foi **retirado deliberadamente** de `POST /:id/calendar-sync`;
-o de **início** da reunião foi mantido (pautas aprovadas + convite enviado,
-`exigirProntaParaIniciar`). O que continua barrando o convite: App Role
+o de **início** da reunião foi mantido só com o convite enviado
+(`exigirProntaParaIniciar`) — a exigência de pautas aprovadas saiu em 10/2026. O que continua barrando o convite: App Role
 `PGCP.Assessoria`, organizador com identidade Microsoft, participantes com
 endereço (422 nominal) e a idempotência (`transactionId` fixo + PATCH no
 `provider_event_id` — no máximo um evento por reunião, inclusive nas reuniões
@@ -385,8 +431,8 @@ reservadas pela Agenda Anual e depois editadas pelo Pipeline).
 | Preparação (pautas e temas) | `meeting_agendas` / `meeting_agenda_items` | `PGCP.Assessoria` |
 | Enviar pautas para validação | `meetings.agenda_validation_status = 'sent'` | `PGCP.Assessoria` |
 | Marcar pautas como aprovadas | `… = 'approved'` + `agenda_approved_by_user_id` | `PGCP.Assessoria` |
-| Aprovação da Agenda Anual | `annual_agendas.status` + `annual_agenda_versions` (snapshot imutável) | `PGCP.Assessoria` |
-| Associar reunião / editar pauta-tema pela Agenda Anual | `meetings.annual_agenda_id`; `meeting_agendas`/`meeting_agenda_items` | `PGCP.Assessoria`; só com a agenda em `draft` (servidor) |
+| Aprovação da Agenda Anual | **removida (10/2026)** — `annual_agendas.status` + `annual_agenda_versions` ficam como histórico | rotas respondem 410 |
+| Associar reunião / editar pauta-tema pela Agenda Anual | `meetings.annual_agenda_id`; `meeting_agendas`/`meeting_agenda_items` | `PGCP.Assessoria` (qualquer status gravado) |
 
 **Três eixos que não se confundem** e por isso não compartilham coluna:
 
@@ -461,9 +507,11 @@ tenant e órgão nunca vêm do cliente); pessoa do Entra é confirmada no Graph
 (**fail closed**, 503); externo precisa existir (404). Remover filtra por órgão
 **e** tenant (IDOR → 404). Participantes padrão do tema seguem nas rotas e
 regras de `/agenda-topics`. A inclusão automática roda **só no servidor** (criação
-da reunião; entrada no grupo, nas reuniões abertas do órgão, travadas na mesma
-transação; tema da Biblioteca adicionado) e respeita
-`meeting_participant_exclusions`. "+ Novo tema" da Agenda cria o tema-mestre
+da reunião sem lista da tela; tema da Biblioteca adicionado) e respeita
+`meeting_participant_exclusions`. Com `participantsIncludeGroup` (Nova reunião),
+a lista enviada é a autoridade: duplicidade revalidada no servidor (409) e
+quem do grupo ficou de fora vira exceção. Entrar no grupo **não** altera
+reuniões existentes (out/2026). "+ Novo tema" da Agenda cria o tema-mestre
 pela mesma função da Biblioteca (corpo fechado do contrato "novo"; tipo/natureza
 inexistentes → 404). **Pertencer a um grupo não é autorização**:
 não cria `users`, não dá App Role, não dá acesso ao PGCP. Trilha: entrada/saída

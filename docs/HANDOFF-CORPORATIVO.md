@@ -298,6 +298,12 @@ Detalhe coluna a coluna: [`modelo-de-dados.md`](modelo-de-dados.md).
 | **012** `meeting_created_by_and_organizer_identity` | `created_by_user_id` + `organizer_entra_*` | separa **ator** de **organizador** |
 | **013** `calendar_owner_follows_organizer` | remove `owner_user_id` | organizador não precisa ter conta no PGCP |
 | **014** `meeting_online_provider` | `online_meeting_provider` + trigger | toda reunião nova nasce com `teamsForBusiness`, definido pelo backend; o provider não pode ser removido nem trocado |
+| 015–033 | ver `docs/modelo-de-dados.md` §5.14–§5.19 | — |
+| **034** `meeting_versions` | versões imutáveis da reunião (snapshot jsonb + hash) | versão nasce na transação da mutação; PDF gerado do snapshot, sem S3 |
+| **035** `governance_body_external_chair` | Presidente da Mesa externo (`external_participants`) | Entra **ou** externo; presidir não dá acesso ao PGCP |
+| **036** `meeting_cancellation` | excluir reunião = cancelamento lógico | nada apagado; versões sem cascata; runtime sem `DELETE` em `meetings` |
+| **037** `document_favorites` | Favoritos da Biblioteca (preferência pessoal) | não altera documento nem dá acesso; favoritar confere visibilidade |
+| **038** `meeting_locations_and_participant_company` | Locais cadastrados (cópia congelada na reunião); telefone opcional e empresa em Participantes | sedes antigas importadas **inativas** e sem endereço — cadastrar os endereços reais em Administração → Locais antes de agendar presencial; `MEETING_LOCATIONS_ADDRESSES` deixa de ser lida |
 
 Nova mudança de schema = **nova migration**. Nunca editar uma já aplicada.
 
@@ -451,9 +457,12 @@ pautas — sai no agendamento (Calendário), antes da aprovação do planejament
 Não há ação de Reserva na interface atual: o fluxo começa pela reunião criada no
 Calendário, que a Agenda Anual consolida (028/029). A rota
 `POST /annual-agendas/:id/reserve` e a tabela `annual_agenda_items` ficam só por
-compatibilidade com dados existentes. O gate `agenda_not_approved` foi retirado; a
-aprovação das pautas continua exigida para **iniciar** a reunião. Ver
-`docs/security.md` §8.
+compatibilidade com dados existentes. O gate `agenda_not_approved` foi retirado.
+
+**Revisado em 10/2026:** a validação das pautas é **opcional** — iniciar a
+reunião exige só o convite. A **Agenda Anual não tem mais aprovação** (rotas de
+aprovação respondem 410; versões antigas ficam como histórico). Ver
+`docs/modelo-de-dados.md` §5.20 e `docs/security.md` §8.
 
 A **aprovação acontece fora do sistema**: o aprovador responde por e-mail e a
 Secretaria registra o fato. Não há leitura de resposta nem portal externo.
@@ -819,6 +828,12 @@ haja código a ligar.
 | `GET /health` | saúde da API e do banco | **público** |
 | `GET /me` | identidade e App Roles do token | token válido |
 | `/meetings` | leitura de reuniões | usuário ativo |
+| `GET /meetings/export` | calendário em PDF/Excel (período + órgão) | usuário ativo + rate limit |
+| `GET /meetings/:id/versions[/:versionId/pdf]` | versões da reunião e PDF de cada uma | usuário ativo (política de leitura) |
+| `GET /documents/storage` · `PUT/DELETE /documents/:id/favorite` | armazenamento real; favorito pessoal | usuário ativo (visibilidade conferida) |
+| `GET/POST /meeting-locations` · `PATCH /meeting-locations/:id` · `PUT /meeting-locations/:id/status` | cadastro de Locais (sem exclusão) | `PGCP.Assessoria` ou `PGCP.Admin` |
+| `GET /meetings/locations` | locais ATIVOS para o agendamento | usuário ativo |
+| `PATCH /meetings/:id` com `participants` | lista COMPLETA de participantes na edição (existente `{id}`, novo = corpo da inclusão avulsa); servidor aplica a diferença na mesma transação: uma versão, uma sincronização do convite | `PGCP.Assessoria` |
 | `/meetings` (mutações, notas, Ata, sync) | operar e conduzir | `PGCP.Assessoria` |
 | `/action-items` | FUP — listar, consultar, criar | usuário ativo (visibilidade aplicada no SQL) |
 | `PATCH /action-items/:id` | alterar FUP | responsável **ou** `PGCP.Assessoria` |
@@ -938,13 +953,19 @@ Exchange
 
 Banco
 [ ] PostgreSQL gerenciado, TLS obrigatório
-[ ] aplicar migrations 001–022
+[ ] aplicar migrations 001–038
+[ ] cadastrar os locais reais (Administração → Locais) e completar/ativar as sedes importadas
 [ ] usuário de aplicação com privilégio mínimo
 
 Validação
 [ ] login e claims de roles em /me
 [ ] calendário próprio na Visão Geral
 [ ] criar reunião: evento Outlook + Teams com joinUrl
+[ ] convite com descrição formatada (negrito, listas) legível no Outlook/Teams
+[ ] editar a reunião (Pipeline e Calendário) atualiza o MESMO evento
+[ ] participante externo (grupo do órgão) recebe o convite no e-mail dele
+[ ] versão da reunião + PDF a cada alteração; exportação PDF/Excel do calendário
+[ ] excluir reunião: convidados recebem o cancelamento no Outlook; reunião some do Pipeline/Calendário e segue no histórico
 [ ] auditoria acessível a PGCP.Admin
 
 Pendente

@@ -432,6 +432,9 @@ default `online`) e `physical_location_key` — chave do catálogo da aplicaçã
 (`meetings/locations.ts`), obrigatória só no presencial (CHECK
 `(modality = 'in_person') = (physical_location_key IS NOT NULL)`). Endereço
 oficial vem de configuração (`MEETING_LOCATIONS_ADDRESSES`), nunca digitado.
+**Substituído na 038** (ver 5.23): o local passou a ser cadastro
+(`meeting_locations`) com cópia congelada na reunião; `physical_location_key`
+ficou depreciada (preservada, não é mais escrita).
 Toda reunião continua com Teams (`online_meeting_provider`); no presencial ele é
 contingência. A `025` também acrescentou `origin` (`manual` | `annual_agenda`) e
 `annual_agenda_id` (FK `ON DELETE SET NULL`) — ver 5.14.
@@ -944,7 +947,8 @@ por e-mail na gravação, **fail closed** (sem verificação, não grava).
 | `id` | uuid | PK | |
 | `full_name` | text | sim | 2–200 |
 | `email` | text | sim | **único case-insensitive** (`UNIQUE (lower(email))`) |
-| `phone` | text | sim | TEXTO (preserva DDI/DDD); dígitos, espaço, `+ ( ) -` |
+| `phone` | text | não (038) | TEXTO (preserva DDI/DDD); dígitos, espaço, `+ ( ) -`; validado quando informado |
+| `company` | text | não (038) | empresa/organização, 1–200 |
 | `governance_body_id` | uuid FK → `governance_bodies` | não | **DEPRECIADA na 027** — substituída pela classificação N:N (5.16). Valor da 026 preservado e migrado; a aplicação não lê nem escreve |
 | `created_by_user_id` / `updated_by_user_id` | uuid FK → `users` | | autoria |
 | `created_at` / `updated_at` | timestamptz | sim | |
@@ -963,8 +967,9 @@ seletores de reunião/tema — **não** é autorização, **não** é App Role e
 inclui ninguém em reunião ou tema automaticamente.
 
 > **Revisado na 031 (5.17):** o vínculo pessoa ↔ **órgão** passou a ser o
-> *grupo do órgão* e **inclui** a pessoa nas reuniões novas do órgão (e, ao
-> entrar no grupo, nas abertas já existentes; comentário da tabela na 032). O vínculo
+> *grupo do órgão* e **inclui** a pessoa nas reuniões novas do órgão (comentário
+> da tabela na 032). **Out/2026:** sem vínculo vivo — entrar no grupo não muda mais
+> reuniões já existentes (ver 5.23-b). O vínculo
 > pessoa ↔ tema (`participant_topics`) continua só sugestão.
 
 | Conceito | Onde vive | Observação |
@@ -1014,11 +1019,9 @@ dois momentos claros (sem sincronização contínua nem retroativa).
   Grupos não mudam; a próxima reunião inclui de novo.
 - **Incluir manualmente** (ou vincular a um tema) apaga a exceção.
 - **Remover do tema** só desvincula do tema (sem exceção).
-- **Entrar no grupo do órgão** inclui a pessoa, na mesma transação, nas
-  reuniões **abertas** do órgão: status fora de `done/approved/closed` (a etapa
-  "Realizada" do Pipeline) **e** término no futuro ou `in_progress`. Realizadas,
-  encerradas e passadas não mudam; a exceção da reunião vence. **Sair do grupo**
-  não remove ninguém de reunião nenhuma.
+- **Entrar ou sair do grupo do órgão** não muda reunião já criada (decisão
+  out/2026; antes, entrar no grupo incluía a pessoa nas reuniões abertas).
+  O grupo é só o ponto de partida das reuniões NOVAS.
 - Externo entra como convidado (nome + e-mail, `external`): sem `users`, sem
   identidade Microsoft, sem App Role.
 - Convite: a inclusão do órgão acontece antes do primeiro envio (a integração
@@ -1035,16 +1038,12 @@ dois momentos claros (sem sincronização contínua nem retroativa).
 
 ### 5.18 Agenda Anual → Pipeline e Documentos (sem migration)
 
-**Liberação para o Pipeline.** Reunião com `annual_agenda_id` só é operacional
-no Pipeline quando a Agenda Anual dela está `approved`; antes disso é preparada
-na Agenda (temas, participantes da reunião e dos temas, duração, ordem, prévia,
-aprovação). Reunião avulsa (`annual_agenda_id IS NULL`) segue o Pipeline
-normalmente. Nada é copiado na aprovação: o Pipeline passa a operar a MESMA
-reunião. O resumo da reunião expõe `annualAgendaStatus` e `releasedToPipeline`
-(decididos no servidor), e o router `/meetings` recusa mutações (409) de
-reunião não liberada — exceto o convite de calendário, que sai no agendamento
-(025). A Agenda edita pelas próprias rotas (`/annual-agendas/:id/meetings/...`,
-inclusive participantes da reunião), na transação travada dela.
+**Liberação para o Pipeline — REMOVIDA em 10/2026 (ver §5.20).** Até então a
+reunião com `annual_agenda_id` só operava no Pipeline depois da Agenda Anual
+`approved`. Hoje toda reunião opera no Pipeline desde o agendamento: a guarda
+`exigirLiberadaParaPipeline` saiu do router `/meetings`, e `releasedToPipeline`
+continua no contrato, sempre `true`. A Agenda continua editando pelas próprias
+rotas (`/annual-agendas/:id/meetings/...`), na transação travada dela.
 
 **Documentos.** Ver §5.19 (anexos com AWS S3, migration 033). Atas com
 conteúdo e a versão vigente da Agenda Anual continuam entrando na biblioteca
@@ -1086,6 +1085,170 @@ sem cópia (download pelas rotas de origem); a prévia da Agenda não entra.
 Agenda Anual, Ata final) — a coluna `annual_agenda_version_id` e `source =
 'pgcp'` já existem; hoje esses documentos entram pela rota de origem.
 Exclusão/versionamento de anexo e antivírus: fora do MVP.
+
+### 5.20 Revisão 10/2026 — sem aprovações, descrição rica, versões da reunião (034) e Mesa externa (035)
+
+Decisões do produto (usuárias do PGCP, 06/10/2026):
+
+**Agenda Anual sem aprovação.** Sempre editável; reunião da Agenda opera no
+Pipeline desde o agendamento; Calendário e Agenda mostram a reunião **ao
+vivo** (o congelamento pela versão aprovada saiu, inclusive
+`GET /annual-agendas/frozen-calendar`). As rotas `approval-request`,
+`approval` e `withdraw` respondem **410**. **Nada foi apagado**:
+`annual_agendas.status`, `approval_*`/`approved_*` e `annual_agenda_versions`
+(snapshot imutável) seguem gravados e legíveis como **histórico** — o
+documento da versão antiga continua em `GET /:id/document`. Nenhuma operação
+produz mais `pending_approval`/`approved`. A prévia (PDF compilado) continua.
+
+**Validação de pautas da reunião opcional.** Iniciar a reunião exige só o
+convite (`exigirProntaParaIniciar`). Envio ao aprovador e registro da
+aprovação continuam disponíveis, sem bloquear nada;
+`meetings.agenda_validation_*` segue gravado.
+
+**Preservado ("geração do tema").** Criação/edição de temas pela Agenda Anual,
+o PDF compilado (prévia da Agenda e PDF da validação), a cópia do tema da
+Biblioteca para a reunião (019/020) e a classificação "Tema de FUP" — nenhum
+dependia da aprovação depois desta revisão.
+
+**Descrição da reunião (`meetings.description`, sem migration).** Passa a
+guardar **HTML saneado pelo servidor** (`meetings/rich-text.ts`): só `p`, `br`,
+`strong`, `em`, `ul`, `ol`, `li`, **sem atributos**; texto reescapado; teto de
+20 000 caracteres formatados. Descrições antigas em texto puro continuam
+válidas e são convertidas em parágrafos na leitura/envio. A coluna continua
+`text`; nenhuma linha foi reescrita.
+
+**`meeting_versions` (034).** Fotografia auditável a cada alteração relevante:
+`meeting_id` (FK `ON DELETE CASCADE`), `version` (único por reunião),
+`snapshot` jsonb `{ formato, conteudo, contexto }`, `content_hash` (SHA-256 de
+`conteudo` canônico), `change_summary`, `created_by_user_id`, `created_at`.
+
+- Nasce no **fim da mesma transação** da mutação (criação, cabeçalho,
+  participantes, pautas, temas, ordem, postergação, inclusão pelo grupo do
+  órgão, edição pela Agenda Anual) e, para o convite criado no Outlook, numa
+  transação própria logo após o COMMIT do convite. Hash igual ao da última
+  versão = nenhuma versão; falha = ROLLBACK leva a versão junto.
+- `conteudo` (entra no hash): título, tipo, situação, descrição, data/horário,
+  fuso, modalidade/local, órgão (id), organizador, recorrência, participantes
+  (nome, e-mail, externo, papel), pautas/temas (ficha, horário, duração,
+  responsável, postergado, participantes) e convite (enviado, Teams).
+  `contexto` (não gera versão sozinho): nome do órgão, Presidente da Mesa,
+  membros do grupo do órgão presentes, validação de pautas, última
+  sincronização.
+- Imutável: runtime só `SELECT, INSERT`; trigger recusa `UPDATE` e `DELETE`
+  (a cascata da exclusão da reunião é a única remoção possível — a exclusão
+  fica em `audit_logs`). Cada versão grava "Versão da reunião registrada" na
+  trilha, na mesma transação.
+- PDF gerado **do snapshot**, sob demanda (`GET /meetings/:id/versions/:versionId/pdf`),
+  como na Agenda Anual — sem bytes no S3. Reuniões anteriores à 034 ganham a
+  versão 1 na primeira alteração ("reunião anterior ao versionamento").
+
+**Presidente da Mesa externo (035).** `governance_bodies.chair_external_participant_id`
+→ `external_participants` (`ON DELETE RESTRICT`; a aplicação responde 409 ao
+tentar remover o cadastro de quem preside). CHECK: Entra **ou** externo, nunca
+os dois; externo exige `chair_name` (snapshot; a leitura prefere o nome atual
+do cadastro). Presidir não dá login, App Role nem acesso. Externos no **grupo
+do órgão** (027/031) já entravam nas reuniões como `meeting_participants`
+`external` (nome + e-mail) e recebem o convite pelo e-mail.
+
+Reversão das duas migrations: ver o cabeçalho de cada arquivo.
+
+### 5.21 Revisão 036 — excluir reunião = cancelamento lógico
+
+`DELETE /meetings/:id` **não apaga mais** a reunião. Antes, a cascata levava
+participantes, pautas, temas, Anotações, Ata, integração de calendário e as
+versões (034); reunião com documento nem podia ser excluída.
+
+- `meetings.cancelled_at` + `cancelled_by_user_id` (par coerente) e
+  `calendar_event_cancelled_at` (evento do Outlook/Teams cancelado; `NULL` com
+  evento existente = cancelamento externo **pendente**).
+- Fluxo: transação local (trava, marca, trilha "Reunião cancelada (exclusão
+  lógica)", versão final com `conteudo.cancelada = true`) → depois do COMMIT,
+  `DELETE` do evento no calendário do organizador (o Exchange envia o
+  cancelamento aos convidados; 404 = já não existia). Falha no Graph: reunião
+  continua cancelada, trilha de falha, `calendarCancellation: "pending"` na
+  resposta; repetir a exclusão retenta só o evento (idempotente).
+- Fora dos fluxos ativos: listagem de reuniões (Pipeline, Calendário, Visão
+  Geral, busca), exportação, Agenda Anual (contagens, visão, conteúdo,
+  candidatas, edição, associação, reserva), grupos do órgão e sincronização com
+  o Outlook (409). Continua legível: detalhe, versões e PDFs, documentos, Ata,
+  trilha. Toda mutação em `/meetings/:id/...` responde 409
+  `meeting_cancelled`.
+- Banco: trigger torna a reunião cancelada somente leitura e impede
+  reativar; `meeting_versions` passa a `ON DELETE RESTRICT` (sem cascata) e o
+  trigger dela recusa qualquer DELETE; `pcgp_app` perde `DELETE` em `meetings`.
+- Documentos: a FK já era `RESTRICT` (033); cancelar com documento é
+  permitido e eles ficam no histórico.
+- Resposta do `DELETE` passou de 204 sem corpo para 200
+  `{ meetingId, cancelledAt, calendarCancellation, warning? }`.
+
+### 5.22 Revisão 037 — Biblioteca no estilo Drive e Favoritos
+
+- **Pastas continuam derivadas** (Órgão → Ano → Agenda Anual | Mês → Reunião,
+  montadas dos metadados). Não existe pasta no banco: "Nova pasta" e
+  **Lixeira** ficaram fora por decisão de produto (exigiriam modelo novo e
+  regra de retenção). Nenhum documento pode ser excluído (033 mantida).
+- **`document_favorites` (037)**: `user_id` (CASCADE), `document_key` (id opaco
+  `doc:`/`ata:`/`agenda:` + uuid, CHECK), UNIQUE por usuário. Preferência
+  pessoal: não altera documento, não concede acesso; favoritar confere a
+  visibilidade (mesma CTE da Biblioteca, 404 fora do alcance); a lista de
+  Favoritos é sempre recortada pela visibilidade atual. Sem `audit_logs`
+  (preferência de leitura). Runtime: `SELECT, INSERT, DELETE`.
+- **Formato** (`format` na lista e filtro `format`): derivado da extensão — a
+  mesma fonte do MIME decidido no upload; gerados são PDF.
+- **Armazenamento** (`GET /documents/storage`): contagens e soma de
+  `size_bytes` dos ANEXOS visíveis; Ata/Agenda Anual são geradas e não ocupam
+  espaço. Sem quota (não existe no PGCP).
+- Ordenação nova `nome_desc`; "Enviar arquivo" na Biblioteca reaproveita
+  `POST /meetings/:id/documents` (só na pasta de reunião ativa).
+
+### 5.23 Revisão 038 — Locais cadastrados e Participantes (telefone/empresa)
+
+- **`meeting_locations`**: `name` (2–120, único sem caixa/espaços), `street`,
+  `number`, `complement`, `neighborhood`, `city`, `state` (UF `^[A-Z]{2}$`),
+  `postal_code` (8 dígitos), `notes` (interna, ≤ 500), `is_active`,
+  `legacy_key` (só os importados), autoria e datas. CHECK: local **ativo** tem
+  rua, número, cidade, UF e CEP. Sem geocodificação, sem API de CEP, sem tabela
+  de país/estado/cidade, sem reserva de sala/capacidade.
+- **Sem exclusão**: runtime com `SELECT, INSERT, UPDATE` (sem `DELETE`);
+  inativar tira o local da escolha de reuniões novas.
+- **Importação**: as duas sedes do catálogo da 025 (`sede-matriz`,
+  `sede-leopoldo`) viraram locais **inativos** sem endereço ("a completar");
+  reuniões que usavam as chaves receberam `physical_location_id` e a cópia
+  `{id, name}` (triggers da 036/updated_at desligados só no backfill).
+- **Reunião**: `physical_location_id` (FK RESTRICT) + `physical_location_snapshot`
+  (jsonb: id, nome e endereço **no momento da escolha**). CHECKs:
+  `(modality = 'in_person') = (physical_location_id IS NOT NULL)` e id/cópia
+  sempre juntos. Local **novo** precisa existir e estar ativo; manter o mesmo
+  id preserva a cópia (mesmo que o cadastro tenha sido editado/inativado).
+  Convite, versões (`conteudo.local`), PDF e exportação leem a cópia; versões
+  antigas não mudam.
+- **API**: `GET/POST /meeting-locations`, `PATCH /meeting-locations/:id`,
+  `PUT /meeting-locations/:id/status` (Assessoria ou Admin; trilha "Local
+  criado/atualizado/inativado/reativado", `entity_type = meeting_location`).
+  `GET /meetings/locations` devolve só os **ativos** (sem observação). Corpo da
+  reunião: `physicalLocationId` (substitui `physicalLocationKey`).
+- **`external_participants`**: `phone` passou a opcional (o CHECK de formato
+  continua quando há valor); nova `company` opcional (1–200). Buscável pela
+  lista da Administração.
+
+### 5.23-b Participantes do grupo do órgão na Nova reunião e na edição (sem migration)
+
+- **Nova reunião:** ao escolher o órgão, a tela carrega o grupo
+  (`GET /participation-groups/governance-bodies/:id/members`, agora com
+  `entraObjectId`) como ponto de partida, marcado "Do órgão". A usuária
+  remove/adiciona só para aquela reunião. O corpo da criação leva
+  `participantsIncludeGroup: true`: o servidor não recoloca o grupo e registra a
+  exceção (031) de quem do grupo ficou de fora. Sem a flag (outros clientes,
+  reserva da Agenda Anual), o servidor inclui o grupo como antes.
+- **Troca de órgão (Nova reunião):** lista intocada → troca direto; ajustada à
+  mão → confirmação, e "Substituir lista" troca a lista inteira (o 1º órgão
+  soma ao que já havia, ex.: organizador).
+- **Editar reunião:** abrir mostra a lista da reunião, sem recalcular pelo
+  órgão. Trocar o órgão pergunta: "Sim" **acrescenta** o grupo do novo órgão
+  (sem duplicar, ninguém sai); "Não" mantém a lista. Salvar segue o PATCH
+  consolidado (uma transação, uma versão, uma sincronização).
+- **Sem vínculo vivo:** entrar/sair do grupo na Administração não altera
+  reunião existente.
 
 ## 6. Relacionamentos e cardinalidades
 

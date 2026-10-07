@@ -160,7 +160,7 @@ segredo no cliente.
 | `ENTRA_API_CLIENT_SECRET` | **segredo** | **Etapa 5 (OBO)** | Não é necessário para validar token — o JWKS é público. |
 | `GRAPH_BASE_URL` | pública | opcional | Padrão `https://graph.microsoft.com/v1.0`. |
 | `MAIL_SENDER_ADDRESS` | pública | E-mail | Caixa remetente institucional. |
-| `MEETING_LOCATIONS_ADDRESSES` | pública | Reunião presencial | JSON opcional com o endereço **oficial** de cada sede do catálogo. Sem valor, o convite leva só o nome da sede. |
+| `MEETING_LOCATIONS_ADDRESSES` | — | — | **Depreciada (038)**: não é mais lida. Locais e endereços vêm de Administração → Locais. |
 | `DOCUSIGN_CLIENT_ID` | pública | DocuSign | Integration Key. |
 | `DOCUSIGN_CLIENT_SECRET` | **segredo** | DocuSign | Secret Key. |
 | `DOCUSIGN_ACCOUNT_ID` | pública | DocuSign | API Account ID. |
@@ -599,12 +599,18 @@ evento; a modalidade só muda o que acompanha o convite:
 | Modalidade | Teams (`isOnlineMeeting`) | `location` do evento | Corpo do convite |
 |---|---|---|---|
 | `online` | sim | **omitido** (igual ao comportamento anterior) | descrição |
-| `in_person` | **sim, como contingência** | nome da sede + endereço **se configurado** | "Reunião presencial — Local: …" + aviso de contingência do Teams |
+| `in_person` | **sim, como contingência** | nome do local + endereço da **cópia gravada na reunião** | "Reunião presencial — Local: …" + aviso de contingência do Teams |
 
-O local é **chave de catálogo** (`sede-matriz`, `sede-leopoldo` em
-`apps/api/src/meetings/locations.ts`), nunca texto livre. O **endereço oficial não
-existe no repositório** e não é presumido: vem de `MEETING_LOCATIONS_ADDRESSES`
-(JSON por chave, `apps/api/.env`). Sem ele o convite leva só o nome da sede.
+Desde a **038** o local é um **cadastro** (Administração → Locais,
+`meeting_locations`), nunca texto livre. A reunião guarda o id e uma **cópia
+congelada** (nome + endereço) feita na escolha; o convite usa a cópia:
+`location.displayName` = "Nome — Rua, nº, compl. — Bairro, Cidade/UF, CEP …" e
+`location.address` = `{ street, city, state, postalCode }` (sem coordenadas,
+sem geocodificação). Editar ou inativar o cadastro não muda o evento de
+reuniões já agendadas; trocar o local da reunião marca o convite como
+desatualizado (`physicalLocationId` em `CAMPOS_QUE_DESATUALIZAM`) e o PATCH vai
+para o mesmo evento. Locais importados do catálogo antigo (sem endereço) levam
+só o nome. `MEETING_LOCATIONS_ADDRESSES` não é mais lida.
 
 Presencial → online **depois** do convite: o PATCH no mesmo evento envia
 `location: { displayName: "" }` e `locations: []`, o que apaga o local físico
@@ -612,6 +618,19 @@ anterior no Outlook (omitir a propriedade não apagaria). Vale para todo PATCH d
 reunião online — inclusive eventos legados que ainda tinham `location` da época
 anterior à 021. Mesmo `provider_event_id`, mesmo Teams; POST de reunião online
 não envia remoção (não há local anterior).
+
+**Corpo do convite em HTML (10/2026).** `body.contentType = "html"`. A
+descrição da reunião é texto rico mínimo (negrito, itálico, listas,
+parágrafos), **saneado no servidor** antes de gravar e de novo ao montar o
+evento (`meetings/rich-text.ts`): só `p`, `br`, `strong`, `em`, `ul`, `ol`,
+`li`, sem atributos — nenhum script, link ativo, estilo ou imagem externa
+chega ao Exchange. Descrição antiga em texto puro vira parágrafos escapados.
+Modalidade/local e link digitado entram como texto escapado. Editar a
+descrição marca o evento `stale` e o PATCH automático (pós-commit) atualiza o
+MESMO evento. Observação herdada: o PATCH de `body` substitui o corpo inteiro
+do evento (comportamento anterior, com `text`); o `onlineMeeting.joinUrl`
+continua no evento — **validar no Outlook corporativo** que o bloco de
+"Ingressar no Teams" segue visível após editar.
 
 **Não** sincronizam: pautas, estado de execução, FUP, Anotações, Ata, processo de
 assinatura, Biblioteca. São conteúdo de governança, não do compromisso.
