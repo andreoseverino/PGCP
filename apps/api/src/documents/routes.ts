@@ -3,7 +3,15 @@ import { HttpError } from "../http-error.js";
 import { requireActivePgcpUser } from "../users/middleware.js";
 import type { EspectadorPgcp } from "../meetings/visibility.js";
 import { contentDisposition } from "./file-rules.js";
-import { arvoreDeDocumentos, lerDocumento, listarDocumentos, parseFiltrosDeDocumentos } from "./service.js";
+import {
+  arvoreDeDocumentos,
+  desfavoritarDocumento,
+  favoritarDocumento,
+  lerDocumento,
+  listarDocumentos,
+  parseFiltrosDeDocumentos,
+  resumoDoArmazenamento,
+} from "./service.js";
 
 export const documentsRouter = Router();
 
@@ -11,7 +19,7 @@ export const documentsRouter = Router();
  * Documentos — biblioteca central. Leitura: usuário PGCP ativo, com a política
  * de leitura de reunião/Agenda Anual (o servidor decide; o órgão do contexto
  * global é só filtro). O upload fica em `POST /meetings/:id/documents` (Pipeline,
- * `PGCP.Assessoria`, reunião liberada). Nenhuma URL do S3 nem chave de objeto
+ * `PGCP.Assessoria`). Nenhuma URL do S3 nem chave de objeto
  * sai daqui: o download passa pela API, que autoriza pelo contexto.
  */
 
@@ -48,6 +56,40 @@ documentsRouter.get("/tree", requireActivePgcpUser, async (req: Request, res: Re
     res.json(await arvoreDeDocumentos(espectadorDa(req), filtro));
   } catch (error) {
     sendError(res, error, "árvore");
+  }
+});
+
+/** Armazenamento: contagens e bytes REAIS do que a pessoa vê (sem quota). */
+documentsRouter.get("/storage", requireActivePgcpUser, async (req: Request, res: Response) => {
+  try {
+    const { governanceBodyId, ...resto } = req.query as Record<string, unknown>;
+    if (Object.keys(resto).length > 0) throw new HttpError(400, "Filtro não suportado.");
+    const filtro = parseFiltrosDeDocumentos(governanceBodyId === undefined ? {} : { governanceBodyId }).governanceBodyId;
+    res.json(await resumoDoArmazenamento(espectadorDa(req), filtro));
+  } catch (error) {
+    sendError(res, error, "armazenamento");
+  }
+});
+
+/**
+ * FAVORITO — preferência PESSOAL (037). A ÚNICA escrita da Biblioteca, e não
+ * toca o documento. Favoritar confere a visibilidade (404 fora do alcance).
+ */
+documentsRouter.put<{ id: string }>("/:id/favorite", requireActivePgcpUser, async (req, res) => {
+  try {
+    await favoritarDocumento(req.params.id, espectadorDa(req));
+    res.status(204).end();
+  } catch (error) {
+    sendError(res, error, "favoritar");
+  }
+});
+
+documentsRouter.delete<{ id: string }>("/:id/favorite", requireActivePgcpUser, async (req, res) => {
+  try {
+    await desfavoritarDocumento(req.params.id, espectadorDa(req));
+    res.status(204).end();
+  } catch (error) {
+    sendError(res, error, "desfavoritar");
   }
 });
 

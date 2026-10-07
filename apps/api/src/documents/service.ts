@@ -3,7 +3,6 @@ import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
 import { clausulaDeReuniaoVisivel, type EspectadorPgcp } from "../meetings/visibility.js";
-import { liberadaParaPipelineSql } from "../meetings/pipeline-release.js";
 import type { MeetingActor } from "../meetings/create.js";
 import { exigirArmazenamento } from "./storage.js";
 import { chaveDoObjeto, descricaoOpcional, validarArquivo } from "./file-rules.js";
@@ -34,8 +33,34 @@ export type TipoDeDocumento = "anexo" | "ata" | "agenda_anual";
 const TIPOS: readonly TipoDeDocumento[] = ["anexo", "ata", "agenda_anual"];
 const ORIGENS = ["user", "pgcp"] as const;
 type Origem = (typeof ORIGENS)[number];
-const ORDENS = ["recentes", "antigos", "nome"] as const;
+const ORDENS = ["recentes", "antigos", "nome", "nome_desc"] as const;
 type Ordem = (typeof ORDENS)[number];
+
+/**
+ * FORMATO do arquivo (visão "tipo" da Biblioteca, como no Drive), derivado da
+ * EXTENSÃO — a mesma fonte com que o servidor decide o MIME no upload
+ * (`file-rules.ts`), então é confiável. Gerados (Ata, Agenda Anual) são PDF.
+ * O tipo de NEGÓCIO (anexo/Ata/Agenda Anual) continua em `type`.
+ */
+export const FORMATOS = ["pdf", "documento", "planilha", "apresentacao", "imagem", "video", "outros"] as const;
+export type Formato = (typeof FORMATOS)[number];
+const EXTENSOES_DO_FORMATO: Record<Exclude<Formato, "outros">, readonly string[]> = {
+  pdf: ["pdf"],
+  documento: ["doc", "docx", "odt", "rtf", "txt"],
+  planilha: ["xls", "xlsx", "ods", "csv"],
+  apresentacao: ["ppt", "pptx", "odp"],
+  imagem: ["png", "jpg", "jpeg", "gif", "webp"],
+  video: ["mp4", "mov", "webm"],
+};
+const TODAS_AS_EXTENSOES_CONHECIDAS = Object.values(EXTENSOES_DO_FORMATO).flat();
+
+export function formatoDaExtensao(extensao: string | null | undefined): Formato {
+  const e = (extensao ?? "").toLowerCase();
+  for (const [formato, lista] of Object.entries(EXTENSOES_DO_FORMATO)) {
+    if (lista.includes(e)) return formato as Formato;
+  }
+  return "outros";
+}
 
 export interface FiltrosDeDocumentos {
   /** Busca por palavras (todas precisam aparecer): nome, reunião, tema, órgão, mês, ano, extensão. */
@@ -54,6 +79,10 @@ export interface FiltrosDeDocumentos {
   /** Quem enviou (anexo) / emitiu (Agenda) / editou por último (Ata). */
   authorUserId?: string;
   type?: TipoDeDocumento;
+  /** Formato do arquivo (PDF, Documento, Planilha...). */
+  format?: Formato;
+  /** Só os favoritos de QUEM PEDE (preferência pessoal, 037). */
+  favorites?: boolean;
   source?: Origem;
   /** Data do DOCUMENTO, dia `AAAA-MM-DD` em Brasília. */
   dateFrom?: string;
@@ -89,13 +118,17 @@ export interface DocumentoDoPgcp {
   annualAgenda: { id: string; year: number; version: number } | null;
   author: { id: string; name: string } | null;
   documentAt: string;
+  /** Formato derivado da extensão (ver `formatoDaExtensao`). */
+  format: Formato;
+  /** Favorito de quem pediu a lista (037). */
+  favorite: boolean;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIA = /^\d{4}-\d{2}-\d{2}$/;
 const PERMITIDOS = [
   "q", "governanceBodyId", "meetingId", "agendaItemId", "topicId", "annualAgendaId", "authorUserId",
-  "type", "source", "dateFrom", "dateTo", "year", "month", "sort", "limit", "offset",
+  "type", "source", "dateFrom", "dateTo", "year", "month", "sort", "limit", "offset", "format", "favorites",
 ];
 export const LIMITE_PADRAO = 50;
 export const LIMITE_MAXIMO = 200;
@@ -140,6 +173,10 @@ export function parseFiltrosDeDocumentos(query: Record<string, unknown>): Filtro
   if (tipo !== undefined && !(TIPOS as readonly string[]).includes(tipo)) throw new HttpError(400, "Tipo de documento inválido.");
   const origem = texto("source");
   if (origem !== undefined && !(ORIGENS as readonly string[]).includes(origem)) throw new HttpError(400, "Origem inválida.");
+  const formato = texto("format");
+  if (formato !== undefined && !(FORMATOS as readonly string[]).includes(formato)) throw new HttpError(400, "Formato inválido.");
+  const favoritos = texto("favorites");
+  if (favoritos !== undefined && favoritos !== "true") throw new HttpError(400, "O filtro 'favorites' só aceita 'true'.");
   const ordem = texto("sort") ?? "recentes";
   if (!(ORDENS as readonly string[]).includes(ordem)) throw new HttpError(400, "Ordenação inválida.");
   const q = texto("q");
@@ -155,6 +192,8 @@ export function parseFiltrosDeDocumentos(query: Record<string, unknown>): Filtro
     year: faixa("year", 2000, 2100),
     month: faixa("month", 1, 12),
     type: tipo as TipoDeDocumento | undefined,
+    format: formato as Formato | undefined,
+    favorites: favoritos === "true" ? true : undefined,
     source: origem as Origem | undefined,
     dateFrom: dia("dateFrom"),
     dateTo: dia("dateTo"),
@@ -196,7 +235,7 @@ function cteDosDocumentos(visivel: string): string {
               doc.size_bytes, doc.description, 'Enviado'::text AS doc_status,
               m.governance_body_id, gb.name AS governance_body_name,
               m.id AS meeting_id, m.title AS meeting_title, m.start_at AS meeting_start_at, m.timezone AS meeting_timezone,
-              m.annual_agenda_id AS meeting_annual_agenda_id, ${liberadaParaPipelineSql("m")} AS released,
+              m.annual_agenda_id AS meeting_annual_agenda_id, TRUE AS released,
               i.id AS topic_id, i.title AS topic_title, i.agenda_topic_id AS library_topic_id,
               NULL::uuid AS annual_agenda_id, NULL::int AS annual_agenda_year, NULL::int AS version,
               doc.uploaded_by_user_id AS author_id, ud.name AS author_name,
@@ -213,7 +252,7 @@ function cteDosDocumentos(visivel: string): string {
               'Ata — ' || m.title, 'pdf', NULL::bigint, NULL::text, mm.status,
               m.governance_body_id, gb.name,
               m.id, m.title, m.start_at, m.timezone,
-              m.annual_agenda_id, ${liberadaParaPipelineSql("m")},
+              m.annual_agenda_id, TRUE,
               NULL::uuid, NULL::text, NULL::uuid,
               NULL::uuid, NULL::int, NULL::int,
               mm.updated_by_user_id, ua.name,
@@ -272,6 +311,7 @@ interface Linha {
   author_id: string | null;
   author_name: string | null;
   document_at: Date;
+  favorite: boolean;
   total: number;
 }
 
@@ -307,7 +347,15 @@ function paraDocumento(r: Linha): DocumentoDoPgcp {
     annualAgenda: r.annual_agenda_id ? { id: r.annual_agenda_id, year: r.annual_agenda_year!, version: r.version! } : null,
     author: r.author_id ? { id: r.author_id, name: r.author_name ?? "" } : null,
     documentAt: r.document_at.toISOString(),
+    format: formatoDaExtensao(r.extension),
+    favorite: r.favorite === true,
   };
+}
+
+/** Condição SQL do formato sobre `d.extension` (lista fechada, nunca texto do cliente). */
+function condicaoDoFormato(formato: Formato, bind: (v: unknown) => string): string {
+  if (formato === "outros") return `(d.extension IS NULL OR NOT (d.extension = ANY(${bind(TODAS_AS_EXTENSOES_CONHECIDAS)}::text[])))`;
+  return `d.extension = ANY(${bind(EXTENSOES_DO_FORMATO[formato])}::text[])`;
 }
 
 /** Lista os documentos visíveis, filtrados e paginados — UMA consulta. */
@@ -341,17 +389,27 @@ export async function listarDocumentos(
   if (filtros.year !== undefined) onde.push(`d.context_year = ${bind(filtros.year)}`);
   if (filtros.month !== undefined) onde.push(`d.context_month = ${bind(filtros.month)}`);
   if (filtros.type) onde.push(`d.type = ${bind(filtros.type)}`);
+  if (filtros.format) onde.push(condicaoDoFormato(filtros.format, bind));
   if (filtros.source) onde.push(`d.source = ${bind(filtros.source)}`);
+  // Favorito é de QUEM PEDE; a visibilidade continua sendo a da CTE.
+  const favorito = `EXISTS (SELECT 1 FROM document_favorites f WHERE f.user_id = ${bind(espectador.userId)} AND f.document_key = d.id)`;
+  if (filtros.favorites) onde.push(favorito);
   // Dia do documento no horário de Brasília (o mesmo dos PDFs do PGCP).
   if (filtros.dateFrom) onde.push(`(d.document_at AT TIME ZONE 'America/Sao_Paulo')::date >= ${bind(filtros.dateFrom)}::date`);
   if (filtros.dateTo) onde.push(`(d.document_at AT TIME ZONE 'America/Sao_Paulo')::date <= ${bind(filtros.dateTo)}::date`);
 
   const ordem =
-    filtros.sort === "nome" ? "d.name, d.id" : filtros.sort === "antigos" ? "d.document_at, d.id" : "d.document_at DESC, d.id";
+    filtros.sort === "nome"
+      ? "d.name, d.id"
+      : filtros.sort === "nome_desc"
+        ? "d.name DESC, d.id"
+        : filtros.sort === "antigos"
+          ? "d.document_at, d.id"
+          : "d.document_at DESC, d.id";
 
   const { rows } = await pool.query<Linha>(
     `${cteDosDocumentos(visivel)}
-     SELECT d.*, count(*) OVER ()::int AS total
+     SELECT d.*, ${favorito} AS favorite, count(*) OVER ()::int AS total
        FROM d
       ${onde.length ? `WHERE ${onde.join(" AND ")}` : ""}
       ORDER BY ${ordem}
@@ -448,6 +506,95 @@ export async function arvoreDeDocumentos(espectador: EspectadorPgcp, governanceB
     }
   }
   return arvore;
+}
+
+// --- Armazenamento (dados REAIS; sem quota inventada) ---------------------------
+
+export interface ResumoDoArmazenamento {
+  /** Documentos visíveis (anexos + gerados). */
+  documents: number;
+  /** Anexos enviados (têm arquivo no S3 e tamanho conhecido). */
+  attachments: number;
+  /** Soma de `size_bytes` dos anexos visíveis. Gerados não ocupam armazenamento. */
+  attachmentBytes: number;
+  /** Ata/Agenda Anual: gerados sob demanda do dado gravado, sem arquivo. */
+  generated: number;
+  byFormat: Array<{ format: Formato; documents: number; bytes: number }>;
+}
+
+/**
+ * Resumo do que a pessoa PODE ver (mesma CTE da Biblioteca). Não existe quota
+ * no PGCP: nenhum "limite" é devolvido.
+ */
+export async function resumoDoArmazenamento(espectador: EspectadorPgcp, governanceBodyId?: string): Promise<ResumoDoArmazenamento> {
+  const valores: unknown[] = [];
+  const bind = (v: unknown) => {
+    valores.push(v);
+    return `$${valores.length}`;
+  };
+  const visivel = clausulaDeReuniaoVisivel("m", espectador, bind);
+  const filtro = governanceBodyId ? `WHERE d.governance_body_id = ${bind(governanceBodyId)}` : "";
+  const { rows } = await pool.query<{ type: TipoDeDocumento; extension: string | null; n: number; bytes: string | null }>(
+    `${cteDosDocumentos(visivel)}
+     SELECT d.type, d.extension, count(*)::int AS n, sum(d.size_bytes)::text AS bytes
+       FROM d ${filtro}
+      GROUP BY 1, 2`,
+    valores,
+  );
+  const porFormato = new Map<Formato, { documents: number; bytes: number }>();
+  const resumo: ResumoDoArmazenamento = { documents: 0, attachments: 0, attachmentBytes: 0, generated: 0, byFormat: [] };
+  for (const r of rows) {
+    const bytes = r.bytes ? Number(r.bytes) : 0;
+    resumo.documents += r.n;
+    if (r.type === "anexo") {
+      resumo.attachments += r.n;
+      resumo.attachmentBytes += bytes;
+    } else {
+      resumo.generated += r.n;
+    }
+    const f = formatoDaExtensao(r.extension);
+    const atual = porFormato.get(f) ?? { documents: 0, bytes: 0 };
+    porFormato.set(f, { documents: atual.documents + r.n, bytes: atual.bytes + bytes });
+  }
+  resumo.byFormat = [...porFormato].map(([format, v]) => ({ format, ...v })).sort((a, b) => b.bytes - a.bytes || b.documents - a.documents);
+  return resumo;
+}
+
+// --- Favoritos (preferência pessoal, 037) ------------------------------------------
+
+const CHAVE_DO_DOCUMENTO = /^(doc|ata|agenda):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function parseChaveDoDocumento(valor: string): string {
+  const chave = valor.trim().toLowerCase();
+  if (!CHAVE_DO_DOCUMENTO.test(chave)) throw new HttpError(400, "Identificador do documento inválido.");
+  return chave;
+}
+
+/**
+ * Favorita SÓ o que a pessoa pode ver: a chave precisa existir na MESMA CTE da
+ * Biblioteca (visibilidade aplicada). Fora do alcance = 404, sem revelar se
+ * existe. Idempotente.
+ */
+export async function favoritarDocumento(chaveBruta: string, espectador: EspectadorPgcp): Promise<void> {
+  const chave = parseChaveDoDocumento(chaveBruta);
+  const valores: unknown[] = [];
+  const bind = (v: unknown) => {
+    valores.push(v);
+    return `$${valores.length}`;
+  };
+  const visivel = clausulaDeReuniaoVisivel("m", espectador, bind);
+  const { rows } = await pool.query(`${cteDosDocumentos(visivel)} SELECT 1 FROM d WHERE d.id = ${bind(chave)}`, valores);
+  if (rows.length === 0) throw new HttpError(404, "Documento não encontrado.");
+  await pool.query(
+    "INSERT INTO document_favorites (user_id, document_key) VALUES ($1, $2) ON CONFLICT (user_id, document_key) DO NOTHING",
+    [espectador.userId, chave],
+  );
+}
+
+/** Desfavorita (só a preferência de quem pede). Idempotente. */
+export async function desfavoritarDocumento(chaveBruta: string, espectador: EspectadorPgcp): Promise<void> {
+  const chave = parseChaveDoDocumento(chaveBruta);
+  await pool.query("DELETE FROM document_favorites WHERE user_id = $1 AND document_key = $2", [espectador.userId, chave]);
 }
 
 // --- Upload (anexo da reunião / do tema da reunião) ------------------------------

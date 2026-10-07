@@ -36,6 +36,25 @@ export async function getDocumentsTree(governanceBodyId: string, signal?: AbortS
   return apiRequest<ArvoreDeDocumentos>(`/documents/tree${q}`, { auth: true, signal });
 }
 
+/** Favorito = preferência PESSOAL; o servidor confere se a pessoa vê o documento. */
+export async function setDocumentFavorite(id: string, favorito: boolean): Promise<void> {
+  await apiRequest<void>(`/documents/${encodeURIComponent(id)}/favorite`, { auth: true, method: favorito ? "PUT" : "DELETE" });
+}
+
+/** Armazenamento REAL do que a pessoa vê (contagens e bytes dos anexos; sem quota). */
+export interface ResumoDoArmazenamento {
+  documents: number;
+  attachments: number;
+  attachmentBytes: number;
+  generated: number;
+  byFormat: Array<{ format: import("./documents-rules").FormatoDoDocumento; documents: number; bytes: number }>;
+}
+
+export async function getStorageSummary(governanceBodyId: string, signal?: AbortSignal): Promise<ResumoDoArmazenamento> {
+  const q = governanceBodyId ? `?${new URLSearchParams({ governanceBodyId })}` : "";
+  return apiRequest<ResumoDoArmazenamento>(`/documents/storage${q}`, { auth: true, signal });
+}
+
 /**
  * Baixa pela API, que autoriza pelo contexto a cada pedido: anexo via
  * `/documents/:id/download` (a API lê do armazenamento; nenhuma URL do S3 nem

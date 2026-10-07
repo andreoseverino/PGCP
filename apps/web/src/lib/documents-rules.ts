@@ -10,6 +10,9 @@
 
 export type TipoDeDocumento = "anexo" | "ata" | "agenda_anual";
 export type OrigemDoDocumento = "user" | "pgcp";
+/** Formato do arquivo (visão "Tipo" da Biblioteca), decidido pelo servidor pela extensão. */
+export type FormatoDoDocumento = "pdf" | "documento" | "planilha" | "apresentacao" | "imagem" | "video" | "outros";
+export const FORMATOS: readonly FormatoDoDocumento[] = ["pdf", "documento", "planilha", "apresentacao", "imagem", "video", "outros"];
 
 export interface DocumentoDoPgcp {
   /** Opaco: "doc:<uuid>" (anexo), "ata:<reunião>", "agenda:<versão>". */
@@ -35,6 +38,126 @@ export interface DocumentoDoPgcp {
   annualAgenda: { id: string; year: number; version: number } | null;
   author: { id: string; name: string } | null;
   documentAt: string;
+  /** Formato (ausente em API antiga = "outros"). */
+  format?: FormatoDoDocumento;
+  /** Favorito de quem está vendo (preferência pessoal). */
+  favorite?: boolean;
+}
+
+// --- Experiência "Drive": visões, breadcrumb, pastas e filtros compactos ------------
+
+/** Visões da navegação lateral. Pastas = a árvore derivada (não há pasta no banco). */
+export type VisaoDaBiblioteca = "biblioteca" | "recentes" | "favoritos" | "armazenamento";
+
+export function rotuloDoFormato(f: FormatoDoDocumento, language: "en" | "pt"): string {
+  const pt = language === "pt";
+  const r: Record<FormatoDoDocumento, [string, string]> = {
+    pdf: ["PDF", "PDF"],
+    documento: ["Documento", "Document"],
+    planilha: ["Planilha", "Spreadsheet"],
+    apresentacao: ["Apresentação", "Presentation"],
+    imagem: ["Imagem", "Image"],
+    video: ["Vídeo", "Video"],
+    outros: ["Outros", "Other"]
+  };
+  return r[f][pt ? 0 : 1];
+}
+
+/** Filtro "Modificado" (data do documento, dia de Brasília) → intervalo. */
+export type OpcaoModificado = "" | "hoje" | "7d" | "30d" | "ano" | "personalizado";
+
+export function periodoDoModificado(opcao: OpcaoModificado, hoje: string): { de: string; ate: string } | null {
+  const [a, m, d] = hoje.split("-").map(Number);
+  const menos = (dias: number) => new Date(Date.UTC(a!, m! - 1, d! - dias)).toISOString().slice(0, 10);
+  switch (opcao) {
+    case "hoje":
+      return { de: hoje, ate: hoje };
+    case "7d":
+      return { de: menos(6), ate: hoje };
+    case "30d":
+      return { de: menos(29), ate: hoje };
+    case "ano":
+      return { de: `${a}-01-01`, ate: hoje };
+    default:
+      return null; // "" = sem filtro; "personalizado" = datas escolhidas na tela
+  }
+}
+
+/** Filtros da VISÃO: Recentes e Favoritos ignoram a pasta; Recentes ordena por data. */
+export function filtrosDaVisao(visao: VisaoDaBiblioteca, f: FiltrosDaTela): FiltrosDaTela {
+  if (visao === "recentes") return { ...f, orgao: f.orgao, reuniao: "", tema: "", agenda: "", ano: "", mes: "", favoritos: false, ordem: "recentes" };
+  if (visao === "favoritos") return { ...f, reuniao: "", tema: "", agenda: "", ano: "", mes: "", favoritos: true };
+  return { ...f, favoritos: false };
+}
+
+export interface PastaFilha {
+  pasta: PastaSelecionada;
+  nome: string;
+  total: number | null;
+  tipo: "pasta" | "agenda" | "reuniao";
+}
+
+/** Subpastas do local atual (seção "Pastas"), da MESMA árvore derivada. */
+export function pastasFilhas(pasta: PastaSelecionada, arvore: ArvoreDeDocumentos | null, language: "en" | "pt"): PastaFilha[] {
+  if (!arvore) return [];
+  if (pasta.tipo === "todos") {
+    return arvore.bodies.map((b) => ({ pasta: { tipo: "orgao", orgaoId: b.id }, nome: b.name, total: b.total, tipo: "pasta" }));
+  }
+  const orgao = arvore.bodies.find((b) => b.id === pasta.orgaoId);
+  if (!orgao) return [];
+  if (pasta.tipo === "orgao") {
+    return orgao.years.map((y) => ({
+      pasta: { tipo: "ano", orgaoId: orgao.id, ano: y.year },
+      nome: String(y.year),
+      total: y.annualAgendas.reduce((s, x) => s + x.total, 0) + y.months.reduce((s, mm) => s + mm.meetings.reduce((t, r) => t + r.total, 0), 0),
+      tipo: "pasta"
+    }));
+  }
+  const ano = orgao.years.find((y) => y.year === pasta.ano);
+  if (!ano) return [];
+  if (pasta.tipo === "ano") {
+    return [
+      ...ano.annualAgendas.map((x): PastaFilha => ({
+        pasta: { tipo: "agenda", orgaoId: orgao.id, ano: ano.year, agendaId: x.id },
+        nome: language === "pt" ? `Agenda Anual${x.title ? ` — ${x.title}` : ""}` : `Annual plan${x.title ? ` — ${x.title}` : ""}`,
+        total: x.total,
+        tipo: "agenda"
+      })),
+      ...ano.months.map((mm): PastaFilha => ({
+        pasta: { tipo: "mes", orgaoId: orgao.id, ano: ano.year, mes: mm.month },
+        nome: NOMES_DOS_MESES[mm.month - 1] ?? String(mm.month),
+        total: mm.meetings.reduce((s, r) => s + r.total, 0),
+        tipo: "pasta"
+      }))
+    ];
+  }
+  if (pasta.tipo === "mes") {
+    const mes = ano.months.find((x) => x.month === pasta.mes);
+    return (mes?.meetings ?? []).map((r) => ({
+      pasta: { tipo: "reuniao", orgaoId: orgao.id, ano: ano.year, mes: pasta.mes, reuniaoId: r.id },
+      nome: rotuloDaReuniaoNaArvore(r),
+      total: r.total,
+      tipo: "reuniao"
+    }));
+  }
+  return []; // Agenda Anual e reunião são o último nível.
+}
+
+/** Breadcrumb CLICÁVEL: "Biblioteca › Órgão › 2026 › Outubro › Reunião". */
+export function trilhaNavegavel(
+  pasta: PastaSelecionada,
+  arvore: ArvoreDeDocumentos | null,
+  language: "en" | "pt"
+): Array<{ rotulo: string; pasta: PastaSelecionada }> {
+  const nomes = trilhaDaPasta(pasta, arvore, language);
+  const raiz = { rotulo: language === "pt" ? "Biblioteca" : "Library", pasta: { tipo: "todos" } as PastaSelecionada };
+  if (pasta.tipo === "todos") return [raiz];
+  const alvos: PastaSelecionada[] = [{ tipo: "orgao", orgaoId: pasta.orgaoId }];
+  if (pasta.tipo !== "orgao") alvos.push({ tipo: "ano", orgaoId: pasta.orgaoId, ano: pasta.ano });
+  if (pasta.tipo === "agenda") alvos.push(pasta);
+  if (pasta.tipo === "mes" || pasta.tipo === "reuniao") alvos.push({ tipo: "mes", orgaoId: pasta.orgaoId, ano: pasta.ano, mes: pasta.mes });
+  if (pasta.tipo === "reuniao") alvos.push(pasta);
+  return [raiz, ...alvos.map((p, i) => ({ rotulo: nomes[i] ?? "", pasta: p }))];
 }
 
 /** Pastas VISUAIS (metadados): Órgão → Ano → (Agenda Anual | Mês → Reunião). */
@@ -75,10 +198,14 @@ export interface FiltrosDaTela {
   mes: string;
   pessoa: string;
   tipo: "" | TipoDeDocumento;
+  /** Formato do arquivo (PDF, Planilha...). */
+  formato: "" | FormatoDoDocumento;
+  /** Visão Favoritos: só os favoritos de quem vê. */
+  favoritos: boolean;
   origem: "" | OrigemDoDocumento;
   de: string;
   ate: string;
-  ordem: "recentes" | "antigos" | "nome";
+  ordem: "recentes" | "antigos" | "nome" | "nome_desc";
 }
 
 export const FILTROS_INICIAIS: FiltrosDaTela = {
@@ -91,6 +218,8 @@ export const FILTROS_INICIAIS: FiltrosDaTela = {
   mes: "",
   pessoa: "",
   tipo: "",
+  formato: "",
+  favoritos: false,
   origem: "",
   de: "",
   ate: "",
@@ -110,6 +239,8 @@ export function consultaDosFiltros(f: FiltrosDaTela, pagina: { limit: number; of
     ["month", f.mes],
     ["authorUserId", f.pessoa],
     ["type", f.tipo],
+    ["format", f.formato],
+    ["favorites", f.favoritos ? "true" : ""],
     ["source", f.origem],
     ["dateFrom", f.de],
     ["dateTo", f.ate]

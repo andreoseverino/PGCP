@@ -10,6 +10,7 @@ test("filtros da biblioteca: query fechada e validada", () => {
   assert.deepEqual(parseFiltrosDeDocumentos({}), {
     q: undefined, governanceBodyId: undefined, meetingId: undefined, agendaItemId: undefined, topicId: undefined,
     annualAgendaId: undefined, authorUserId: undefined, year: undefined, month: undefined, type: undefined, source: undefined,
+    format: undefined, favorites: undefined,
     dateFrom: undefined, dateTo: undefined, sort: "recentes", limit: LIMITE_PADRAO, offset: 0,
   });
   const pasta = parseFiltrosDeDocumentos({ year: "2026", month: "10" });
@@ -73,10 +74,14 @@ test("rotas: listar/árvore/baixar com usuário ativo; upload só no Pipeline (A
   assert.match(r, /documentsRouter\.get<\{ id: string \}>\("\/:id\/download", requireActivePgcpUser,/);
   assert.match(r, /Content-Disposition", contentDisposition\(doc\.nome\)/);
   assert.match(r, /"Cache-Control", "private, no-store"/);
-  assert.ok(!/\.post\(|\.put\(|\.patch\(|\.delete\(/.test(r), "a biblioteca não grava nem apaga");
+  // A biblioteca não grava nem apaga DOCUMENTO: a única escrita é o FAVORITO
+  // (preferência pessoal, 037). Regex cobre `.put(` e `.put<...>(`.
+  const escritas = [...r.matchAll(/documentsRouter\.(post|put|patch|delete)(?:<[^>]*>)?\("([^"]+)"/g)].map((x) => `${x[1]} ${x[2]}`);
+  assert.deepEqual(escritas.sort(), ["delete /:id/favorite", "put /:id/favorite"]);
   const m = fonte("../meetings/routes.ts");
   assert.match(m, /meetingsRouter\.post\("\/:id\/documents", requirePgcpAssessoria,/);
-  assert.ok(m.indexOf('meetingsRouter.use("/:id", exigirLiberadaParaPipeline())') < m.indexOf('meetingsRouter.post("/:id/documents"'));
+  // Sem aprovação da Agenda Anual (10/2026): nenhuma guarda de "liberação" antes do upload.
+  assert.ok(!m.includes("exigirLiberadaParaPipeline"));
   assert.match(m, /express\.raw\(\{ type: "application\/octet-stream", limit: maximo \}\)/);
 });
 
@@ -84,6 +89,53 @@ test("documento não some: tema/reunião com documento não são excluídos (ant
   const u = fonte("../meetings/update.ts");
   const remover = u.slice(u.indexOf("export async function removeAgendaItem("));
   assert.ok(remover.indexOf("contarDocumentos(client, { agendaItemId })") < remover.indexOf("DELETE FROM meeting_agenda_items"));
-  const d = fonte("../meetings/delete.ts");
-  assert.ok(d.indexOf("contarDocumentos(pool, { meetingId })") < d.indexOf("cancelarEventoOutlook("));
+  // Excluir reunião é CANCELAMENTO LÓGICO (036): nada é apagado, documentos ficam no histórico.
+  const d = semComentarios(fonte("../meetings/delete.ts"));
+  assert.ok(!/DELETE FROM meetings/.test(d));
+  assert.match(fonte("../../migrations/033_documents.sql"), /meeting_id\s+uuid\s+REFERENCES meetings \(id\) ON DELETE RESTRICT/);
+});
+
+test("formato: derivado da extensão (mesma fonte do MIME); filtro e ordenação Z–A validados", async () => {
+  const { formatoDaExtensao, FORMATOS } = await import("./service.js");
+  assert.deepEqual(
+    ["pdf", "DOCX", "xlsx", "pptx", "png", "mp4", "zip", null].map(formatoDaExtensao),
+    ["pdf", "documento", "planilha", "apresentacao", "imagem", "video", "outros", "outros"],
+  );
+  assert.equal(parseFiltrosDeDocumentos({ format: "planilha" }).format, "planilha");
+  assert.equal(parseFiltrosDeDocumentos({ favorites: "true" }).favorites, true);
+  assert.equal(parseFiltrosDeDocumentos({ sort: "nome_desc" }).sort, "nome_desc");
+  for (const q of [{ format: "exe" }, { format: "pdf' OR 1=1" }, { favorites: "false" }, { favorites: "1" }, { sort: "nome_asc" }]) {
+    assert.throws(() => parseFiltrosDeDocumentos(q), HttpError, JSON.stringify(q));
+  }
+  assert.ok(FORMATOS.includes("outros"));
+  // Extensões vão ao SQL como parâmetro (lista fechada), nunca concatenadas.
+  const s = semComentarios(fonte("./service.ts"));
+  assert.match(s, /d\.extension = ANY\(\$\{bind\(EXTENSOES_DO_FORMATO\[formato\]\)\}::text\[\]\)/);
+});
+
+test("favoritos: preferência pessoal; só favorita o que a pessoa VÊ; lista recortada pela visibilidade", async () => {
+  const { parseChaveDoDocumento } = await import("./service.js");
+  assert.equal(parseChaveDoDocumento(`doc:${ID.toUpperCase()}`), `doc:${ID}`);
+  for (const ruim of ["doc:x", `outra:${ID}`, `doc:${ID}; DROP TABLE x`, "../etc", ID]) {
+    assert.throws(() => parseChaveDoDocumento(ruim), HttpError, ruim);
+  }
+  const s = semComentarios(fonte("./service.ts"));
+  const fav = s.slice(s.indexOf("export async function favoritarDocumento"), s.indexOf("export async function desfavoritarDocumento"));
+  // Visibilidade (mesma CTE da Biblioteca) ANTES de gravar; fora do alcance = 404.
+  assert.ok(fav.indexOf("clausulaDeReuniaoVisivel") < fav.indexOf("INSERT INTO document_favorites"));
+  assert.match(fav, /throw new HttpError\(404, "Documento não encontrado\."\)/);
+  // Lista de favoritos: só de quem pede, e sempre dentro da CTE de visibilidade.
+  assert.match(s, /f\.user_id = \$\{bind\(espectador\.userId\)\} AND f\.document_key = d\.id/);
+  const desfav = s.slice(s.indexOf("export async function desfavoritarDocumento"));
+  assert.match(desfav, /WHERE user_id = \$1 AND document_key = \$2/);
+  const r = semComentarios(fonte("./routes.ts"));
+  assert.match(r, /documentsRouter\.put<\{ id: string \}>\("\/:id\/favorite", requireActivePgcpUser,/);
+  assert.match(r, /documentsRouter\.get\("\/storage", requireActivePgcpUser,/);
+});
+
+test("armazenamento: só dados reais (contagens e bytes dos anexos visíveis), sem quota", () => {
+  const s = semComentarios(fonte("./service.ts"));
+  const arm = s.slice(s.indexOf("export async function resumoDoArmazenamento"), s.indexOf("const CHAVE_DO_DOCUMENTO"));
+  assert.match(arm, /cteDosDocumentos\(visivel\)/);
+  assert.ok(!/quota|limite|capacity|GB/i.test(arm));
 });

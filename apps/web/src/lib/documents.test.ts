@@ -30,14 +30,14 @@ test("Documentos: filtros viram query só com o que foi preenchido; padrão = ma
     consultaDosFiltros(
       {
         busca: " Promoção outubro pptx ", orgao: ID, reuniao: M, tema: T, agenda: "", ano: "2026", mes: "10", pessoa: ID,
-        tipo: "anexo", origem: "user", de: "2026-01-01", ate: "2026-12-31", ordem: "nome"
+        tipo: "anexo", formato: "planilha", favoritos: true, origem: "user", de: "2026-01-01", ate: "2026-12-31", ordem: "nome"
       },
       { limit: 50, offset: 100 }
     )
   );
   assert.deepEqual(Object.fromEntries(q), {
     q: "Promoção outubro pptx", governanceBodyId: ID, meetingId: M, agendaItemId: T, year: "2026", month: "10",
-    authorUserId: ID, type: "anexo", source: "user", dateFrom: "2026-01-01", dateTo: "2026-12-31", sort: "nome", limit: "50", offset: "100"
+    authorUserId: ID, type: "anexo", format: "planilha", favorites: "true", source: "user", dateFrom: "2026-01-01", dateTo: "2026-12-31", sort: "nome", limit: "50", offset: "100"
   });
 });
 
@@ -123,7 +123,7 @@ const codigo = (arq: string) =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^[ \t]*\/\/.*$/gm, "");
 
-test("Documentos (tela): árvore + painel, busca global, filtros, Carregar mais; sem upload na biblioteca", () => {
+test("Documentos (tela): lateral + pastas, busca, filtros em chips, Carregar mais; envio só na pasta de reunião", () => {
   const sidebar = codigo("../components/Sidebar.tsx");
   const pipeline = sidebar.indexOf('id: "pipeline"');
   const documentos = sidebar.indexOf('id: "documents"');
@@ -132,16 +132,26 @@ test("Documentos (tela): árvore + painel, busca global, filtros, Carregar mais;
   const tela = codigo("../components/DocumentsView.tsx");
   for (const texto of [
     "Encontre os arquivos relacionados às reuniões, temas e órgãos colegiados do PGCP.",
-    '"Buscar documento"', '"Órgão colegiado"', '"Tipo"', '"Reunião"', '"Tema da reunião"', '"Origem"', '"Emitido/enviado por"',
-    '"Data do documento"', '"Mais recentes"', '"Carregar mais"', '"Pastas"', '"Documentos da reunião"', '"Temas"', '"Ata"'
+    '"Pesquisar na Biblioteca"', '"Órgão colegiado"', '"Tipo"', '"Reunião"', '"Tema da reunião"', '"Origem"', '"Emitido/enviado por"',
+    '"Pessoas"', '"Modificado"', '"Data do documento"', '"Mais recentes"', '"Nome Z–A"', '"Carregar mais"', '"Pastas"',
+    '"Arquivos"', '"Documentos da reunião"', '"Temas"', '"Ata"', '"Novo"', '"Recentes"', '"Favoritos"', '"Armazenamento"',
+    '"Blocos"', '"Lista"'
   ]) {
     assert.ok(tela.includes(texto), texto);
   }
   assert.match(tela, /getDocumentsTree\(orgaoContexto/);
   assert.match(tela, /orgao: orgaoContexto \|\| f\.orgao/, "órgão do contexto global tem precedência");
-  assert.match(tela, /disabled=\{Boolean\(orgaoContexto\)\}/);
+  assert.match(tela, /disabled: Boolean\(orgaoContexto\)/, "órgão travado pelo contexto global");
   assert.match(tela, /lg:hidden/, "árvore vira gaveta no celular");
-  assert.ok(!/type="file"|uploadMeetingDocument/.test(tela), "enviar é no Pipeline, não na biblioteca");
+  // Envio: reaproveita o MESMO diálogo do Pipeline, só na pasta de uma reunião ATIVA e com permissão.
+  assert.ok(!/type="file"|uploadMeetingDocument/.test(tela), "sem mecanismo de upload próprio");
+  assert.match(tela, /<UploadDocumentModal/);
+  assert.match(tela, /const podeEnviar = canUpload && reuniaoParaEnvio !== null;/);
+  assert.match(tela, /pasta\.tipo === "reuniao" && meetings\.some\(\(m\) => m\.id === pasta\.reuniaoId\)/);
+  // Sem conceito no banco: nada de Nova pasta nem Lixeira (decisão pendente).
+  assert.ok(!/Nova pasta|Lixeira|Trash/.test(tela));
+  // Nome de arquivo é TEXTO (sem HTML cru) e não há preview carregando arquivo.
+  assert.ok(!/dangerouslySetInnerHTML|<iframe|<img/.test(tela));
   const cliente = codigo("./documents.ts");
   assert.match(cliente, /`\/documents\/\$\{encodeURIComponent\(anexo\)\}\/download`/, "anexo baixa pela API (sem URL do S3)");
   assert.match(cliente, /downloadMeetingMinutesPdf\(d\.meeting\.id\)/);
@@ -165,4 +175,61 @@ test("Pipeline → Documentos: aba Documentos e botão do tema abrem o MESMO di�
   const modal = codigo("../components/UploadDocumentModal.tsx");
   assert.match(modal, /agendaItemId: contexto === "tema" \? tema : null/);
   assert.match(modal, /accept=\{ACCEPT_DO_INPUT\}/);
+});
+
+test("Drive: subpastas do local atual vêm da MESMA árvore derivada", async () => {
+  const { pastasFilhas } = await import("./documents-rules");
+  const arvore = {
+    bodies: [{
+      id: "b1", name: "Comitê de Pessoas", total: 5,
+      years: [{
+        year: 2026,
+        annualAgendas: [{ id: "a1", title: "Plano", total: 1 }],
+        months: [{ month: 10, meetings: [{ id: "r1", title: "Reunião", startAt: "2026-10-15T12:00:00Z", timezone: "America/Sao_Paulo", releasedToPipeline: true, total: 4 }] }]
+      }]
+    }]
+  };
+  assert.deepEqual(pastasFilhas({ tipo: "todos" }, arvore, "pt").map((p) => [p.nome, p.total]), [["Comitê de Pessoas", 5]]);
+  assert.deepEqual(pastasFilhas({ tipo: "orgao", orgaoId: "b1" }, arvore, "pt").map((p) => [p.nome, p.total]), [["2026", 5]]);
+  assert.deepEqual(pastasFilhas({ tipo: "ano", orgaoId: "b1", ano: 2026 }, arvore, "pt").map((p) => p.nome), ["Agenda Anual — Plano", "Outubro"]);
+  assert.deepEqual(pastasFilhas({ tipo: "mes", orgaoId: "b1", ano: 2026, mes: 10 }, arvore, "pt").map((p) => p.nome), ["15/10 — Reunião"]);
+  assert.deepEqual(pastasFilhas({ tipo: "reuniao", orgaoId: "b1", ano: 2026, mes: 10, reuniaoId: "r1" }, arvore, "pt"), []);
+  assert.deepEqual(pastasFilhas({ tipo: "orgao", orgaoId: "outro" }, arvore, "pt"), [], "pasta fora da árvore visível: nada");
+  assert.deepEqual(pastasFilhas({ tipo: "todos" }, null, "pt"), []);
+});
+
+test("Drive: breadcrumb clicável leva a cada nível anterior", async () => {
+  const { trilhaNavegavel } = await import("./documents-rules");
+  const arvore = { bodies: [{ id: "b1", name: "Comitê de Pessoas", total: 1, years: [{ year: 2026, annualAgendas: [], months: [{ month: 10, meetings: [{ id: "r1", title: "Reunião", startAt: "2026-10-15T12:00:00Z", timezone: "America/Sao_Paulo", releasedToPipeline: true, total: 1 }] }] }] }] };
+  const t = trilhaNavegavel({ tipo: "reuniao", orgaoId: "b1", ano: 2026, mes: 10, reuniaoId: "r1" }, arvore, "pt");
+  assert.deepEqual(t.map((x) => x.rotulo), ["Biblioteca", "Comitê de Pessoas", "2026", "Outubro", "15/10 — Reunião"]);
+  assert.deepEqual(t.map((x) => x.pasta.tipo), ["todos", "orgao", "ano", "mes", "reuniao"]);
+  assert.deepEqual(trilhaNavegavel({ tipo: "todos" }, arvore, "pt").map((x) => x.rotulo), ["Biblioteca"]);
+});
+
+test("Drive: Modificado vira intervalo (dia de Brasília); Recentes/Favoritos ignoram a pasta", async () => {
+  const { periodoDoModificado, filtrosDaVisao, FILTROS_INICIAIS } = await import("./documents-rules");
+  assert.deepEqual(periodoDoModificado("hoje", "2026-10-06"), { de: "2026-10-06", ate: "2026-10-06" });
+  assert.deepEqual(periodoDoModificado("7d", "2026-10-06"), { de: "2026-09-30", ate: "2026-10-06" });
+  assert.deepEqual(periodoDoModificado("30d", "2026-03-01"), { de: "2026-01-31", ate: "2026-03-01" });
+  assert.deepEqual(periodoDoModificado("ano", "2026-10-06"), { de: "2026-01-01", ate: "2026-10-06" });
+  assert.equal(periodoDoModificado("personalizado", "2026-10-06"), null);
+  assert.equal(periodoDoModificado("", "2026-10-06"), null);
+  const naPasta = { ...FILTROS_INICIAIS, reuniao: "r1", ano: "2026", mes: "10", ordem: "nome" as const, formato: "pdf" as const };
+  const recentes = filtrosDaVisao("recentes", naPasta);
+  assert.deepEqual([recentes.reuniao, recentes.ano, recentes.ordem, recentes.favoritos, recentes.formato], ["", "", "recentes", false, "pdf"]);
+  const favoritos = filtrosDaVisao("favoritos", naPasta);
+  assert.deepEqual([favoritos.reuniao, favoritos.favoritos, favoritos.ordem], ["", true, "nome"]);
+  assert.equal(filtrosDaVisao("biblioteca", { ...naPasta, favoritos: true }).favoritos, false);
+});
+
+test("Drive: armazenamento e favoritos pelo servidor; preferência Blocos/Lista só em estado local", () => {
+  const cliente = codigo("./documents.ts");
+  assert.match(cliente, /`\/documents\/\$\{encodeURIComponent\(id\)\}\/favorite`, \{ auth: true, method: favorito \? "PUT" : "DELETE" \}/);
+  assert.match(cliente, /`\/documents\/storage\$\{q\}`/);
+  const tela = codigo("../components/DocumentsView.tsx");
+  assert.match(tela, /useState<"blocos" \| "lista">\("blocos"\)/);
+  assert.ok(!/localStorage/.test(tela));
+  // Sem capacidade inventada (nenhum "100 GB", "de 15 GB usados" etc.).
+  assert.ok(!/\b\d+(?:[.,]\d+)?\s?(GB|TB)\b/i.test(tela));
 });
