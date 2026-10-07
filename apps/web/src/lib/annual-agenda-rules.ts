@@ -1,29 +1,16 @@
-import type { AnnualAgendaDetail, AnnualAgendaMeeting, AnnualAgendaStatus, AnnualOverviewGroup } from "./annual-agendas";
+import type { AnnualAgendaDetail, AnnualAgendaMeeting, AnnualOverviewGroup } from "./annual-agendas";
 
 /**
  * AGENDA ANUAL — regras de TELA, puras. O servidor revalida tudo; aqui só se
  * decide o que mostrar.
  */
 
-/** Edição de conteúdo pela Agenda Anual: só em elaboração e com permissão. */
-export function podeEditarAgenda(agenda: Pick<AnnualAgendaDetail, "status" | "editable">, canManage: boolean): boolean {
-  return canManage && agenda.editable && agenda.status === "draft";
-}
-
-/** Faixa de bloqueio por estado. `null` em elaboração. */
-export function mensagemDeBloqueio(status: AnnualAgendaStatus, language: "en" | "pt"): string | null {
-  const pt = language === "pt";
-  if (status === "approved") {
-    return pt
-      ? "Agenda Anual aprovada. Esta versão não pode mais ser alterada. A gestão operacional das reuniões continua disponível no Pipeline."
-      : "Annual plan approved. This version can no longer be changed. Meetings are still managed in the Pipeline.";
-  }
-  if (status === "pending_approval") {
-    return pt
-      ? "Agenda Anual enviada para aprovação: o conteúdo está bloqueado enquanto o aprovador analisa esta versão. Para alterar, retire-a da aprovação."
-      : "Annual plan sent for approval: content is locked while the approver reviews this version. Withdraw it to edit.";
-  }
-  return null;
+/**
+ * Edição de conteúdo pela Agenda Anual: só a permissão. Sem aprovação
+ * (10/2026) não há estado que bloqueie — o status gravado é histórico.
+ */
+export function podeEditarAgenda(agenda: Pick<AnnualAgendaDetail, "editable">, canManage: boolean): boolean {
+  return canManage && agenda.editable !== false;
 }
 
 /** Pautas na ordem, cada uma com seus temas; temas sem pauta ao final. */
@@ -244,13 +231,6 @@ export async function rodarMutacao<T>(
   }
   passos.reunioesMudaram?.();
   return true;
-}
-
-/** Pode enviar: nenhuma reunião com excesso de tempo ou tema sem duração. */
-export function bloqueiosDeTempo(agenda: Pick<AnnualAgendaDetail, "meetings">): string[] {
-  return agenda.meetings
-    .filter((m) => m.tempo.excessoMin > 0 || m.tempo.semDuracao > 0)
-    .map((m) => m.title);
 }
 
 /**

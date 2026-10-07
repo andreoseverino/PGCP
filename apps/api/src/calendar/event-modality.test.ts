@@ -9,7 +9,7 @@ import {
   planejarChamadaDoEvento,
   type ReuniaoParaCalendario,
 } from "./mapper.js";
-import { encontrarLocalFisico } from "../meetings/locations.js";
+import type { LocalFisico } from "../meetings/locations.js";
 
 /**
  * Convite Outlook/Teams por modalidade (025) e reuso do evento existente.
@@ -27,9 +27,30 @@ const base: ReuniaoParaCalendario = {
   onlineMeetingProvider: "teamsForBusiness",
 };
 
-const ENDERECO = JSON.stringify({
-  "sede-matriz": { address: "Rua de Teste, 100", complement: "10º andar", city: "Cidade", state: "UF" },
-});
+/** Cópia do local como fica gravada na reunião (038). */
+const MATRIZ: LocalFisico = {
+  id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  name: "Sede Matriz",
+  street: "Rua de Teste",
+  number: "100",
+  complement: "10º andar",
+  neighborhood: "Centro",
+  city: "Cidade",
+  state: "SP",
+  postalCode: "01310100",
+};
+/** Local importado do catálogo antigo: só nome (backfill da 038). */
+const LEOPOLDO_SEM_ENDERECO: LocalFisico = {
+  id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  name: "Sede Leopoldo",
+  street: null,
+  number: null,
+  complement: null,
+  neighborhood: null,
+  city: null,
+  state: null,
+  postalCode: null,
+};
 
 test("online cria Teams e não envia local físico", () => {
   const evento = montarEvento({ ...base, modality: "online", physicalLocation: null }, []);
@@ -47,29 +68,40 @@ test("reunião legada (sem modalidade) mantém o payload anterior", () => {
 });
 
 test("presencial TAMBÉM cria Teams, como contingência", () => {
-  const local = encontrarLocalFisico("sede-matriz", undefined)!;
-  const evento = montarEvento({ ...base, modality: "in_person", physicalLocation: local }, []);
+  const evento = montarEvento({ ...base, modality: "in_person", physicalLocation: MATRIZ }, []);
   assert.equal(evento.isOnlineMeeting, true, "Teams não pode sumir no presencial");
   assert.equal(evento.onlineMeetingProvider, "teamsForBusiness");
   assert.ok(evento.body.content.includes(AVISO_TEAMS_CONTINGENCIA));
   assert.ok(evento.body.content.includes("Reunião presencial"));
 });
 
-test("presencial envia o local físico configurado no evento e no convite", () => {
-  const local = encontrarLocalFisico("sede-matriz", ENDERECO)!;
-  const evento = montarEvento({ ...base, modality: "in_person", physicalLocation: local }, []);
-  assert.equal(evento.location?.displayName, "Sede Matriz — Rua de Teste, 100, 10º andar, Cidade/UF");
+test("presencial envia nome e endereço do local (cópia da reunião) no evento e no convite", () => {
+  const evento = montarEvento({ ...base, modality: "in_person", physicalLocation: MATRIZ }, []);
+  assert.equal(
+    evento.location?.displayName,
+    "Sede Matriz — Rua de Teste, 100, 10º andar — Centro, Cidade/SP, CEP 01310-100",
+  );
   assert.deepEqual(evento.location?.address, {
-    street: "Rua de Teste, 100, 10º andar",
+    street: "Rua de Teste, 100, 10º andar, Centro",
     city: "Cidade",
-    state: "UF",
+    state: "SP",
+    postalCode: "01310-100",
   });
   assert.ok(evento.body.content.includes("Rua de Teste, 100"));
+  assert.equal(evento.location?.locationType, "default", "sem geocodificação/coordenadas");
 });
 
-test("presencial sem endereço configurado leva só o nome da sede — nada inventado", () => {
-  const local = encontrarLocalFisico("sede-leopoldo", undefined)!;
-  const evento = montarEvento({ ...base, modality: "in_person", physicalLocation: local }, []);
+test("endereço com HTML vai escapado no corpo do convite", () => {
+  const evento = montarEvento(
+    { ...base, modality: "in_person", physicalLocation: { ...MATRIZ, name: "<b>Sala</b> & Co" } },
+    [],
+  );
+  assert.ok(!evento.body.content.includes("<b>Sala</b>"));
+  assert.ok(evento.body.content.includes("&lt;b&gt;Sala&lt;/b&gt; &amp; Co"));
+});
+
+test("presencial sem endereço (local importado) leva só o nome — nada inventado", () => {
+  const evento = montarEvento({ ...base, modality: "in_person", physicalLocation: LEOPOLDO_SEM_ENDERECO }, []);
   assert.equal(evento.location?.displayName, "Sede Leopoldo");
   assert.equal(evento.location?.address, undefined);
 });
@@ -91,7 +123,7 @@ test("sem evento: POST com a chave de idempotência fixa", () => {
 });
 
 test("trocar data, horário, modalidade ou local desatualiza o evento; pauta/tema não", () => {
-  for (const campo of ["startAt", "endAt", "modality", "physicalLocationKey"]) {
+  for (const campo of ["startAt", "endAt", "modality", "physicalLocationId"]) {
     assert.ok(exigeResincronizacao([campo]), `${campo} deveria reprojetar o convite`);
   }
   assert.ok(!exigeResincronizacao(["status", "recurrence"]));
@@ -99,7 +131,7 @@ test("trocar data, horário, modalidade ou local desatualiza o evento; pauta/tem
 });
 
 test("regressão: Presencial (Sede Matriz) -> Online remove o local físico do MESMO evento", () => {
-  const matriz = encontrarLocalFisico("sede-matriz", ENDERECO)!;
+  const matriz = MATRIZ;
   const antes = planejarChamadaDoEvento(
     "oid-organizador",
     "evento-123",

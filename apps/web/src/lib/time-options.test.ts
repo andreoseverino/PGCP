@@ -34,7 +34,7 @@ test("trocar o início: término válido fica; inválido acompanha mantendo a du
 test("validação: horário fora do passo é recusado; fluxo envia os mesmos instantes", () => {
   const form = (startTime: string, endTime: string): NewMeetingForm => ({
     sessionType: "ordinary", date: "2027-01-20", startTime, endTime, timezone: "America/Sao_Paulo",
-    governanceBodyId: "g", modality: "online", physicalLocationKey: "", participants: []
+    governanceBodyId: "g", modality: "online", physicalLocationId: "", participants: []
   });
   assert.equal(ehHorarioValido("09:05"), true);
   assert.equal(ehHorarioValido("09:03"), false);

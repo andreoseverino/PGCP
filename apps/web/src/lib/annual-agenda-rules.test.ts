@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { AnnualAgendaDetail, AnnualAgendaMeeting } from "./annual-agendas";
-import { candidatasAssociaveis, mensagemDeBloqueio, pautasComTemas, podeEditarAgenda, resumoDaAgenda } from "./annual-agenda-rules";
+import { candidatasAssociaveis, pautasComTemas, podeEditarAgenda, resumoDaAgenda } from "./annual-agenda-rules";
 
 const reuniao = (id: string, extra: Partial<AnnualAgendaMeeting> = {}): AnnualAgendaMeeting => ({
   id, title: id, startAt: "2027-01-20T12:00:00Z", endAt: "2027-01-20T14:00:00Z", timezone: "America/Sao_Paulo",
   status: "scheduled", origin: "manual", calendarSyncStatus: "synced", plannedItemId: null,
-  agendas: [], items: [], participants: [], current: null, sent: null, changedAfterSending: null,
+  agendas: [], items: [], participants: [],
   tempo: { reuniaoMin: 120, temasMin: 0, semDuracao: 0, excessoMin: 0, disponivelMin: 120 }, ...extra
 });
 const tema = (id: string, position: number, agendaId: string | null, extra: Record<string, unknown> = {}) => ({
@@ -17,22 +17,11 @@ const tema = (id: string, position: number, agendaId: string | null, extra: Reco
   inicio: "09:00", fim: "09:10" as string | null, participants: [] as Array<{ id: string; name: string }>, ...extra
 });
 
-test("edição pela Agenda Anual só em elaboração e com permissão", () => {
-  assert.equal(podeEditarAgenda({ status: "draft", editable: true }, true), true);
-  assert.equal(podeEditarAgenda({ status: "draft", editable: true }, false), false);
-  assert.equal(podeEditarAgenda({ status: "pending_approval", editable: false }, true), false);
-  assert.equal(podeEditarAgenda({ status: "approved", editable: false }, true), false);
-  // Mesmo que um payload antigo dissesse editable, aprovada não edita.
-  assert.equal(podeEditarAgenda({ status: "approved", editable: true }, true), false);
-});
-
-test("faixa de bloqueio: enviada pede retirada; aprovada com o texto combinado", () => {
-  assert.equal(mensagemDeBloqueio("draft", "pt"), null);
-  assert.match(mensagemDeBloqueio("pending_approval", "pt")!, /retire-a da aprovação/);
-  assert.equal(
-    mensagemDeBloqueio("approved", "pt"),
-    "Agenda Anual aprovada. Esta versão não pode mais ser alterada. A gestão operacional das reuniões continua disponível no Pipeline."
-  );
+test("edição pela Agenda Anual: só a permissão decide (sem aprovação, nenhum status bloqueia)", () => {
+  assert.equal(podeEditarAgenda({ editable: true }, true), true);
+  assert.equal(podeEditarAgenda({ editable: true }, false), false);
+  // Agenda aprovada/enviada ANTES de 10/2026: o servidor devolve editable=true.
+  assert.equal(podeEditarAgenda({ editable: true }, true), true);
 });
 
 test("Reunião -> Pauta -> Tema na ordem; temas sem pauta à parte; resumo dos dados reais", () => {
@@ -71,8 +60,12 @@ const codigo = (arq: string) =>
 
 test("tela: conteúdo pelas rotas da Agenda (mesmas entidades); edição condicionada ao estado", () => {
   const cliente = codigo("./annual-agendas.ts");
-  for (const rota of ["/agendas/${agendaId}`", "/agenda-items/${itemId}`", "/temas`", "/withdraw`", "/document`", "/meetings`"]) {
+  for (const rota of ["/agendas/${agendaId}`", "/agenda-items/${itemId}`", "/temas`", "/document`", "/meetings`"]) {
     assert.ok(cliente.includes(rota), rota);
+  }
+  // Fluxo de aprovação removido do cliente (10/2026).
+  for (const rota of ["/withdraw`", "/approval`", "/approval-request`", "frozen-calendar"]) {
+    assert.ok(!cliente.includes(rota), rota);
   }
   const card = codigo("../components/AnnualAgendaMeetingCard.tsx");
   assert.ok(!/window\.(prompt|confirm)/.test(card));
@@ -82,8 +75,10 @@ test("tela: conteúdo pelas rotas da Agenda (mesmas entidades); edição condici
   const view = codigo("../components/AnnualAgendaView.tsx");
   assert.match(view, /const editavel = podeEditarAgenda\(agenda, canManage\)/);
   assert.match(view, /"Gerar prévia"/);
-  assert.match(view, /"Visualizar documento aprovado"/);
-  assert.match(view, /"Retirar da aprovação"/);
+  assert.match(view, /"Visualizar documento aprovado \(histórico\)"/);
+  for (const removido of ["Retirar da aprovação", "Enviar para aprovação", "Registrar aprovação", "E-mail de quem aprova"]) {
+    assert.ok(!view.includes(removido), removido);
+  }
   // Sem filtro local de órgão: o contexto global continua sendo a fonte.
   assert.ok(!view.slice(view.indexOf("function AgendaDetail(")).includes("orgaoContexto"));
 });
@@ -182,22 +177,16 @@ test("arrastar (tela): só a alça inicia; a imagem é a linha inteira; o espaç
   assert.match(card, /cronogramaDosTemas\(\s*inicio\.time/);
 });
 
-test("participantes do tema: resumo compacto; envio bloqueado por excesso ou tema sem duração", async () => {
-  const { resumoDeParticipantes, bloqueiosDeTempo } = await import("./annual-agenda-rules");
+test("participantes do tema: resumo compacto", async () => {
+  const { resumoDeParticipantes } = await import("./annual-agenda-rules");
   assert.equal(resumoDeParticipantes(["André Severino", "Maria Silva", "João", "Ana"]), "André, Maria +2");
   assert.equal(resumoDeParticipantes(["André Severino"]), "André");
   assert.equal(resumoDeParticipantes([]), "");
-  const t = (excessoMin: number, semDuracao: number) => ({ reuniaoMin: 60, temasMin: 60 + excessoMin, semDuracao, excessoMin, disponivelMin: 0 });
-  assert.deepEqual(
-    bloqueiosDeTempo({ meetings: [reuniao("ok", { tempo: t(0, 0) }), reuniao("excede", { tempo: t(25, 0) }), reuniao("semdur", { tempo: t(0, 1) })] }),
-    ["excede", "semdur"]
-  );
 });
 
-test("tela: esquerda compacta; tema com horário, duração, participantes, Biblioteca; arrastar; envio bloqueado", () => {
+test("tela: esquerda compacta; tema com horário, duração, participantes, Biblioteca; arrastar", () => {
   const view = codigo("../components/AnnualAgendaView.tsx");
   assert.match(view, /lg:grid-cols-\[260px_minmax\(0,1fr\)\]/);
-  assert.match(view, /disabled=\{ocupado \|\| !email\.trim\(\) \|\| bloqueiosTempo\.length > 0\}/);
   assert.match(view, /setAnos\(visao\.years\)/);
   const card = codigo("../components/AnnualAgendaMeetingCard.tsx");
   for (const trecho of [
@@ -413,31 +402,21 @@ test("participantes da reunião na Agenda: resumo tipo e-mail, contador, origem,
   assert.match(secao, /addAnnualMeetingParticipant\(agendaId, meeting\.id, selecionadoParaPayload\(sel\)\)/);
   assert.match(secao, /confirmacaoRemoverDaReuniao\(/, "mesmo texto de remoção (grupo permanece, exceção)");
   assert.match(secao, /removeAnnualMeetingParticipant\(agendaId, meeting\.id, p\.id\)/);
-  // Enviada: só leitura; aprovada: Pipeline.
-  assert.ok(secao.includes("Somente leitura. Para alterar, retire a Agenda da aprovação."));
-  assert.match(secao, /\) : approved \? \(/);
-  assert.match(secao, /Agenda aprovada: participantes são gerenciados no Pipeline/);
-  // "Abrir no Pipeline" no cabeçalho só com a Agenda aprovada.
-  assert.match(card, /\{approved && \(\s*<button type="button" onClick=\{\(\) => onOpenMeeting\(meeting\.id\)\}/);
+  // Sem permissão: só leitura (nenhuma menção a aprovação).
+  assert.ok(secao.includes('"Somente leitura."'));
+  assert.ok(!/aprova/i.test(secao));
+  // "Abrir no Pipeline" sempre disponível: o Pipeline opera desde o agendamento.
+  assert.match(card, /<button type="button" onClick=\{\(\) => onOpenMeeting\(meeting\.id\)\}/);
+  assert.ok(!/approved/.test(card));
   const cliente = codigo("./annual-agendas.ts");
   assert.match(cliente, /`\$\{conteudo\(id, meetingId\)\}\/participants`/);
 });
 
-test("Pipeline: só reuniões liberadas (servidor decide); Agenda não aprovada leva à Agenda Anual", async () => {
-  const { operacionalNoPipeline } = await import("./pipeline");
-  assert.equal(operacionalNoPipeline({ releasedToPipeline: true }), true);
-  assert.equal(operacionalNoPipeline({ releasedToPipeline: false }), false);
-  assert.equal(operacionalNoPipeline({}), true, "campo ausente: não esconde reunião");
+test("sem aprovação da Agenda Anual: toda reunião opera no Pipeline; Calendário mostra a reunião ao vivo", () => {
   const pipeline = codigo("../components/PipelineView.tsx");
-  assert.match(pipeline, /filtrarPorOrgao\(meetings, orgao\)\.filter\(operacionalNoPipeline\)/);
-  assert.match(pipeline, /em preparação na Agenda Anual/);
-  const adaptador = codigo("./meeting-adapters.ts");
-  assert.match(adaptador, /releasedToPipeline: api\.releasedToPipeline !== false/);
+  assert.match(pipeline, /const doOrgao = useMemo\(\(\) => filtrarPorOrgao\(meetings, orgao\), \[meetings, orgao\]\)/);
+  assert.ok(!/em preparação na Agenda Anual|após a aprovação/.test(pipeline));
   const app = codigo("../App.tsx");
-  assert.match(app, /const aindaNaAgendaAnual = /);
-  for (const fn of ["const openMeeting = async", "const abrirNoPipeline = ", "const openMeetingById = async"]) {
-    const corpo = app.slice(app.indexOf(fn), app.indexOf(fn) + 400);
-    assert.match(corpo, /aindaNaAgendaAnual\(/, fn);
-  }
-  assert.match(app, /setActiveTab\("annual-agenda"\);/);
+  assert.ok(!/aindaNaAgendaAnual|frozen|Frozen|calendarMeetings/.test(app));
+  assert.match(app, /<CalendarView[\s\S]*?meetings=\{meetings\}/);
 });

@@ -1,5 +1,4 @@
 import type { ActionItem, GovernanceBody, Meeting } from "../types";
-import type { AnnualAgendaSummary } from "./annual-agendas";
 import { classificarPendencia } from "./action-item-adapters";
 import { pipelineStage } from "./pipeline";
 
@@ -10,8 +9,8 @@ import { pipelineStage } from "./pipeline";
  * comparação temporal sem cálculo real. Contexto de órgão: "" = Todos.
  *
  *   Órgãos colegiados        órgãos ATIVOS (ou o órgão do contexto)
- *   Pendências de aprovação  Agenda Anual em `pending_approval`
- *                            + pautas de reunião enviadas à validação (`sent`)
+ *   Pautas em validação      pautas enviadas à validação OPCIONAL (`sent`).
+ *                            A Agenda Anual não tem mais aprovação (10/2026).
  *   FUP vencidos             FUP aberto com prazo vencido (daysLate do servidor)
  *   Reuniões da semana       data entre hoje e hoje+6 (7 dias), ainda não realizada
  *   Atas pendentes           reunião realizada cuja Ata não está aprovada/encerrada
@@ -69,9 +68,8 @@ function fupDoOrgao(item: ActionItem, orgao: string, orgaoDaReuniao: Map<string,
 
 export interface ResumoOperacional {
   orgaos: number;
+  /** Pautas enviadas à validação opcional, aguardando resposta. */
   aprovacoes: number;
-  aprovacoesAgendaAnual: number;
-  aprovacoesPautas: number;
   fupVencidos: number;
   reunioesSemana: number;
   atasPendentes: number;
@@ -84,8 +82,6 @@ export function calcularResumoOperacional(dados: {
   governanceBodies: readonly GovernanceBody[];
   meetings: readonly Meeting[];
   actionItems: readonly ActionItem[];
-  /** `null` = Agenda Anual não carregada (a contagem de aprovações sai sem ela). */
-  annualAgendas: readonly AnnualAgendaSummary[] | null;
 }): ResumoOperacional {
   const { orgaoContexto: orgao, hoje } = dados;
   const doOrgao = <T,>(id: string | undefined, item: T) => (!orgao || id === orgao ? [item] : []);
@@ -94,18 +90,12 @@ export function calcularResumoOperacional(dados: {
   const orgaoDaReuniao = new Map(dados.meetings.map((m) => [m.id, m.governanceBodyId]));
   const acoes = dados.actionItems.filter((i) => acaoAberta(i) && fupDoOrgao(i, orgao, orgaoDaReuniao));
 
-  const aprovacoesAgendaAnual = (dados.annualAgendas ?? []).filter(
-    (a) => a.status === "pending_approval" && (!orgao || a.governanceBody.id === orgao)
-  ).length;
-  const aprovacoesPautas = reunioes.filter((m) => m.agendaValidation?.status === "sent").length;
 
   return {
     orgaos: orgao
       ? dados.governanceBodies.filter((b) => b.id === orgao).length
       : dados.governanceBodies.filter((b) => b.isActive).length,
-    aprovacoes: aprovacoesAgendaAnual + aprovacoesPautas,
-    aprovacoesAgendaAnual,
-    aprovacoesPautas,
+    aprovacoes: reunioes.filter((m) => m.agendaValidation?.status === "sent").length,
     fupVencidos: acoes.filter(fupVencido).length,
     reunioesSemana: reunioes.filter((m) => reuniaoNaSemana(m, hoje)).length,
     atasPendentes: reunioes.filter(ataPendente).length,

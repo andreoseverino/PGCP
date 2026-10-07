@@ -9,8 +9,6 @@ import {
   parseAnnualAgendaItemInput,
   parseAnnualAgendaPatch,
   parseReserveInput,
-  podeEnviarParaAprovacao,
-  podeRegistrarAprovacao,
 } from "./service.js";
 import { cabecalhoDaReuniao, gerarPdfDaAgendaAnual, nomeDoArquivoDaAgendaAnual } from "./pdf.js";
 
@@ -74,10 +72,12 @@ test("reserva: presencial exige local; participantes validados como no Calendár
   assert.throws(() => parseReserveInput({ modality: "in_person" }), HttpError);
   const reserva = parseReserveInput({
     modality: "in_person",
-    physicalLocationKey: "sede-matriz",
+    physicalLocationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     participants: [{ entraObjectId: "33333333-3333-3333-3333-333333333333", displayName: "Pessoa" }],
   });
-  assert.equal(reserva.physicalLocationKey, "sede-matriz");
+  assert.equal(reserva.physicalLocationId, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+  // Chave do catálogo antigo (025) não é mais aceita.
+  assert.throws(() => parseReserveInput({ modality: "in_person", physicalLocationKey: "sede-matriz" }), HttpError);
   assert.equal(reserva.participants.length, 1);
   assert.throws(
     () => parseReserveInput({ modality: "online", participants: [{ displayName: "x", entraTenantId: BODY }] }),
@@ -99,13 +99,24 @@ test("reservar de novo não duplica: só datas sem reunião viram reunião", () 
   assert.deepEqual(itensAReservar(itens.map((i) => ({ ...i, meetingId: i.meetingId ?? "novo" }))), []);
 });
 
-test("aprovação é independente da reserva e não pula etapas", () => {
-  assert.equal(podeEnviarParaAprovacao("draft"), true);
-  assert.equal(podeEnviarParaAprovacao("pending_approval"), true);
-  assert.equal(podeEnviarParaAprovacao("approved"), false);
-  assert.equal(podeRegistrarAprovacao("draft"), false, "aprovação sem pedido não tem lastro");
-  assert.equal(podeRegistrarAprovacao("pending_approval"), true);
-  assert.equal(podeRegistrarAprovacao("approved"), true, "idempotente");
+test("aprovação removida: envio, registro e retirada respondem 410 (com papel exigido)", async () => {
+  const { annualAgendasRouter } = await import("./routes.js");
+  const { requirePgcpAssessoria } = await import("../authz/app-roles.js");
+  const pilha = (annualAgendasRouter as unknown as {
+    stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: Function }> } }>;
+  }).stack;
+  for (const caminho of ["/:id/approval-request", "/:id/approval", "/:id/withdraw"]) {
+    const rota = pilha.find((c) => c.route?.path === caminho && c.route.methods.post)?.route;
+    assert.ok(rota, caminho);
+    assert.ok(rota.stack.some((s) => s.handle === requirePgcpAssessoria), `${caminho}: papel`);
+    let codigo = 0;
+    let corpo: { code?: string } = {};
+    const res = { status(c: number) { codigo = c; return this; }, json(b: { code?: string }) { corpo = b; return this; } };
+    rota.stack.at(-1)!.handle({}, res);
+    assert.equal(codigo, 410, caminho);
+    assert.equal(corpo.code, "annual_agenda_approval_removed");
+  }
+  assert.ok(!pilha.some((c) => c.route?.path === "/frozen-calendar"), "calendário congelado removido");
 });
 
 test("PDF: reunião no fuso DA REUNIÃO; aviso de reserva só para data planejada (legado)", () => {

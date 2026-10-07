@@ -27,19 +27,14 @@ import {
   downloadAnnualAgendaPdf,
   getAnnualAgenda,
   getAnnualOverview,
-  markAnnualAgendaApproved,
-  requestAnnualAgendaApproval,
-  withdrawAnnualAgendaApproval,
   type AnnualAgendaDetail,
   type AnnualOverviewGroup
 } from "../lib/annual-agendas";
 import {
   anoInicial,
-  bloqueiosDeTempo,
   candidatasAssociaveis,
   estadoDaVisao,
   gruposDoContexto,
-  mensagemDeBloqueio,
   podeEditarAgenda,
   reunioesAAssociar,
   resumoDaAgenda,
@@ -56,8 +51,9 @@ import type { TemaDaBibliotecaResumo } from "../lib/annual-agenda-rules";
  * AGENDA ANUAL — consolida as reuniões do órgão no ano.
  *
  *   Calendário cria a reunião (Outlook/Teams) -> Agenda Anual reúne as
- *   reuniões do órgão/ano, prepara Pauta -> Tema, gera o compilado e envia
- *   para aprovação -> aprovada = versão bloqueada -> Pipeline opera.
+ *   reuniões do órgão/ano, prepara Pauta -> Tema e gera o compilado (PDF).
+ *   Sem aprovação (10/2026): a Agenda é sempre editável e o Pipeline opera as
+ *   mesmas reuniões desde o agendamento.
  *
  * Mesmas reuniões em Calendário, Agenda Anual e Pipeline: associar não copia
  * nada nem envia convite. Pautas e temas são os da reunião.
@@ -86,11 +82,6 @@ const LABEL = "text-[10px] font-bold text-slate-500 uppercase tracking-wide";
 const INPUT =
   "w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#00658d]";
 
-const COR_STATUS = {
-  draft: "bg-slate-100 text-slate-600",
-  pending_approval: "bg-amber-50 text-amber-700",
-  approved: "bg-emerald-50 text-emerald-700"
-} as const;
 
 function local(iso: string, fuso: string) {
   return instantToLocal(iso, fuso);
@@ -273,7 +264,7 @@ export default function AnnualAgendaView({
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-extrabold text-[#00658d]">{ano}</span>
-                <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${g.agenda ? COR_STATUS[g.agenda.status] : "bg-white border border-dashed border-slate-300 text-slate-500"}`}>
+                <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${g.agenda ? "bg-slate-100 text-slate-600" : "bg-white border border-dashed border-slate-300 text-slate-500"}`}>
                   {g.agenda ? annualStatusLabel(g.agenda.status, language) : pt ? "Não formalizada" : "Not prepared"}
                 </span>
               </div>
@@ -398,7 +389,7 @@ function GrupoNaoFormalizado({
       <p className="flex gap-2 p-3 rounded-xl bg-slate-50 border border-slate-100 text-[11px] text-slate-600 font-medium">
         <Info className="w-4 h-4 shrink-0 mt-px text-[#00658d]" />
         {pt
-          ? `Preparar cria a Agenda Anual de ${ano} deste órgão e inclui ${aAssociar.length} reunião(ões) do Calendário — as mesmas reuniões, sem novo convite. Reuniões criadas depois no Calendário entram automaticamente enquanto a agenda estiver em elaboração.`
+          ? `Preparar cria a Agenda Anual de ${ano} deste órgão e inclui ${aAssociar.length} reunião(ões) do Calendário — as mesmas reuniões, sem novo convite. Reuniões criadas depois no Calendário entram automaticamente.`
           : `Preparing creates this body's ${ano} annual plan with ${aAssociar.length} Calendar meeting(s) — the same meetings, no new invite.`}
       </p>
 
@@ -460,11 +451,9 @@ interface AgendaDetailProps {
 
 /**
  * Uma Agenda Anual: as reuniões do órgão/ano (as MESMAS do Calendário e do
- * Pipeline) com Pauta -> Tema, o compilado e a aprovação.
- *
- *   Em elaboração   associa reuniões, edita pautas/temas, gera prévia, envia
- *   Enviada         somente leitura; "Retirar da aprovação" volta a editar
- *   Aprovada        somente leitura; documento = versão aprovada (snapshot)
+ * Pipeline) com Pauta -> Tema e o compilado (PDF). Sem aprovação (10/2026):
+ * associa reuniões e edita pautas/temas a qualquer momento, com permissão. A
+ * versão enviada/aprovada antes disso continua disponível como HISTÓRICO.
  */
 function AgendaDetail({
   language,
@@ -482,14 +471,8 @@ function AgendaDetail({
 }: AgendaDetailProps) {
   const pt = language === "pt";
   const editavel = podeEditarAgenda(agenda, canManage);
-  const bloqueio = mensagemDeBloqueio(agenda.status, language);
   const resumo = resumoDaAgenda(agenda);
-  /** Reuniões com excesso de tempo ou tema sem duração: impedem o envio. */
-  const bloqueiosTempo = bloqueiosDeTempo(agenda);
   const associaveis = candidatasAssociaveis(agenda);
-
-  // Aprovação
-  const [email, setEmail] = useState(agenda.approvalSentTo ?? "");
 
   const baixar = async (tipo: "previa" | "documento") => {
     try {
@@ -513,16 +496,14 @@ function AgendaDetail({
           <p className="text-[10px] font-extrabold text-[#00658d] uppercase tracking-wide">{agenda.governanceBody.name}</p>
           <h3 className="text-xl font-extrabold text-[#001e2d]">{agenda.title} — {agenda.year}</h3>
           <div className="flex items-center gap-2 mt-1 flex-wrap">
-            <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${COR_STATUS[agenda.status]}`}>
-              {annualStatusLabel(agenda.status, language)}
-            </span>
             {/* Resumo calculado dos dados reais. */}
             <span className="text-[10px] text-slate-500 font-semibold">
               {resumo.reunioes} {pt ? "reuniões" : "meetings"} · {resumo.pautas} {pt ? "pautas" : "agendas"} · {resumo.temas} {pt ? "temas" : "topics"}
             </span>
+            {/* Histórico: versão enviada/aprovada antes da remoção da aprovação. */}
             {agenda.version && (
               <span className="text-[10px] text-slate-400 font-semibold">
-                {pt ? `Versão ${agenda.version.number}` : `Version ${agenda.version.number}`}
+                {pt ? `Histórico: versão ${agenda.version.number}` : `History: version ${agenda.version.number}`}
                 {agenda.version.state === "approved"
                   ? pt ? ` aprovada em ${new Date(agenda.version.approvedAt!).toLocaleDateString("pt-BR")}` : " approved"
                   : pt ? ` enviada a ${agenda.version.sentTo}` : ` sent to ${agenda.version.sentTo}`}
@@ -531,17 +512,15 @@ function AgendaDetail({
           </div>
         </div>
         <div className="flex gap-2 flex-wrap shrink-0">
-          {agenda.status === "draft" && (
-            <button type="button" onClick={() => void baixar("previa")} className="px-3 py-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer">
-              <Eye className="w-3.5 h-3.5" />{pt ? "Gerar prévia" : "Preview"}
-            </button>
-          )}
+          <button type="button" onClick={() => void baixar("previa")} className="px-3 py-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer">
+            <Eye className="w-3.5 h-3.5" />{pt ? "Gerar prévia" : "Preview"}
+          </button>
           {agenda.version && (
             <button type="button" onClick={() => void baixar("documento")} className="px-3 py-2 border border-emerald-200 rounded-xl text-xs font-bold text-emerald-700 hover:bg-emerald-50 inline-flex items-center gap-1.5 cursor-pointer">
               <FileCheck2 className="w-3.5 h-3.5" />
               {agenda.version.state === "approved"
-                ? pt ? "Visualizar documento aprovado" : "View approved document"
-                : pt ? "Documento enviado" : "Sent document"}
+                ? pt ? "Visualizar documento aprovado (histórico)" : "View approved document (history)"
+                : pt ? "Documento enviado (histórico)" : "Sent document (history)"}
             </button>
           )}
           {podeExcluir && (
@@ -562,28 +541,6 @@ function AgendaDetail({
         </div>
       </header>
 
-      {bloqueio && (
-        <div
-          role="status"
-          className={`flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-xl border text-[11px] font-semibold ${
-            agenda.status === "approved" ? "bg-emerald-50 border-emerald-100 text-emerald-800" : "bg-amber-50 border-amber-100 text-amber-800"
-          }`}
-        >
-          <Lock className="w-4 h-4 shrink-0" />
-          <span className="flex-1">{bloqueio}</span>
-          {agenda.status === "pending_approval" && canManage && (
-            <button
-              type="button"
-              disabled={ocupado}
-              onClick={() => void executar(() => withdrawAnnualAgendaApproval(agenda.id), pt ? "Agenda Anual retirada da aprovação." : "Withdrawn from approval.")}
-              className="px-3 py-1.5 bg-white border border-amber-200 rounded-lg text-[11px] font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50 cursor-pointer shrink-0"
-            >
-              {pt ? "Retirar da aprovação" : "Withdraw"}
-            </button>
-          )}
-        </div>
-      )}
-
       {/* Reuniões da agenda — as mesmas do Calendário e do Pipeline */}
       <div className="space-y-2.5">
         <h4 className="text-xs font-extrabold text-slate-800">{pt ? "Reuniões da Agenda Anual" : "Meetings in this plan"}</h4>
@@ -602,7 +559,6 @@ function AgendaDetail({
             orgao={agenda.governanceBody}
             meeting={m}
             editable={editavel}
-            approved={agenda.version?.state === "approved"}
             ocupado={ocupado}
             libraryTopics={libraryTopics}
             pautaTypes={pautaTypes}
@@ -673,64 +629,6 @@ function AgendaDetail({
         </div>
       )}
 
-      {/* Aprovação */}
-      {canManage && (agenda.status !== "approved" ? resumo.reunioes > 0 : true) && (
-        <div className="border-t border-slate-100 pt-4 space-y-2">
-          <h4 className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
-            <Mail className="w-3.5 h-3.5 text-[#00658d]" />
-            {pt ? "Aprovação da Agenda Anual" : "Plan approval"}
-          </h4>
-          {agenda.status === "approved" ? (
-            <p className="text-[11px] text-emerald-700 font-semibold">
-              {pt ? "Agenda Anual aprovada. O documento aprovado é a versão enviada ao aprovador." : "Plan approved."}
-            </p>
-          ) : (
-            <div className="flex flex-col sm:flex-row gap-2">
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder={pt ? "E-mail de quem aprova" : "Approver e-mail"}
-                className={`${INPUT} sm:max-w-xs`}
-              />
-              <button
-                type="button"
-                disabled={ocupado || !email.trim() || bloqueiosTempo.length > 0}
-                title={bloqueiosTempo.length > 0 ? (pt ? "Ajuste a duração dos temas antes de enviar." : "Fix topic durations first.") : undefined}
-                onClick={() => void executar(() => requestAnnualAgendaApproval(agenda.id, email.trim()), pt
-                    ? "E-mail aceito pelo Microsoft 365 e enviado pela sua caixa (confira em Itens Enviados). A entrega depende do servidor de e-mail do destinatário."
-                    : "E-mail accepted by Microsoft 365 and sent from your mailbox (see Sent Items). Delivery depends on the recipient's mail server.")}
-                className="px-4 py-2 bg-slate-800 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
-              >
-                <Send className="w-3.5 h-3.5" />
-                {agenda.status === "pending_approval" ? (pt ? "Reenviar (nova versão)" : "Resend (new version)") : pt ? "Enviar para aprovação" : "Send for approval"}
-              </button>
-              {agenda.status === "pending_approval" && (
-                <button
-                  type="button"
-                  disabled={ocupado}
-                  onClick={() => void executar(() => markAnnualAgendaApproved(agenda.id), pt ? "Agenda Anual marcada como aprovada." : "Plan marked as approved.")}
-                  className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
-                >
-                  <CheckCircle className="w-3.5 h-3.5" />{pt ? "Registrar aprovação" : "Record approval"}
-                </button>
-              )}
-            </div>
-          )}
-          {agenda.status !== "approved" && bloqueiosTempo.length > 0 && (
-            <p role="alert" className="text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-              {pt
-                ? `Envio bloqueado: a programação de ${bloqueiosTempo.length} reunião(ões) ultrapassa o horário disponível ou tem tema sem duração (${bloqueiosTempo.join("; ")}). A prévia continua disponível.`
-                : "Sending is blocked until every meeting's topics fit its time and have a duration."}
-            </p>
-          )}
-          <p className="text-[10px] text-slate-400 font-semibold">
-            {pt
-              ? "O e-mail sai da sua caixa (Microsoft 365) com o compilado em PDF. O conteúdo enviado fica gravado como versão; a aprovação registrada aqui vale para essa versão."
-              : "The e-mail is sent from your mailbox with the compiled PDF. The sent content is stored as a version; the approval recorded here applies to it."}
-          </p>
-        </div>
-      )}
     </section>
   );
 }

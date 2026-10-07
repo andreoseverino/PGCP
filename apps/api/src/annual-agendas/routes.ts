@@ -27,7 +27,6 @@ import {
   removerParticipanteDaReuniao,
   parseTemaPatchDaAgenda,
   renomearPauta,
-  retirarDaAprovacao,
   visaoAnual,
   createAnnualAgenda,
   deleteAnnualAgenda,
@@ -39,10 +38,7 @@ import {
   parseAnnualAgendaItemInput,
   parseAnnualAgendaPatch,
   parseReserveInput,
-  registrarAprovacao,
   reserveAnnualAgenda,
-  reunioesCongeladasParaCalendario,
-  solicitarAprovacao,
   updateAnnualAgenda,
   updateAnnualAgendaItem,
 } from "./service.js";
@@ -54,8 +50,11 @@ export const annualAgendasRouter = Router();
  *
  * Mesma autorizacao em camadas de /meetings: leitura para qualquer usuario
  * PGCP ativo; TODA mutacao — inclusive reservar (que cria eventos no Outlook de
- * terceiros) e enviar para aprovacao (e-mail em nome de quem esta na sessao) —
- * exige `PGCP.Assessoria`. Esconder botao na tela e cortesia; a barreira e esta.
+ * terceiros) — exige `PGCP.Assessoria`. Esconder botao na tela e cortesia; a
+ * barreira e esta.
+ *
+ * SEM APROVACAO desde 10/2026: as rotas de envio/registro/retirada respondem
+ * 410 (abaixo). O historico de versoes continua legivel (`/:id/document`).
  */
 
 function sendError(res: Response, error: unknown, context: string): void {
@@ -113,19 +112,6 @@ annualAgendasRouter.get("/overview", requireActivePgcpUser, async (req, res) => 
   }
 });
 
-/**
- * Reuniões CONGELADAS de toda Agenda Anual aprovada — para o Calendário
- * exibir a versão aprovada em vez da reunião ao vivo. Somente leitura;
- * declarada antes de "/:id".
- */
-annualAgendasRouter.get("/frozen-calendar", requireActivePgcpUser, async (_req, res) => {
-  try {
-    res.json({ meetings: await reunioesCongeladasParaCalendario() });
-  } catch (error) {
-    sendError(res, error, "reuniões congeladas do calendário");
-  }
-});
-
 annualAgendasRouter.get<{ id: string }>("/:id", requireActivePgcpUser, async (req, res) => {
   try {
     res.json(await findAnnualAgenda(req.params.id));
@@ -147,8 +133,9 @@ annualAgendasRouter.get<{ id: string }>("/:id/pdf", requireActivePgcpUser, async
 });
 
 /**
- * DOCUMENTO da versão enviada/aprovada — sai do snapshot gravado (028), não
- * do estado atual. Mesma política de leitura do PDF de prévia.
+ * DOCUMENTO da versão enviada/aprovada ANTES de 10/2026 — histórico, sai do
+ * snapshot gravado (028), não do estado atual. Mesma política de leitura do
+ * PDF de prévia.
  */
 annualAgendasRouter.get<{ id: string }>("/:id/document", requireActivePgcpUser, async (req, res) => {
   try {
@@ -210,40 +197,27 @@ annualAgendasRouter.delete("/:id/items/:itemId", requirePgcpAssessoria, mutacao(
 ));
 
 /**
- * Reserva as datas: cria as reunioes e envia os convites Outlook/Teams, SEM
- * esperar a aprovacao da agenda. Idempotente — ver `reserveAnnualAgenda`.
+ * Reserva as datas: cria as reunioes e envia os convites Outlook/Teams.
+ * Idempotente — ver `reserveAnnualAgenda`.
  */
 annualAgendasRouter.post("/:id/reserve", requirePgcpAssessoria, mutacao("reservar agendas", (req, ator) =>
   reserveAnnualAgenda(req.params.id as string, parseReserveInput(req.body), ator),
 ));
 
-/** Envia o PDF ao aprovador pela caixa de quem esta na sessao (OBO). */
-annualAgendasRouter.post("/:id/approval-request", requirePgcpAssessoria, async (req: Request, res: Response) => {
-  const ator = atorDa(req);
-  const token = req.entraAccessToken;
-  if (!ator || !token) {
-    res.status(500).json({ error: "Erro interno ao resolver a credencial da sessão." });
-    return;
-  }
-  try {
-    const corpo = (req.body ?? {}) as Record<string, unknown>;
-    for (const chave of Object.keys(corpo)) {
-      if (chave !== "approverEmail") throw new HttpError(400, `O campo '${chave}' não pode ser informado aqui.`);
-    }
-    res.json(await solicitarAprovacao(req.params.id as string, corpo.approverEmail, ator, token));
-  } catch (error) {
-    sendError(res, error, "enviar para aprovação");
-  }
-});
-
-annualAgendasRouter.post("/:id/approval", requirePgcpAssessoria, mutacao("registrar aprovação", (req, ator) =>
-  registrarAprovacao(req.params.id as string, ator),
-));
-
-/** Volta explicitamente de "enviada" para "em elaboração" (versão fica no histórico). */
-annualAgendasRouter.post("/:id/withdraw", requirePgcpAssessoria, mutacao("retirar da aprovação", (req, ator) =>
-  retirarDaAprovacao(req.params.id as string, ator),
-));
+/**
+ * APROVAÇÃO REMOVIDA (decisão de produto, 10/2026). As rotas continuam
+ * registradas só para responder 410 com mensagem clara a um cliente antigo, em
+ * vez de 404 genérico. Mesma guarda de papel de toda mutação daqui.
+ */
+const aprovacaoRemovida = (_req: Request, res: Response) => {
+  res.status(410).json({
+    error: "A Agenda Anual não tem mais fluxo de aprovação. As reuniões já seguem para o Pipeline sem esperar aprovação.",
+    code: "annual_agenda_approval_removed",
+  });
+};
+annualAgendasRouter.post("/:id/approval-request", requirePgcpAssessoria, aprovacaoRemovida);
+annualAgendasRouter.post("/:id/approval", requirePgcpAssessoria, aprovacaoRemovida);
+annualAgendasRouter.post("/:id/withdraw", requirePgcpAssessoria, aprovacaoRemovida);
 
 /**
  * REUNIÕES DO CALENDÁRIO NA AGENDA. Associar só grava `meetings.annual_agenda_id`:
@@ -262,16 +236,16 @@ annualAgendasRouter.delete("/:id/meetings/:meetingId", requirePgcpAssessoria, mu
 ));
 
 /**
- * PAUTAS e TEMAS pela Agenda Anual: conferem pertença + "em elaboração" e
- * delegam às MESMAS funções de `/meetings` (mesmas tabelas e regras). O
- * Pipeline usa `/meetings/...` diretamente e não é bloqueado pela aprovação.
+ * PAUTAS e TEMAS pela Agenda Anual: conferem pertença e delegam às MESMAS
+ * funções de `/meetings` (mesmas tabelas e regras). O Pipeline usa
+ * `/meetings/...` diretamente.
  */
 const conteudo = (
   contexto: string,
   operacao: (req: Request, ator: MeetingActor, meetingId: string) => Promise<unknown>,
 ) =>
   mutacao(contexto, (req, ator) =>
-    editarConteudoPelaAgenda(req.params.id as string, req.params.meetingId as string, (meetingId) =>
+    editarConteudoPelaAgenda(req.params.id as string, req.params.meetingId as string, ator, (meetingId) =>
       operacao(req, ator, meetingId),
     ),
   );
@@ -298,9 +272,8 @@ annualAgendasRouter.put("/:id/meetings/:meetingId/agenda-items/order", requirePg
 ));
 
 /**
- * Participantes DA REUNIÃO pela Agenda (em elaboração): antes da aprovação o
- * Pipeline não opera a reunião, então incluir/remover pessoas acontece aqui —
- * mesmas funções e regras da aba Participantes do Pipeline.
+ * Participantes DA REUNIÃO pela Agenda — mesmas funções e regras da aba
+ * Participantes do Pipeline.
  */
 annualAgendasRouter.post("/:id/meetings/:meetingId/participants", requirePgcpAssessoria, conteudo("incluir participante na reunião", (req, ator, m) =>
   incluirParticipanteNaReuniao(m, parseParticipantInput(req.body), ator),

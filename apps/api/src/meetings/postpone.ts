@@ -5,6 +5,7 @@ import { recordAuditIn } from "../audit/service.js";
 import { garantirResponsavelNaBiblioteca } from "../agenda-topics/write.js";
 import type { MeetingActor } from "./create.js";
 import { findMeeting, type MeetingDetail } from "./service.js";
+import { travarReuniaoParaVersao, versionarReuniaoSeMudou } from "./versions.js";
 
 /**
  * Postergar e Retomar — operacoes de DOMINIO, atomicas.
@@ -75,6 +76,22 @@ async function emTransacao<T>(fn: (client: PoolClient) => Promise<T>): Promise<T
   }
 }
 
+/** `emTransacao` + versão da reunião no fim da mesma transação (034). */
+function emTransacaoVersionada<T>(
+  meetingId: string,
+  actor: MeetingActor,
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  return emTransacao(async (client) => {
+    // Reunião travada PRIMEIRO: toda mutação versionada segue a mesma ordem
+    // de locks (reunião -> filhos), e a versão final não disputa número.
+    await travarReuniaoParaVersao(client, meetingId);
+    const resultado = await fn(client);
+    await versionarReuniaoSeMudou(client, meetingId, actor);
+    return resultado;
+  });
+}
+
 /**
  * POSTERGAR — retira a pauta do fluxo desta reuniao e devolve o assunto a
  * Biblioteca, para tratamento futuro.
@@ -92,7 +109,7 @@ export async function postponeAgendaItem(
   assertUuid(meetingId, "Identificador da reunião");
   assertUuid(agendaItemId, "Identificador da pauta");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     const item = await carregarItem(client, meetingId, agendaItemId);
 
     await client.query(
@@ -172,7 +189,7 @@ export async function resumeAgendaItem(
   assertUuid(meetingId, "Identificador da reunião");
   assertUuid(agendaItemId, "Identificador da pauta");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     const item = await carregarItem(client, meetingId, agendaItemId);
 
     await client.query(

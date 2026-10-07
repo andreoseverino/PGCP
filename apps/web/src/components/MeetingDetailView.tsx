@@ -73,7 +73,6 @@ import {
   addParticipant as apiAddParticipant,
   callAgendaItemParticipants,
   describeMeetingError,
-  localToInstant,
   getMeeting,
   meetingFromApi,
   removeAgendaItem as apiRemoveAgendaItem,
@@ -84,17 +83,17 @@ import {
   describeTeamsMessageError,
   TEAMS_MESSAGE_MAX_LENGTH,
   updateAgendaItem as apiUpdateAgendaItem,
-  updateMeeting as apiUpdateMeeting,
   removeParticipant as apiRemoveParticipant,
   addAgenda as apiAddAgenda,
   renameAgenda as apiRenameAgenda,
   removeAgenda as apiRemoveAgenda,
   type AgendaItemPatchPayload
 } from "../lib/meetings";
-import { locationLabel, ModalityFields } from "./MeetingInviteFields";
+import { locationLabel } from "../lib/meeting-locations-rules";
+import EditMeetingModal from "./EditMeetingModal";
+import { RichTextView } from "./RichTextEditor";
 import ParticipantPicker from "./ParticipantPicker";
 import ConfirmRemovalDialog from "./ConfirmRemovalDialog";
-import { previaDoTitulo, SESSION_TYPE_OPTIONS, type SessionType } from "../lib/meeting-title";
 import { cronogramaDosTemas } from "../lib/agenda-schedule";
 import {
   confirmacaoRemoverDaReuniao,
@@ -109,6 +108,7 @@ import {
 } from "../lib/participant-search";
 import { temasPorPauta } from "../lib/pipeline";
 import MeetingDocumentsPanel from "./MeetingDocumentsPanel";
+import MeetingVersionsPanel from "./MeetingVersionsPanel";
 import UploadDocumentModal from "./UploadDocumentModal";
 import { getInitials } from "../lib/user";
 import { hrefSeguro } from "../lib/safe-url";
@@ -232,17 +232,7 @@ export default function MeetingDetailView({
 
   // Edit Meeting
   const [isEditingMeeting, setIsEditingMeeting] = useState(false);
-  const [editedTitle, setEditedTitle] = useState(meeting.title);
-  /** Tipo (030). Com tipo, o título é montado pelo servidor; "" = legado (título livre). */
-  const [editedSessionType, setEditedSessionType] = useState<SessionType | "">(meeting.sessionType ?? "");
-  const [editedDescription, setEditedDescription] = useState(meeting.description);
-  const [editedDate, setEditedDate] = useState(meeting.date);
-  const [editedStartTime, setEditedStartTime] = useState(meeting.startTime);
-  const [editedEndTime, setEditedEndTime] = useState(meeting.endTime);
-  const [editedGovernanceBodyId, setEditedGovernanceBodyId] = useState(meeting.governanceBodyId || "");
-  const [editedRecurrence, setEditedRecurrence] = useState(meeting.recurrence || "Single");
-  const [editedModality, setEditedModality] = useState<"online" | "in_person">(meeting.modality ?? "online");
-  const [editedLocationKey, setEditedLocationKey] = useState(meeting.physicalLocation?.id ?? "");
+  // O formulário de edição é o `EditMeetingModal` (o mesmo do Calendário).
 
   // ---------------------------------------------------------------------------
   // STATE MANAGEMENT - ITEM 1 (GERACAO E CICLO DE VIDA DA ATA)
@@ -407,25 +397,25 @@ export default function MeetingDetailView({
   const estadoDoCalendario = calendarVisualState(meeting.calendar);
 
   /*
-   * VALIDAÇÃO DE PAUTAS — preparação da reunião já agendada (025).
+   * VALIDAÇÃO DE PAUTAS — passo OPCIONAL desde 10/2026.
    *
    * O convite Outlook/Teams sai no AGENDAMENTO (Calendário ou reserva da
-   * Agenda Anual), sem esperar pauta. A validação continua exigida para
-   * INICIAR a reunião — barreira no backend (`exigirProntaParaIniciar`).
+   * Agenda Anual), sem esperar pauta. Iniciar a reunião exige só o convite
+   * (`exigirProntaParaIniciar` no backend); enviar/registrar a validação
+   * continua disponível, sem bloquear nada.
    */
   const validacao = meeting.agendaValidation;
   const statusValidacao = validacao?.status ?? "draft";
   const pautasAprovadas = statusValidacao === "approved";
 
   /*
-   * Pré-requisitos de "Iniciar Reunião": pautas aprovadas e convite enviado
-   * (evento existe no calendário: synced, ou stale após edição). A barreira de
-   * verdade é o backend (`exigirProntaParaIniciar`); aqui só explicamos o porquê.
+   * Pré-requisito de "Iniciar Reunião": convite enviado (evento existe no
+   * calendário: synced, ou stale após edição). A barreira de verdade é o
+   * backend (`exigirProntaParaIniciar`); aqui só explicamos o porquê.
    */
   const conviteEnviado =
     meeting.calendar?.syncStatus === "synced" || meeting.calendar?.syncStatus === "stale";
   const pendenciasParaIniciar = [
-    ...(pautasAprovadas ? [] : [language === "en" ? "agenda not approved yet" : "pautas ainda não aprovadas"]),
     ...(conviteEnviado ? [] : [language === "en" ? "invitation not sent yet" : "convite ainda não enviado"]),
   ];
   const podeIniciar = pendenciasParaIniciar.length === 0;
@@ -467,8 +457,8 @@ export default function MeetingDetailView({
     if ((statusValidacao === "sent" || statusValidacao === "approved") && depoisStatus === "draft") {
       triggerToast(
         language === "en"
-          ? "The agenda changed. The previous validation was reopened and must be sent for approval again."
-          : "As pautas foram alteradas. A validação anterior foi reaberta e será necessário enviar novamente para aprovação."
+          ? "The agenda changed. The previous (optional) validation was reopened; resend it if you still want it validated."
+          : "As pautas foram alteradas. A validação anterior (opcional) foi reaberta; reenvie se ainda quiser validá-las."
       );
     }
   };
@@ -1516,7 +1506,7 @@ export default function MeetingDetailView({
       ? language === "pt" ? "Aprovado" : "Approved"
       : statusValidacao === "sent"
         ? language === "pt" ? "Aguardando aprovação" : "Awaiting approval"
-        : language === "pt" ? "Pendente de envio" : "Pending send";
+        : language === "pt" ? "Opcional" : "Optional";
 
   // Percentual de CONCLUSÃO sobre as pautas que permaneceram no fluxo.
   // Adiadas ficam fora do denominador; ver `getAgendaProgress`.
@@ -1705,10 +1695,11 @@ export default function MeetingDetailView({
    * apontando para os MESMOS handlers. Sem regra nova, sem autorização própria:
    * quem exibe decide entre botão (canSchedule) e texto informativo.
    *
-   *   pautas em preparação      -> Enviar pautas para validação (abre modal)
-   *   pautas enviadas           -> Marcar pautas como aprovadas
-   *   aprovadas + convite aberto -> Enviar/Reenviar convite
-   *   convite sincronizado       -> nada pendente (null)
+   *   convite pendente/falhou -> Enviar/Reenviar convite
+   *   convite sincronizado    -> nada pendente (null)
+   *
+   * A validação das pautas é OPCIONAL (10/2026) e não aparece como próxima
+   * ação: os botões dela ficam no painel "Validação das pautas".
    */
   const proximaAcao: { label: string; onClick: () => void; busy: boolean } | null = (() => {
     // Convite primeiro (025): a reunião já deveria estar reservada desde o
@@ -1723,25 +1714,25 @@ export default function MeetingDetailView({
         busy: syncing,
       };
     }
-    if (!pautasAprovadas) {
-      if (statusValidacao === "sent") {
-        return {
-          label: language === "pt" ? "Marcar pautas como aprovadas" : "Mark agenda as approved",
-          onClick: () => void handleAprovarPautas(),
-          busy: aprovando,
-        };
-      }
-      return {
-        label: language === "pt" ? "Enviar pautas para validação" : "Send agenda for validation",
-        onClick: abrirValidacao,
-        busy: false,
-      };
-    }
     return null;
   })();
 
   return (
     <div className="space-y-6">
+      {meeting.cancelledAt && (
+        <div role="status" className="p-4 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 text-xs font-semibold">
+          {language === "en"
+            ? `Meeting cancelled on ${new Date(meeting.cancelledAt).toLocaleString("en-US")}. Read-only history (versions, documents and Minutes are kept).`
+            : `Reunião cancelada em ${new Date(meeting.cancelledAt).toLocaleString("pt-BR")}. Histórico somente leitura (versões, documentos e Ata preservados).`}
+          {meeting.calendar?.providerEventId && !meeting.calendarEventCancelledAt && (
+            <span className="block mt-1 text-rose-700">
+              {language === "en"
+                ? "The Outlook/Teams cancellation is still pending."
+                : "O cancelamento do convite no Outlook/Teams ainda está pendente."}
+            </span>
+          )}
+        </div>
+      )}
       {/* Upper header section with navigation & primary controls */}
       <div className="bg-white border border-slate-200/80 rounded-2xl p-6 md:p-8 card-shadow">
         <div className="mb-4">
@@ -1811,19 +1802,7 @@ export default function MeetingDetailView({
               ) : null}
 
                 <button 
-                  onClick={() => {
-                    setEditedTitle(meeting.title || "");
-                    setEditedSessionType(meeting.sessionType ?? "");
-                    setEditedDescription(meeting.description || "");
-                    setEditedDate(meeting.date || "");
-                    setEditedStartTime(meeting.startTime || "");
-                    setEditedEndTime(meeting.endTime || "");
-                    setEditedGovernanceBodyId(meeting.governanceBodyId || "");
-                    setEditedRecurrence(meeting.recurrence || "Single");
-                    setEditedModality(meeting.modality ?? "online");
-                    setEditedLocationKey(meeting.physicalLocation?.id ?? "");
-                    setIsEditingMeeting(true);
-                  }}
+                  onClick={() => setIsEditingMeeting(true)}
                   className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer border border-[#00658d]/10"
                 >
                     <Pencil className="w-3.5 h-3.5 text-[#00658d]" />
@@ -2173,9 +2152,7 @@ export default function MeetingDetailView({
                     <h4 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider mb-2.5">
                       {t.objectiveTitle}
                     </h4>
-                    <p className="text-slate-600 text-sm leading-relaxed whitespace-pre-line font-medium">
-                      {meeting.description || t.notInformed}
-                    </p>
+                    <RichTextView html={meeting.description} vazio={t.notInformed} className="leading-relaxed font-medium text-slate-600" />
                   </div>
                 </div>
               </div>
@@ -2197,7 +2174,7 @@ export default function MeetingDetailView({
                 <div className="space-y-2 lg:border-r lg:border-slate-100 lg:pr-5">
                   <h4 className="text-[11px] font-extrabold text-slate-700 uppercase tracking-wide flex items-center gap-2">
                     <FileText className="w-4 h-4 text-[#00658d]" />
-                    {language === "pt" ? "Validação das pautas" : "Agenda validation"}
+                    {language === "pt" ? "Validação das pautas (opcional)" : "Agenda validation (optional)"}
                   </h4>
                   <p className="text-[11px] font-semibold">
                     <span
@@ -2229,25 +2206,37 @@ export default function MeetingDetailView({
                   {!pautasAprovadas && (
                     <p className="text-[10px] text-slate-500 font-medium leading-relaxed">
                       {language === "pt"
-                        ? "A aprovação das pautas é exigida para iniciar a reunião. O convite já sai no agendamento."
-                        : "Agenda approval is required to start the meeting. The invitation is sent at scheduling."}
+                        ? "Opcional: a reunião pode ser iniciada sem validação das pautas. O convite já sai no agendamento."
+                        : "Optional: the meeting can start without agenda validation. The invitation is sent at scheduling."}
                     </p>
                   )}
                   {/*
-                    Ação SECUNDÁRIA com finalidade própria: reenviar as pautas
-                    (ex.: corrigir o aprovador) enquanto aguardam validação. A
-                    ação PRIMÁRIA ("Marcar como aprovadas") fica na faixa acima —
-                    não se repete aqui. Só `PGCP.Assessoria`: o servidor recusa
-                    o resto.
+                    Ações OPCIONAIS da validação (10/2026: nada depende delas).
+                    Ficam só aqui — não são "próxima ação". Só `PGCP.Assessoria`:
+                    o servidor recusa o resto.
                   */}
-                  {canSchedule && statusValidacao === "sent" && (
-                    <button
-                      type="button"
-                      onClick={abrirValidacao}
-                      className="px-3 py-1.5 border border-[#00658d] text-[#00658d] hover:bg-[#00658d]/5 text-[11px] font-extrabold rounded-lg transition cursor-pointer"
-                    >
-                      {language === "pt" ? "Reenviar pautas" : "Resend agenda"}
-                    </button>
+                  {canSchedule && !pautasAprovadas && (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={abrirValidacao}
+                        className="px-3 py-1.5 border border-[#00658d] text-[#00658d] hover:bg-[#00658d]/5 text-[11px] font-extrabold rounded-lg transition cursor-pointer"
+                      >
+                        {statusValidacao === "sent"
+                          ? language === "pt" ? "Reenviar pautas" : "Resend agenda"
+                          : language === "pt" ? "Enviar pautas para validação" : "Send agenda for validation"}
+                      </button>
+                      {statusValidacao === "sent" && (
+                        <button
+                          type="button"
+                          disabled={aprovando}
+                          onClick={() => void handleAprovarPautas()}
+                          className="px-3 py-1.5 border border-emerald-600 text-emerald-700 hover:bg-emerald-50 text-[11px] font-extrabold rounded-lg transition cursor-pointer disabled:opacity-50"
+                        >
+                          {language === "pt" ? "Marcar pautas como aprovadas" : "Mark agenda as approved"}
+                        </button>
+                      )}
+                    </div>
                   )}
                   {erroValidacao && !modalValidacaoAberto && (
                     <p className="text-[11px] font-bold text-red-600">{erroValidacao}</p>
@@ -3255,14 +3244,26 @@ export default function MeetingDetailView({
       )}
 
       {activeSubTab === "Documents" && (
-        <MeetingDocumentsPanel
-          language={language}
-          meetingId={meeting.id}
-          podeAdicionar={podeAdicionarDocumento}
-          versao={versaoDosDocumentos}
-          onAdd={() => setEnvioDeDocumento(null)}
-          triggerToast={triggerToast}
-        />
+        <div className="space-y-5">
+          <MeetingDocumentsPanel
+            language={language}
+            meetingId={meeting.id}
+            podeAdicionar={podeAdicionarDocumento}
+            versao={versaoDosDocumentos}
+            onAdd={() => setEnvioDeDocumento(null)}
+            triggerToast={triggerToast}
+          />
+          {/* Versões da reunião (034): PDF de cada alteração relevante. */}
+          <MeetingVersionsPanel
+            language={language}
+            meetingId={meeting.id}
+            recarregarQuando={JSON.stringify([
+              meeting.title, meeting.date, meeting.startTime, meeting.endTime, meeting.description, meeting.status,
+              meeting.calendar?.syncStatus, (meeting.participants ?? []).length, (meeting.agenda ?? []).map((a) => [a.id, a.title, a.time])
+            ])}
+            triggerToast={triggerToast}
+          />
+        </div>
       )}
 
       {/* Diálogo compartilhado: aberto pela aba Documentos ou pelo botão de um tema. */}
@@ -4187,260 +4188,25 @@ export default function MeetingDetailView({
 
           {/* Confidential encrypted metadata logs */}
 
-      {/* Modal for Editing Meeting Details */}
+      {/* Edição do cabeçalho: o MESMO modal do Calendário (EditMeetingModal). */}
       {isEditingMeeting && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[9999] p-4 transition-all duration-300 animate-fadeIn">
-          <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-2xl w-full max-h-[90vh] overflow-y-auto transform scale-100 transition-all font-sans">
-            {/* Modal Header */}
-            <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 sticky top-0 backdrop-blur-md z-10">
-              <div>
-                <h3 className="text-lg font-extrabold text-slate-900">
-                  {language === "en" ? "Edit Meeting Details" : "Editar Detalhes da Reunião"}
-                </h3>
-                <p className="text-xs text-slate-500 font-semibold mt-0.5">
-                  {language === "en" ? "Update information for this governance session." : "Atualize os metadados desta sessão de governança."}
-                </p>
-              </div>
-              <button 
-                onClick={() => setIsEditingMeeting(false)}
-                className="w-10 h-10 rounded-full bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-500 hover:text-slate-700 flex items-center justify-center transition cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Modal Body / Form */}
-            <form onSubmit={(e) => e.preventDefault()} className="p-6 space-y-5">
-              {/*
-                Tipo + TÍTULO PADRONIZADO (030). Com tipo, o título é montado pelo
-                servidor a partir de hora, órgão, formato e tipo — e recomposto a
-                cada alteração aqui. A versão aprovada da Agenda Anual não muda
-                (snapshot). Reunião antiga sem tipo mantém o título livre até
-                alguém escolher o tipo.
-              */}
-              <div className="space-y-1.5">
-                <label htmlFor="editSessionType" className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                  {language === "en" ? "Type" : "Tipo"}
-                </label>
-                <select
-                  id="editSessionType"
-                  value={editedSessionType}
-                  onChange={(e) => setEditedSessionType(e.target.value as SessionType | "")}
-                  className="w-full text-sm font-semibold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-3 outline-none cursor-pointer"
-                >
-                  {!meeting.sessionType && (
-                    <option value="">{language === "en" ? "No type (keep free title)" : "Sem tipo (manter título atual)"}</option>
-                  )}
-                  {SESSION_TYPE_OPTIONS.map((o) => <option key={o.id} value={o.id}>{language === "en" ? o.en : o.pt}</option>)}
-                </select>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                  {editedSessionType
-                    ? language === "en" ? "Meeting Title (generated)" : "Título da Reunião (gerado automaticamente)"
-                    : language === "en" ? "Meeting Title" : "Título da Reunião"}
-                </label>
-                {editedSessionType ? (
-                  <p className="w-full text-sm font-bold text-slate-700 bg-slate-50 border border-dashed border-slate-200 rounded-xl px-4 py-3 break-words">
-                    {previaDoTitulo({
-                      startTime: editedStartTime,
-                      orgao: governanceBodies.find((b) => b.id === (editedGovernanceBodyId || meeting.governanceBodyId))?.name ?? meeting.category,
-                      tipo: editedSessionType,
-                      modalidade: editedModality
-                    }) ?? meeting.title}
-                  </p>
-                ) : (
-                  <input
-                    type="text"
-                    value={editedTitle}
-                    onChange={(e) => setEditedTitle(e.target.value)}
-                    className="w-full text-sm font-bold text-slate-800 placeholder-slate-400 bg-slate-50/50 hover:bg-slate-50/80 focus:bg-white border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-[#00658d]/10"
-                    placeholder={language === "en" ? "Enter meeting title..." : "Digite o título da reunião..."}
-                  />
-                )}
-              </div>
-
-              {/* Date, Start Time, End Time Row */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="space-y-1.55">
-                  <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                    {language === "en" ? "Date" : "Data"}
-                  </label>
-                  <input 
-                    type="date"
-                    value={editedDate}
-                    onChange={(e) => setEditedDate(e.target.value)}
-                    className="w-full text-sm font-bold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-2.5 outline-none focus:bg-white transition-all focus:ring-2 focus:ring-[#00658d]/10"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                    {language === "en" ? "Start Time" : "Hora Início"}
-                  </label>
-                  <input
-                    type="time"
-                    value={editedStartTime}
-                    onChange={(e) => setEditedStartTime(e.target.value)}
-                    className="w-full text-sm font-bold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-2.5 outline-none focus:bg-white transition-all focus:ring-2 focus:ring-[#00658d]/10"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                    {language === "en" ? "End Time" : "Hora Fim"}
-                  </label>
-                  <input
-                    type="time"
-                    value={editedEndTime}
-                    onChange={(e) => setEditedEndTime(e.target.value)}
-                    className="w-full text-sm font-bold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-2.5 outline-none focus:bg-white transition-all focus:ring-2 focus:ring-[#00658d]/10"
-                  />
-                </div>
-              </div>
-
-              {/* Órgão / Recorrência / Organizador. O link do Teams não é
-                  digitado: vem do próprio evento do calendário. */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="space-y-1.5">
-                  <label htmlFor="editGovernanceBody" className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                    {language === "en" ? "Governance body" : "Órgão de Governança"}
-                  </label>
-                  <select
-                    id="editGovernanceBody"
-                    value={editedGovernanceBodyId}
-                    onChange={(e) => setEditedGovernanceBodyId(e.target.value)}
-                    className="w-full text-sm font-bold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-3 py-2.5 outline-none focus:bg-white transition-all focus:ring-2 focus:ring-[#00658d]/10 cursor-pointer"
-                  >
-                    {/* Inativos só aparecem se forem o órgão atual: trocar para
-                        um deles não é permitido na criação, nem aqui. */}
-                    {governanceBodies
-                      .filter((body) => body.isActive || body.id === meeting.governanceBodyId)
-                      .map((body) => (
-                        <option key={body.id} value={body.id}>{body.name}</option>
-                      ))}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <label htmlFor="editRecurrence" className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                    {language === "en" ? "Recurrence" : "Recorrência"}
-                  </label>
-                  <select
-                    id="editRecurrence"
-                    value={editedRecurrence}
-                    onChange={(e) => setEditedRecurrence(e.target.value)}
-                    className="w-full text-sm font-bold text-slate-800 bg-slate-50/50 border border-slate-200 focus:border-[#00658d] rounded-xl px-3 py-2.5 outline-none focus:bg-white transition-all focus:ring-2 focus:ring-[#00658d]/10 cursor-pointer"
-                  >
-                    <option value="Single">{language === "en" ? "Does not repeat" : "Não se repete (Única)"}</option>
-                    <option value="Semanal">{language === "en" ? "Weekly" : "Semanal"}</option>
-                    <option value="Quinzenal">{language === "en" ? "Biweekly" : "Quinzenal"}</option>
-                    <option value="Mensal">{language === "en" ? "Monthly" : "Mensal"}</option>
-                    <option value="Trimestral">{language === "en" ? "Quarterly" : "Trimestral"}</option>
-                    {/* Valor legado fora da lista: mantido para não trocar em silêncio. */}
-                    {!["Single", "Semanal", "Quinzenal", "Mensal", "Trimestral"].includes(editedRecurrence) && (
-                      <option value={editedRecurrence}>{editedRecurrence}</option>
-                    )}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                    {language === "en" ? "Organizer" : "Organizador"}
-                  </label>
-                  {/*
-                    Somente leitura: o convite mora no calendário do organizador.
-                    Trocá-lo exigiria mover o evento de caixa, e o PATCH recusa o
-                    campo (`organizerUserId` fica fora por decisão).
-                  */}
-                  <input
-                    type="text"
-                    value={meeting.organizer || (language === "en" ? "Not informed" : "Não informado")}
-                    readOnly
-                    aria-describedby="organizerHint"
-                    className="w-full text-sm font-bold text-slate-500 bg-slate-100 border border-slate-200 rounded-xl px-3 py-2.5 outline-none cursor-not-allowed"
-                  />
-                  <p id="organizerHint" className="text-[10px] text-slate-400 font-semibold">
-                    {language === "en"
-                      ? "Defined when the meeting is scheduled."
-                      : "Definido no agendamento da reunião."}
-                  </p>
-                </div>
-              </div>
-
-              {/*
-                Modalidade/local (025). Alterar reaproveita o MESMO evento do
-                Outlook (PATCH no id gravado) — nunca cria convite duplicado.
-              */}
-              <ModalityFields
-                language={language}
-                modality={editedModality}
-                physicalLocationKey={editedLocationKey}
-                onChange={(m, local) => {
-                  setEditedModality(m);
-                  setEditedLocationKey(local);
-                }}
-              />
-
-              {/* Description / Objective */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-extrabold text-slate-700 tracking-wider block uppercase">
-                  {language === "en" ? "Objective / Summary" : "Objetivo / Resumo"}
-                </label>
-                <textarea
-                  value={editedDescription}
-                  onChange={(e) => setEditedDescription(e.target.value)}
-                  rows={4}
-                  className="w-full text-sm font-medium text-slate-800 placeholder-slate-400 bg-slate-50/50 hover:bg-slate-50/80 focus:bg-white border border-slate-200 focus:border-[#00658d] rounded-xl px-4 py-3 outline-none transition-all focus:ring-2 focus:ring-[#00658d]/10 resize-none"
-                  placeholder={language === "en" ? "Enter meeting description..." : "Cole ou digite o objetivo desta sessão..."}
-                />
-              </div>
-            </form>
-
-            {/* Modal Footer */}
-            <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-end gap-3 bg-slate-50/30">
-              <button 
-                type="button"
-                onClick={() => setIsEditingMeeting(false)}
-                className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 font-bold text-xs rounded-xl transition cursor-pointer"
-              >
-                {language === "en" ? "Cancel" : "Cancelar"}
-              </button>
-              <button 
-                type="button"
-                onClick={() => {
-                  /*
-                   * PATCH do cabeçalho. `organizer` NÃO vai junto (somente
-                   * leitura). `meetingLink` também não: o campo saiu do
-                   * formulário e omiti-lo preserva o valor legado gravado.
-                   */
-                  void persistir(
-                    () =>
-                      apiUpdateMeeting(meeting.id, {
-                        // Com tipo, o servidor monta o título; sem tipo (legado), título livre.
-                        ...(editedSessionType ? { sessionType: editedSessionType } : { title: editedTitle }),
-                        description: editedDescription,
-                        startAt: localToInstant(editedDate, editedStartTime, meeting.timeZone),
-                        endAt: localToInstant(editedDate, editedEndTime, meeting.timeZone),
-                        recurrence: editedRecurrence,
-                        ...(editedGovernanceBodyId ? { governanceBodyId: editedGovernanceBodyId } : {}),
-                        // Só envia se mudou: modalidade/local desatualizam o convite.
-                        ...(editedModality !== (meeting.modality ?? "online") ||
-                        editedLocationKey !== (meeting.physicalLocation?.id ?? "")
-                          ? {
-                              modality: editedModality,
-                              physicalLocationKey: editedModality === "in_person" ? editedLocationKey || null : null
-                            }
-                          : {})
-                      }),
-                    language === "en" ? "Meeting updated successfully" : "Dados da reunião atualizados com sucesso"
-                  ).then((ok) => {
-                    if (ok) setIsEditingMeeting(false);
-                  });
-                }}
-                className="px-5 py-2.5 bg-[#00658d] hover:bg-[#00aeef] text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition cursor-pointer"
-              >
-                {language === "en" ? "Save Changes" : "Salvar Alterações"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <EditMeetingModal
+          language={language}
+          meeting={meeting}
+          governanceBodies={governanceBodies}
+          onClose={() => setIsEditingMeeting(false)}
+          onUnchanged={() => {
+            setIsEditingMeeting(false);
+            triggerToast(language === "en" ? "No changes to save." : "Nenhuma alteração para salvar.");
+          }}
+          onSaved={(atualizada) => {
+            setSelectedMeeting(atualizada);
+            setMeetings((prev) => prev.map((m) => (m.id === atualizada.id ? atualizada : m)));
+            setIsEditingMeeting(false);
+            triggerToast(language === "en" ? "Meeting updated successfully" : "Dados da reunião atualizados com sucesso");
+            avisarSeValidacaoReaberta(atualizada);
+          }}
+        />
       )}
 
       {/* Target Item Detail Modal - Item 1.4 */}
@@ -4455,6 +4221,8 @@ export default function MeetingDetailView({
           onClick={() => { if (!salvandoEdicao) setEditandoPautaId(null); }}
         >
           <div
+            role="dialog"
+            aria-modal="true"
             className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-md w-full overflow-hidden max-h-[90vh] flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
@@ -4726,6 +4494,8 @@ export default function MeetingDetailView({
           onClick={() => setPautaParaExcluir(null)}
         >
           <div
+            role="dialog"
+            aria-modal="true"
             className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-sm w-full overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
@@ -4773,6 +4543,8 @@ export default function MeetingDetailView({
           onClick={closeMessageModal}
         >
           <div
+            role="dialog"
+            aria-modal="true"
             className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-md w-full overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
@@ -4858,7 +4630,7 @@ export default function MeetingDetailView({
       */}
       {modalValidacaoAberto && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl w-full max-w-lg card-shadow overflow-hidden">
+          <div role="dialog" aria-modal="true" className="bg-white rounded-2xl w-full max-w-lg card-shadow overflow-hidden">
             <div className="px-6 py-5 border-b border-slate-200">
               <h3 className="text-sm font-extrabold text-slate-900">
                 {language === "en" ? "Send agenda for validation" : "Enviar pautas para validação"}

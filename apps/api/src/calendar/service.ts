@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
+import { versionarEmTransacaoPropria } from "../meetings/versions.js";
 import {
   GraphError,
   getDirectoryAddressesByObjectIds,
@@ -11,7 +12,7 @@ import {
   type DirectoryAddress,
   type GraphConfig,
 } from "../graph/client.js";
-import { encontrarLocalFisico } from "../meetings/locations.js";
+import { lerLocalDaReuniao } from "../meetings/locations.js";
 import {
   montarAttendees,
   montarEvento,
@@ -245,12 +246,13 @@ async function carregarDados(executor: Executor, meetingId: string): Promise<Dad
     organizer_name: string | null;
     online_meeting_provider: "teamsForBusiness" | null;
     modality: "online" | "in_person";
-    physical_location_key: string | null;
+    physical_location_snapshot: unknown;
+    cancelled_at: Date | null;
   }>(
     `SELECT m.id, m.title, m.description, m.start_at, m.end_at, m.timezone,
             m.meeting_link, m.online_meeting_provider,
-            m.modality, m.physical_location_key,
-            m.organizer_entra_object_id, m.organizer_name
+            m.modality, m.physical_location_snapshot,
+            m.organizer_entra_object_id, m.organizer_name, m.cancelled_at
        FROM meetings m
       WHERE m.id = $1`,
     [meetingId],
@@ -258,6 +260,8 @@ async function carregarDados(executor: Executor, meetingId: string): Promise<Dad
 
   const row = rows[0];
   if (!row) throw new HttpError(404, "Reunião não encontrada.");
+  // Cancelada (036): nunca recriar nem atualizar o evento (seria "ressuscitar" o convite).
+  if (row.cancelled_at) throw new HttpError(409, "Esta reunião foi cancelada; o convite não é enviado nem atualizado.");
 
   if (!row.organizer_entra_object_id) {
     /*
@@ -320,7 +324,8 @@ async function carregarDados(executor: Executor, meetingId: string): Promise<Dad
       onlineMeetingProvider: row.online_meeting_provider,
       modality: row.modality,
       physicalLocation:
-        row.modality === "in_person" ? encontrarLocalFisico(row.physical_location_key) : null,
+        // Copia congelada (038): o convite leva o endereco da escolha, nao o cadastro atual.
+        row.modality === "in_person" ? lerLocalDaReuniao(row.physical_location_snapshot) : null,
     },
     ownerEntraObjectId: row.organizer_entra_object_id,
     participantes: participantes.map((p) => ({
@@ -538,7 +543,17 @@ export async function syncMeetingCalendar(
       });
 
       await client.query("COMMIT");
-      return montar(rows[0]!);
+      const integracaoGravada = montar(rows[0]!);
+      /*
+       * Versão da reunião (034) — convite criado é mudança de configuração.
+       * DEPOIS do COMMIT e em transação própria: o evento já existe no
+       * Exchange, e uma falha local de versionamento não pode desfazer o
+       * registro do convite (o próximo envio criaria evento duplicado).
+       */
+      await versionarEmTransacaoPropria(meetingId, { userId: actor.id, name: actor.name }).catch((erro: unknown) => {
+        console.error("[calendar] versão da reunião após o convite não foi registrada:", (erro as { code?: string })?.code ?? "erro");
+      });
+      return integracaoGravada;
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       throw error;

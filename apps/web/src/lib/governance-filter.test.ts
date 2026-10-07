@@ -26,7 +26,8 @@ const reuniao = (id: string, startAt: string, body: ReturnType<typeof orgao>, ex
 const reunioes = [
   reuniao("exec-0802", "2027-02-08T12:00:00Z", EXEC),
   reuniao("aud-0802", "2027-02-08T17:00:00Z", AUD),
-  reuniao("exec-0310", "2027-03-10T12:00:00Z", EXEC, { origin: "annual_agenda", annualAgendaId: "aa", agendaItemsCount: 2 }),
+  // Convite ainda pendente: com temas, fica "em preparação" (pronta exige convite enviado).
+  reuniao("exec-0310", "2027-03-10T12:00:00Z", EXEC, { origin: "annual_agenda", annualAgendaId: "aa", agendaItemsCount: 2, calendarSyncStatus: "pending" }),
   reuniao("aud-2026", "2026-11-10T12:00:00Z", AUD, { status: "done" })
 ];
 

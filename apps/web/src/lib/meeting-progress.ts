@@ -148,11 +148,11 @@ export function getMeetingStage(
   // FASE PRÉ-REUNIÃO (Scheduled, Draft, Needs Approval e o legado Approved).
   //
   // A etapa ativa aqui reflete o eixo de VALIDAÇÃO DAS PAUTAS — derivado de
-  // `agendaValidation.status`, nunca um status de reunião novo:
+  // `agendaValidation.status`, nunca um status de reunião novo. Desde 10/2026 a
+  // validação é OPCIONAL: sem envio, a reunião fica em "preparation" e pode ser
+  // iniciada direto (o servidor só exige o convite).
   //
-  //   enviada / aprovada  -> etapa "validation" (aprovada = último marco antes
-  //                          de a reunião começar; o fluxo avança para "Em
-  //                          Reunião" quando o status vira In Progress, acima)
+  //   enviada / aprovada  -> etapa "validation"
   //   ainda não enviada   -> etapa "preparation"
   const validacao = meeting.agendaValidation?.status;
   if (validacao === "sent" || validacao === "approved") return "validation";

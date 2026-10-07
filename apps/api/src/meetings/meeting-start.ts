@@ -14,23 +14,21 @@ export const PRE_START_MEETING_STATUSES = [
 /**
  * Pre-requisitos para iniciar a reuniao.
  *
- * A sequencia do produto e: pautas em preparacao -> enviadas para validacao ->
- * aprovadas -> convite enviado -> reuniao. Iniciar antes disso pulava a
- * aprovacao e o convite em silencio, e o Stepper ainda pintava essas etapas
- * como cumpridas.
- *
- * Convite enviado = existe evento no calendario: `synced`, ou `stale` (evento
- * existe, mas a reuniao foi editada depois do envio — o CHECK da 011 garante
+ * So o CONVITE: iniciar sem evento no calendario deixaria os participantes sem
+ * Teams. Convite enviado = existe evento: `synced`, ou `stale` (evento existe,
+ * mas a reuniao foi editada depois do envio — o CHECK da 011 garante
  * `provider_event_id` nos dois). `pending` e `failed` nao tem evento.
+ *
+ * A APROVACAO DAS PAUTAS DEIXOU DE SER EXIGIDA (decisao de produto, 10/2026):
+ * a reuniao segue o fluxo sem depender de validacao por e-mail. O envio para
+ * validacao e o registro continuam disponiveis como passos OPCIONAIS
+ * (`agenda-validation.ts`), e `agenda_validation_status` segue gravado como
+ * historico — so nao bloqueia mais nada.
  */
-export type PendenciaDeInicio = "pautas_nao_aprovadas" | "convite_nao_enviado";
+export type PendenciaDeInicio = "convite_nao_enviado";
 
-export function pendenciasParaIniciar(estado: {
-  agendaValidationStatus: string;
-  calendarSyncStatus: string | null;
-}): PendenciaDeInicio[] {
+export function pendenciasParaIniciar(estado: { calendarSyncStatus: string | null }): PendenciaDeInicio[] {
   const pendencias: PendenciaDeInicio[] = [];
-  if (estado.agendaValidationStatus !== "approved") pendencias.push("pautas_nao_aprovadas");
   if (estado.calendarSyncStatus !== "synced" && estado.calendarSyncStatus !== "stale") {
     pendencias.push("convite_nao_enviado");
   }
@@ -38,7 +36,6 @@ export function pendenciasParaIniciar(estado: {
 }
 
 const TEXTO_DA_PENDENCIA: Record<PendenciaDeInicio, string> = {
-  pautas_nao_aprovadas: "as pautas ainda não foram aprovadas",
   convite_nao_enviado: "o convite do Outlook/Teams ainda não foi enviado",
 };
 
@@ -56,10 +53,9 @@ export async function exigirProntaParaIniciar(
 ): Promise<void> {
   const { rows } = await client.query<{
     status: string;
-    agenda_validation_status: string;
     sync_status: string | null;
   }>(
-    `SELECT m.status, m.agenda_validation_status, ci.sync_status
+    `SELECT m.status, ci.sync_status
        FROM meetings m
        LEFT JOIN meeting_calendar_integrations ci
               ON ci.meeting_id = m.id AND ci.provider = 'outlook'
@@ -70,10 +66,7 @@ export async function exigirProntaParaIniciar(
   if (!reuniao) throw new HttpError(404, "Reunião não encontrada.");
   if (!(PRE_START_MEETING_STATUSES as readonly string[]).includes(reuniao.status)) return;
 
-  const pendencias = pendenciasParaIniciar({
-    agendaValidationStatus: reuniao.agenda_validation_status,
-    calendarSyncStatus: reuniao.sync_status,
-  });
+  const pendencias = pendenciasParaIniciar({ calendarSyncStatus: reuniao.sync_status });
   if (pendencias.length > 0) {
     throw new HttpError(
       409,

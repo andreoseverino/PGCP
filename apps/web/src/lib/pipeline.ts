@@ -7,8 +7,10 @@ import type { AgendaItem, Meeting, MeetingAgenda } from "../types";
  * foi criado (ver migration 025):
  *
  *   Realizada            meetings.status em done/approved/closed
- *   Pronta para reunião  pautas aprovadas (agenda_validation = approved)
- *                        ou reunião já em andamento
+ *   Pronta para reunião  tem tema E o convite já existe no Outlook (o que o
+ *                        servidor exige para iniciar), ou reunião em andamento.
+ *                        Validação de pautas aprovada (passo OPCIONAL desde
+ *                        10/2026) também conta como pronta.
  *   Em preparação        já tem tema cadastrado, ou pautas enviadas à validação
  *   Agendada             reservada, ainda sem preparação
  *
@@ -24,16 +26,8 @@ export const PIPELINE_STAGES: ReadonlyArray<{ id: PipelineStage; pt: string; en:
   { id: "done", pt: "Realizada", en: "Held" }
 ];
 
-type MeetingParaEtapa = Pick<Meeting, "status" | "agendaItemsCount" | "agendaValidation">;
-
-/**
- * Reunião operacional no Pipeline? A decisão é do servidor
- * (`releasedToPipeline`): de Agenda Anual, só depois de aprovada; avulsa,
- * sempre. O servidor também recusa as mutações (409) — isto só organiza a tela.
- */
-export function operacionalNoPipeline(meeting: { releasedToPipeline?: boolean }): boolean {
-  return meeting.releasedToPipeline !== false;
-}
+type MeetingParaEtapa = Pick<Meeting, "status" | "agendaItemsCount" | "agendaValidation"> &
+  Partial<Pick<Meeting, "calendarSyncStatus">>;
 
 export function pipelineStage(meeting: MeetingParaEtapa): PipelineStage {
   if (meeting.status === "Done" || meeting.status === "Approved" || meeting.status === "Closed") {
@@ -41,6 +35,8 @@ export function pipelineStage(meeting: MeetingParaEtapa): PipelineStage {
   }
   if (meeting.status === "In Progress") return "ready";
   if (meeting.agendaValidation?.status === "approved") return "ready";
+  const conviteEnviado = meeting.calendarSyncStatus === "synced" || meeting.calendarSyncStatus === "stale";
+  if ((meeting.agendaItemsCount ?? 0) > 0 && conviteEnviado) return "ready";
   if ((meeting.agendaItemsCount ?? 0) > 0 || meeting.agendaValidation?.status === "sent") {
     return "preparing";
   }

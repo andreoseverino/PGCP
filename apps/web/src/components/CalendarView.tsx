@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { CalendarDays, CalendarPlus, ChevronLeft, ChevronRight, MapPin, MonitorSmartphone } from "lucide-react";
+import { CalendarDays, CalendarPlus, ChevronLeft, ChevronRight, Download, MapPin, MonitorSmartphone, Pencil } from "lucide-react";
 import type { Meeting } from "../types";
+import CalendarExportModal from "./CalendarExportModal";
 import { filtrarPorOrgao } from "../lib/governance-filter";
 import { DEFAULT_TIMEZONE, instantToLocal } from "../lib/meetings";
 import { originLabel } from "../lib/pipeline";
@@ -20,8 +21,9 @@ import {
  * Área principal: os 12 meses do ano selecionado, com os dias que têm reunião
  * destacados. Coluna lateral: Nova reunião + "Reuniões de AAAA", cronológicas.
  *
- * O Calendário só VISUALIZA, CRIA e LEVA à reunião: clicar numa reunião abre
- * o detalhe no Pipeline (mesma tela de preparação), sem edição paralela aqui.
+ * O Calendário VISUALIZA, CRIA, EXPORTA (PDF/Excel) e EDITA: clicar numa
+ * reunião abre o detalhe no Pipeline; o lápis abre o MESMO modal de edição do
+ * Pipeline (`EditMeetingModal`) — não há segunda implementação de edição.
  */
 
 interface CalendarViewProps {
@@ -35,6 +37,10 @@ interface CalendarViewProps {
   onNewMeeting: (date: string) => void;
   /** Abre a reunião no Pipeline. */
   onMeetingClick: (meeting: Meeting) => void;
+  /** Abre o modal de edição (só com `canSchedule`; o servidor exige `PGCP.Assessoria`). */
+  onEditMeeting?: (meeting: Meeting) => void;
+  /** Nome do órgão do contexto global (para o resumo da exportação). */
+  nomeDoOrgaoContexto?: string | null;
 }
 
 const SEMANA_PT = ["D", "S", "T", "Q", "Q", "S", "S"];
@@ -54,12 +60,15 @@ export default function CalendarView({
   orgaoContexto,
   canSchedule,
   onNewMeeting,
-  onMeetingClick
+  onMeetingClick,
+  onEditMeeting,
+  nomeDoOrgaoContexto = null
 }: CalendarViewProps) {
   const pt = language === "pt";
   const hoje = instantToLocal(new Date().toISOString(), DEFAULT_TIMEZONE).date;
   const [ano, setAno] = useState(() => Number(hoje.slice(0, 4)));
   const [destacado, setDestacado] = useState<string | null>(null);
+  const [exportando, setExportando] = useState(false);
   const orgao = orgaoContexto;
   // Trocar o contexto limpa o dia selecionado (pode não ter reunião no novo órgão).
   useEffect(() => setDestacado(null), [orgaoContexto]);
@@ -89,7 +98,13 @@ export default function CalendarView({
         </p>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-6 items-start">
+      {/*
+        Desktop (xl+): ~70% calendário / ~30% lateral, com piso de 360px na
+        lateral (com a sidebar do app, 30% puro daria menos que os 320px fixos
+        de antes em 1280–1440px). `minmax(0, …)` no calendário evita overflow
+        horizontal. Abaixo de xl, empilha.
+      */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(360px,3fr)_minmax(0,7fr)] gap-6 items-start">
         <section className="bg-white border border-slate-200 rounded-2xl p-4 md:p-5 min-w-0">
           <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3 mb-5">
           <div className="hidden sm:block sm:w-56" />
@@ -146,7 +161,7 @@ export default function CalendarView({
           )}
         </section>
 
-        <aside className="bg-white border border-slate-200 rounded-2xl p-4 space-y-4 xl:sticky xl:top-24">
+        <aside className="bg-white border border-slate-200 rounded-2xl p-4 space-y-4 xl:sticky xl:top-24 xl:order-first">
           {canSchedule && (
             <button
               type="button"
@@ -157,6 +172,15 @@ export default function CalendarView({
               {pt ? "Nova reunião" : "New meeting"}
             </button>
           )}
+          {/* Exportar é LEITURA: mesma política do Calendário (servidor decide o conteúdo). */}
+          <button
+            type="button"
+            onClick={() => setExportando(true)}
+            className="w-full px-4 py-2 border border-[#00658d]/30 text-[#00658d] hover:bg-sky-50 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-2 cursor-pointer"
+          >
+            <Download className="w-4 h-4" />
+            {pt ? "Exportar (PDF ou Excel)" : "Export (PDF or Excel)"}
+          </button>
 
           <div className="border-b border-slate-100 pb-2">
             <h3 className="text-sm font-extrabold text-slate-800">{pt ? `Reuniões de ${ano}` : `Meetings in ${ano}`}</h3>
@@ -170,20 +194,24 @@ export default function CalendarView({
           ) : (
             <ul className="space-y-1.5 max-h-[70vh] overflow-y-auto pr-1">
               {doAno.map((m) => (
-                <li key={m.id}>
+                <li
+                  key={m.id}
+                  className={`flex items-start gap-1 rounded-xl border transition ${
+                    destacado === m.date ? "border-[#00658d] bg-sky-50/60" : "border-transparent hover:bg-slate-50"
+                  }`}
+                >
                   <button
                     type="button"
                     onClick={() => onMeetingClick(m)}
                     title={pt ? "Abrir no Pipeline" : "Open in Pipeline"}
-                    className={`w-full text-left flex gap-3 p-2 rounded-xl border cursor-pointer transition ${
-                      destacado === m.date ? "border-[#00658d] bg-sky-50/60" : "border-transparent hover:bg-slate-50"
-                    }`}
+                    className="flex-1 min-w-0 text-left flex gap-3 p-2 rounded-xl cursor-pointer"
                   >
                     <span className="w-12 shrink-0 text-center text-[10px] font-extrabold text-[#00658d] leading-tight pt-0.5 tabular-nums">
                       {rotuloCurto(m.date, language)}
                     </span>
                     <span className="min-w-0">
-                      <span className="block text-[12px] font-extrabold text-slate-800 truncate">{m.title}</span>
+                      {/* Nome longo quebra a linha (não corta com reticências). */}
+                      <span className="block text-[12px] font-extrabold text-slate-800 leading-snug break-words">{m.title}</span>
                       <span className="flex items-center gap-1.5 text-[10px] text-slate-500 font-semibold">
                         {m.startTime} - {m.endTime}
                         {m.modality === "in_person"
@@ -196,12 +224,32 @@ export default function CalendarView({
                       </span>
                     </span>
                   </button>
+                  {canSchedule && onEditMeeting && (
+                    <button
+                      type="button"
+                      onClick={() => onEditMeeting(m)}
+                      title={pt ? "Editar reunião" : "Edit meeting"}
+                      aria-label={pt ? `Editar reunião ${m.title}` : `Edit meeting ${m.title}`}
+                      className="p-2 mt-1 rounded-lg text-[#00658d] hover:bg-sky-100 cursor-pointer shrink-0"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
           )}
         </aside>
       </div>
+      {exportando && (
+        <CalendarExportModal
+          language={language}
+          governanceBodyId={orgaoContexto}
+          nomeDoOrgao={orgaoContexto ? nomeDoOrgaoContexto : null}
+          ano={ano}
+          onClose={() => setExportando(false)}
+        />
+      )}
     </div>
   );
 }

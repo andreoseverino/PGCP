@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { ActionItem, GovernanceBody, Meeting } from "../types";
-import type { AnnualAgendaSummary } from "./annual-agendas";
 import { acaoAberta, ataPendente, calcularResumoOperacional, fupVencido, reuniaoNaSemana, somarDias } from "./dashboard-kpis";
 
 const HOJE = "2026-10-01";
@@ -11,8 +10,6 @@ const reuniao = (id: string, extra: Partial<Meeting>) =>
   ({ id, title: id, date: HOJE, startTime: "10:00", status: "Scheduled", agendaItemsCount: 0, ...extra }) as Meeting;
 const fup = (id: string, extra: Partial<ActionItem>) =>
   ({ id, title: id, origin: "", daysLate: 0, status: "Due Today", apiStatus: "open", assignedUser: { name: "", initials: "" }, ...extra }) as ActionItem;
-const agenda = (id: string, body: string, status: AnnualAgendaSummary["status"]) =>
-  ({ id, governanceBody: { id: body, name: body }, status }) as AnnualAgendaSummary;
 
 test("reuniões da semana: próximos 7 dias e ainda não realizadas", () => {
   assert.equal(somarDias("2026-12-28", 7), "2027-01-04");
@@ -68,16 +65,13 @@ const base = {
     fup("a2", { originMeetingId: "m4", dueDate: "2026-10-15", daysLate: -14 }),
     fup("a3", { dueDate: "2026-09-01", daysLate: 30 }),
     fup("a4", { originMeetingId: "m3", apiStatus: "completed", status: "Completed", dueDate: "2026-09-01", daysLate: 30 })
-  ],
-  annualAgendas: [agenda("y1", "exec", "pending_approval"), agenda("y2", "aud", "approved"), agenda("y3", "aud", "draft")]
+  ]
 };
 
 test("contexto Todos: números gerais", () => {
   assert.deepEqual(calcularResumoOperacional({ ...base, orgaoContexto: "" }), {
     orgaos: 2, // só ativos
-    aprovacoes: 2,
-    aprovacoesAgendaAnual: 1,
-    aprovacoesPautas: 1,
+    aprovacoes: 1, // m5 (pautas enviadas à validação opcional); Agenda Anual não conta mais
     fupVencidos: 2, // a1 + a3 (a4 concluído não conta)
     reunioesSemana: 2, // m1, m5
     atasPendentes: 1, // m3
@@ -88,9 +82,7 @@ test("contexto Todos: números gerais", () => {
 test("contexto de um órgão: só o que tem vínculo com ele (FUP via reunião de origem)", () => {
   assert.deepEqual(calcularResumoOperacional({ ...base, orgaoContexto: "exec" }), {
     orgaos: 1,
-    aprovacoes: 1,
-    aprovacoesAgendaAnual: 1,
-    aprovacoesPautas: 0,
+    aprovacoes: 0,
     fupVencidos: 1, // a1 (a3 não tem reunião de origem → sem órgão)
     reunioesSemana: 1,
     atasPendentes: 1,
@@ -100,10 +92,6 @@ test("contexto de um órgão: só o que tem vínculo com ele (FUP via reunião d
   assert.deepEqual([aud.aprovacoes, aud.fupVencidos, aud.reunioesSemana, aud.atasPendentes, aud.acoesPendentes], [1, 0, 1, 0, 1]);
 });
 
-test("Agenda Anual não carregada: aprovações contam só as pautas", () => {
-  const r = calcularResumoOperacional({ ...base, orgaoContexto: "", annualAgendas: null });
-  assert.equal(r.aprovacoes, 1);
-});
 
 const codigo = (arq: string) =>
   readFileSync(new URL(arq, import.meta.url), "utf8")

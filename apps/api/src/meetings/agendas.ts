@@ -5,6 +5,7 @@ import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
 import type { MeetingActor } from "./create.js";
 import { findMeeting, type MeetingDetail } from "./service.js";
+import { travarReuniaoParaVersao, versionarReuniaoSeMudou } from "./versions.js";
 import { reabrirValidacaoSePreReuniao } from "./agenda-validation.js";
 
 /**
@@ -90,6 +91,20 @@ async function emTransacao(fn: (client: PoolClient) => Promise<void>): Promise<v
   }
 }
 
+/** `emTransacao` + versão da reunião no fim da mesma transação (034). */
+function emTransacaoVersionada(
+  meetingId: string,
+  actor: MeetingActor,
+  fn: (client: PoolClient) => Promise<void>,
+): Promise<void> {
+  return emTransacao(async (client) => {
+    // Reunião travada PRIMEIRO (mesma ordem de locks de toda mutação versionada).
+    await travarReuniaoParaVersao(client, meetingId);
+    await fn(client);
+    await versionarReuniaoSeMudou(client, meetingId, actor);
+  });
+}
+
 async function tituloDaReuniaoTravada(client: PoolClient, meetingId: string): Promise<string> {
   const { rows } = await client.query<{ title: string }>(
     "SELECT title FROM meetings WHERE id = $1 FOR UPDATE",
@@ -106,7 +121,7 @@ export async function addAgenda(
 ): Promise<MeetingDetail> {
   assertUuid(meetingId, "Identificador");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     // Travada: posicao calculada sem corrida entre dois cliques.
     const titulo = await tituloDaReuniaoTravada(client, meetingId);
 
@@ -150,7 +165,7 @@ export async function updateAgenda(
   assertUuid(meetingId, "Identificador");
   assertUuid(agendaId, "Identificador da pauta");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     const titulo = await tituloDaReuniaoTravada(client, meetingId);
 
     // `meeting_id` no WHERE: id de pauta de outra reuniao nao altera nada.
@@ -189,7 +204,7 @@ export async function removeAgenda(
   assertUuid(meetingId, "Identificador");
   assertUuid(agendaId, "Identificador da pauta");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     const titulo = await tituloDaReuniaoTravada(client, meetingId);
 
     const { rows: temas } = await client.query(

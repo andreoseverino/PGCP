@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import pool from "../database.js";
 import { HttpError } from "../http-error.js";
-import { recordAudit, recordAuditIn } from "../audit/service.js";
+import { recordAuditIn } from "../audit/service.js";
 import { syncMeetingCalendar, type CalendarSyncStatus } from "../calendar/service.js";
 import {
   inserirReuniao,
@@ -14,10 +14,8 @@ import {
   type OrganizerInput,
   type ParticipantInput,
 } from "../meetings/create.js";
-import { parseEmailDoAprovador } from "../meetings/agenda-validation.js";
-import { enviarEmail } from "../mail/send.js";
-import { GraphError } from "../graph/client.js";
 import { dentroDaTransacao, transacaoAmbiente } from "../transacao-ambiente.js";
+import { versionarReuniaoSeMudou } from "../meetings/versions.js";
 import { horaLocal, parseTipoDeSessao, type TipoDeSessao } from "../meetings/title.js";
 import { cronogramaDosTemas, tempoDaReuniao, type TempoDaReuniao } from "../meetings/schedule.js";
 import {
@@ -28,13 +26,10 @@ import {
   type TemaNoPdf,
 } from "./pdf.js";
 import {
-  diferencasAposEnvio,
   lerSnapshot,
   montarSnapshot,
   totaisDoSnapshot,
-  type ReuniaoNoSnapshot,
   type SnapshotDaAgenda,
-  type TemaNoSnapshot,
 } from "./snapshot.js";
 import { addAgenda, parseAgendaInput, removeAgenda, updateAgenda } from "../meetings/agendas.js";
 import { inserirTemaNaBiblioteca } from "../agenda-topics/write.js";
@@ -54,19 +49,20 @@ import {
 } from "../meetings/update.js";
 
 type AgendaItemPatch = ReturnType<typeof parseAgendaItemPatch>;
-import { PDF_CONTENT_TYPE } from "../agenda-pdf/document.js";
 
 /**
  * AGENDA ANUAL — consolidação das reuniões de um órgão no ano (028).
  *
  *   CALENDÁRIO cria a reunião (Outlook/Teams) -> AGENDA ANUAL reúne as
  *   reuniões do órgão/ano (`meetings.annual_agenda_id`), prepara Pauta -> Tema
- *   nas MESMAS entidades da reunião, gera o compilado e envia para aprovação ->
- *   aprovada = versão (snapshot) bloqueada -> PIPELINE segue operando.
+ *   nas MESMAS entidades da reunião e gera o compilado (PDF) -> PIPELINE opera
+ *   a mesma reunião desde o agendamento.
  *
- *   Em elaboração      conteúdo editável (associar reuniões, pautas, temas)
- *   Enviada            bloqueada; volta a editar só RETIRANDO da aprovação
- *   Aprovada           bloqueada de vez; o documento é o snapshot da versão
+ * SEM APROVAÇÃO (decisão de produto, 10/2026): a Agenda Anual é sempre
+ * editável e nada espera aprovação. O que já foi enviado/aprovado antes
+ * continua gravado (`annual_agendas.status`, `annual_agenda_versions`) e
+ * legível como HISTÓRICO — documento da versão em `GET /:id/document`. Nenhuma
+ * operação produz mais `pending_approval`/`approved`.
  *
  * Datas planejadas + RESERVA (025) continuam: reservar cria a reunião pelo
  * mesmo caminho do Calendário, já associada à agenda.
@@ -176,30 +172,19 @@ export interface AnnualAgendaMeeting {
   tempo: TempoDaReuniao;
   /** Participantes DA REUNIÃO (`meeting_participants`), uma vez cada. */
   participants: Array<{ id: string; name: string; email: string | null; external: boolean; inGovernanceBodyGroup: boolean }>;
-  /**
-   * Título/horário EXIBIDOS acima (`title`/`startAt`/`endAt`/`timezone`): a
-   * versão enviada/aprovada quando existe, nunca o valor ao vivo — a Agenda
-   * Anual não muda com o Pipeline. `current` é o valor AO VIVO, só para
-   * avisar a divergência; `null` quando não há diferença ou a agenda ainda
-   * está em elaboração (nada foi congelado).
+  /*
+   * `current`, `sent` e `changedAfterSending` comparavam a reunião AO VIVO com
+   * a versão aprovada. Sem aprovação (10/2026) a Agenda mostra sempre a
+   * reunião ao vivo: os três ficam `null`, mantidos só pelo contrato.
    */
-  current: { title: string; startAt: string; endAt: string; timezone: string } | null;
-  /** Como a reunião está na versão enviada/aprovada; `null` = não estava. */
-  sent: { title: string; startAt: string; endAt: string; timezone: string } | null;
-  changedAfterSending: { data: boolean; titulo: boolean } | null;
-  /**
-   * Estava na versão enviada/aprovada e foi excluída do Pipeline depois.
-   * `true` = este cartão inteiro vem do SNAPSHOT (a reunião não existe mais em
-   * `meetings`); ids de pauta/tema são os originais (preservados na foto),
-   * ids de participante são sintéticos (snapshot só guarda nome/e-mail).
-   * Ausente/`false` nos demais — comportamento inalterado.
-   */
-  removedFromPipeline?: boolean;
+  current: null;
+  sent: null;
+  changedAfterSending: null;
 }
 
 export interface AnnualAgendaDetail extends AnnualAgendaSummary {
-  /** `true` só em elaboração; o servidor revalida em toda mutação. */
-  editable: boolean;
+  /** Sempre `true` desde a remoção da aprovação (10/2026); mantido no contrato. */
+  editable: true;
   /** Datas planejadas (025). */
   items: AnnualAgendaItem[];
   meetings: AnnualAgendaMeeting[];
@@ -213,8 +198,9 @@ export interface AnnualAgendaDetail extends AnnualAgendaSummary {
     origin: "manual" | "annual_agenda";
     linkedToOtherAgenda: boolean;
   }>;
-  /** Reuniões que estavam na versão enviada/aprovada e não estão mais. */
-  removedAfterSending: Array<{ title: string; startAt: string; timezone: string }>;
+  /** Sempre vazio desde 10/2026 (nada é congelado); mantido no contrato. */
+  removedAfterSending: never[];
+  /** Última versão enviada/aprovada ANTES de 10/2026 — só histórico. */
   version: {
     id: string;
     number: number;
@@ -365,14 +351,14 @@ export interface ReserveInput {
   /** Tipo (030): as reuniões criadas recebem o TÍTULO PADRONIZADO. */
   sessionType?: TipoDeSessao;
   modality: Modalidade;
-  physicalLocationKey: string | null;
+  physicalLocationId: string | null;
   organizer?: OrganizerInput;
   participants: ParticipantInput[];
 }
 
 export function parseReserveInput(body: unknown): ReserveInput {
   const dados = objeto(body);
-  somenteCampos(dados, ["sessionType", "modality", "physicalLocationKey", "organizer", "participants"]);
+  somenteCampos(dados, ["sessionType", "modality", "physicalLocationId", "organizer", "participants"]);
 
   const participantesBrutos = dados.participants ?? [];
   if (!Array.isArray(participantesBrutos)) {
@@ -382,12 +368,12 @@ export function parseReserveInput(body: unknown): ReserveInput {
     throw new HttpError(400, `O campo 'participants' aceita no máximo ${MAX_PARTICIPANTES} itens.`);
   }
 
-  const { modality, physicalLocationKey } = parseModalidade(dados);
+  const { modality, physicalLocationId } = parseModalidade(dados);
 
   return {
     sessionType: dados.sessionType === undefined ? undefined : parseTipoDeSessao(dados.sessionType),
     modality,
-    physicalLocationKey,
+    physicalLocationId,
     organizer: parseOrganizerInput(dados.organizer),
     participants: participantesBrutos.map((p, i) => parseParticipantInput(p, `participants[${i}]`)),
   };
@@ -401,25 +387,6 @@ export function parseReserveInput(body: unknown): ReserveInput {
  */
 export function itensAReservar<T extends { meetingId: string | null }>(itens: readonly T[]): T[] {
   return itens.filter((item) => !item.meetingId);
-}
-
-/**
- * Transicoes da APROVACAO do planejamento.
- *
- *   draft            -> pending_approval  (enviar: grava a versao/snapshot)
- *   pending_approval -> pending_approval  (reenviar: nova versao, anterior retirada)
- *   pending_approval -> draft             (retirar da aprovacao, explicito)
- *   pending_approval -> approved          (registrar: a versao enviada vira a aprovada)
- *   approved         -> approved          (idempotente; nao volta)
- *
- * Pular de draft para approved nao existe: aprovacao sem pedido nao tem lastro.
- */
-export function podeEnviarParaAprovacao(status: AnnualAgendaStatus): boolean {
-  return status === "draft" || status === "pending_approval";
-}
-
-export function podeRegistrarAprovacao(status: AnnualAgendaStatus): boolean {
-  return status === "pending_approval" || status === "approved";
 }
 
 // ---------------------------------------------------------------------------
@@ -449,7 +416,7 @@ const SUMMARY_SELECT = `
          (SELECT count(*) FROM annual_agenda_items i WHERE i.annual_agenda_id = a.id)::int AS items_count,
          (SELECT count(*) FROM annual_agenda_items i
            WHERE i.annual_agenda_id = a.id AND i.meeting_id IS NOT NULL)::int AS reserved_count,
-         (SELECT count(*) FROM meetings m WHERE m.annual_agenda_id = a.id)::int AS meetings_count,
+         (SELECT count(*) FROM meetings m WHERE m.annual_agenda_id = a.id AND m.cancelled_at IS NULL)::int AS meetings_count,
          a.created_at, a.updated_at
     FROM annual_agendas a
     JOIN governance_bodies gb ON gb.id = a.governance_body_id`;
@@ -578,6 +545,7 @@ export async function visaoAnual(ano: number): Promise<{ year: number; years: nu
        FROM meetings m
        JOIN governance_bodies gb ON gb.id = m.governance_body_id
       WHERE EXTRACT(YEAR FROM m.start_at AT TIME ZONE m.timezone)::int = $1
+        AND m.cancelled_at IS NULL
       ORDER BY m.start_at, m.id
       LIMIT 2000`,
     [ano],
@@ -592,7 +560,7 @@ export async function visaoAnual(ano: number): Promise<{ year: number; years: nu
     gb_active: boolean;
   }>(
     `SELECT a.id, a.title, a.status,
-            (SELECT count(*) FROM meetings m WHERE m.annual_agenda_id = a.id)::int AS meetings_count,
+            (SELECT count(*) FROM meetings m WHERE m.annual_agenda_id = a.id AND m.cancelled_at IS NULL)::int AS meetings_count,
             gb.id AS gb_id, gb.name AS gb_name, gb.is_active AS gb_active
        FROM annual_agendas a
        JOIN governance_bodies gb ON gb.id = a.governance_body_id
@@ -635,28 +603,6 @@ type Executor = Pick<PoolClient, "query">;
 /** Janela da reunião em minutos (`fim - início`). */
 export function minutosDaReuniao(inicio: Date, fim: Date): number {
   return Math.max(0, Math.round((fim.getTime() - inicio.getTime()) / 60000));
-}
-
-/**
- * Reuniões com programação incoerente para APROVAÇÃO: temas que somam mais
- * que a reunião, ou tema sem duração (sem duração não há cronograma).
- */
-export function problemasDeTempo(
-  reunioes: ReadonlyArray<{ id: string; title: string; start_at: Date; end_at: Date }>,
-  temas: ReadonlyArray<{ meeting_id: string; id: string; duration_minutes: number | null }>,
-): string[] {
-  const problemas: string[] = [];
-  for (const r of reunioes) {
-    const t = tempoDaReuniao(
-      minutosDaReuniao(r.start_at, r.end_at),
-      temas.filter((x) => x.meeting_id === r.id).map((x) => ({ id: x.id, durationMinutes: x.duration_minutes })),
-    );
-    const detalhes: string[] = [];
-    if (t.excessoMin > 0) detalhes.push(`excede em ${t.excessoMin} min (reunião ${t.reuniaoMin} min, temas ${t.temasMin} min)`);
-    if (t.semDuracao > 0) detalhes.push(`${t.semDuracao} tema(s) sem duração`);
-    if (detalhes.length > 0) problemas.push(`"${r.title}" — ${detalhes.join(", ")}`);
-  }
-  return problemas;
 }
 
 /**
@@ -739,6 +685,7 @@ async function carregarConteudo(db: Executor, id: string) {
        LEFT JOIN meeting_calendar_integrations ci ON ci.meeting_id = m.id AND ci.provider = 'outlook'
        LEFT JOIN annual_agenda_items i ON i.meeting_id = m.id
       WHERE m.annual_agenda_id = $1
+        AND m.cancelled_at IS NULL
       ORDER BY m.start_at, m.id`,
     [id],
   );
@@ -920,90 +867,13 @@ async function versaoVigente(db: Executor, id: string): Promise<VersaoRow | null
   return rows[0] ?? null;
 }
 
-/**
- * Monta o cartão de uma reunião que estava na versão enviada/aprovada e foi
- * excluída do Pipeline depois — inteiramente a partir do SNAPSHOT, já que a
- * linha em `meetings` não existe mais.
- *
- * Ids de pauta/tema são os ORIGINAIS (o snapshot os preserva); ids de
- * participante são sintéticos, porque o snapshot só guarda nome e e-mail, não
- * o id da linha. Sem problema: o cartão é somente leitura (ver
- * `removedFromPipeline` em `AnnualAgendaMeeting`).
- */
-function reuniaoCongeladaParaDetail(r: ReuniaoNoSnapshot): AnnualAgendaMeeting {
-  const todosOsTemas = [...r.pautas.flatMap((p) => p.temas), ...r.temasSemPauta];
-
-  const item = (t: TemaNoSnapshot, agendaId: string | null, position: number) => ({
-    id: t.id,
-    title: t.title,
-    position,
-    agendaId,
-    // Não preservados no snapshot (que guarda só o nome do tipo/natureza, não
-    // o id da taxonomia) — o cartão congelado não exibe esses dois badges.
-    agendaTopicId: null,
-    durationMinutes: t.durationMinutes ?? null,
-    responsibleLabel: t.responsavel ?? null,
-    responsibleEntraObjectId: null,
-    typeId: null,
-    natureId: null,
-    isCircularTheme: t.circular ?? false,
-    description: t.descricao ?? null,
-    inicio: t.inicio ?? "00:00",
-    fim: t.fim ?? null,
-    participants: (t.pessoas ?? []).map((p, i) => ({ id: `${t.id}-p${i}`, name: p.nome })),
-  });
-
-  // Participantes DA REUNIÃO = união dos participantes de todos os temas,
-  // sem repetir — a mesma regra que liga tema -> reunião no Pipeline.
-  const participantesUnicos = new Map<string, { id: string; name: string; email: string | null }>();
-  for (const t of todosOsTemas) {
-    for (const p of t.pessoas ?? []) {
-      const chave = p.email?.trim().toLowerCase() || p.nome;
-      if (!participantesUnicos.has(chave)) {
-        participantesUnicos.set(chave, { id: `participante-${chave}`, name: p.nome, email: p.email });
-      }
-    }
-  }
-
-  return {
-    id: r.meetingId!,
-    title: r.title,
-    startAt: r.startAt,
-    endAt: r.endAt,
-    timezone: r.timezone,
-    status: "removed",
-    origin: "manual",
-    calendarSyncStatus: null,
-    plannedItemId: null,
-    agendas: r.pautas.map((p, i) => ({ id: p.id, title: p.title, position: i })),
-    items: [
-      ...r.pautas.flatMap((p) => p.temas.map((t, i) => item(t, p.id, i))),
-      ...r.temasSemPauta.map((t, i) => item(t, null, i)),
-    ],
-    tempo: tempoDaReuniao(
-      minutosDaReuniao(new Date(r.startAt), new Date(r.endAt)),
-      todosOsTemas.map((t) => ({ id: t.id, durationMinutes: t.durationMinutes ?? null })),
-    ),
-    participants: Array.from(participantesUnicos.values()).map((p) => ({
-      ...p,
-      external: false,
-      inGovernanceBodyGroup: false,
-    })),
-    current: null,
-    sent: null,
-    changedAfterSending: null,
-    removedFromPipeline: true,
-  };
-}
-
 export async function findAnnualAgenda(id: string): Promise<AnnualAgendaDetail> {
   assertId(id);
   const conteudo = await carregarConteudo(pool, id);
   const { resumo, itens, reunioes, pautas, temas, participantesDoTema, participantesDaReuniao } = conteudo;
 
+  // Histórico: a última versão enviada/aprovada antes da remoção da aprovação.
   const versao = await versaoVigente(pool, id);
-  const enviado = versao ? lerSnapshot(versao.snapshot) : null;
-  const enviadas = new Map((enviado?.reunioes ?? []).filter((r) => r.meetingId).map((r) => [r.meetingId!, r]));
 
   // Reuniões do MESMO órgão e ano que ainda não estão nesta agenda.
   const { rows: candidatas } = await pool.query<{
@@ -1019,17 +889,16 @@ export async function findAnnualAgenda(id: string): Promise<AnnualAgendaDetail> 
        FROM meetings m
       WHERE m.governance_body_id = $1
         AND m.annual_agenda_id IS DISTINCT FROM $2
+        AND m.cancelled_at IS NULL
         AND EXTRACT(YEAR FROM m.start_at AT TIME ZONE m.timezone) = $3
       ORDER BY m.start_at, m.id
       LIMIT 200`,
     [resumo.governance_body_id, id, resumo.year],
   );
 
-  const idsAtuais = new Set(reunioes.map((r) => r.id));
-
   return {
     ...toSummary(resumo),
-    editable: resumo.status === "draft",
+    editable: true,
     items: itens.map((i) => ({
       id: i.id,
       title: i.title,
@@ -1049,38 +918,23 @@ export async function findAnnualAgenda(id: string): Promise<AnnualAgendaDetail> 
         : null,
     })),
     /*
-     * Ordem cronológica preservada mesmo misturando as duas origens: reuniões
-     * ao vivo (a maioria) e as excluídas do Pipeline depois do envio, cujo
-     * cartão vem inteiro do snapshot (`reuniaoCongeladaParaDetail`).
+     * Reuniões AO VIVO (as mesmas linhas do Pipeline), em ordem cronológica.
+     * Sem aprovação (10/2026) nada é exibido a partir de snapshot: o que o
+     * Pipeline ou o Calendário alterarem aparece aqui.
      */
-    meetings: [
-      ...reunioes.map((m) => {
-      const atual = {
-        title: m.title,
-        startAt: m.start_at.toISOString(),
-        endAt: m.end_at.toISOString(),
-      };
-      const naVersao = enviadas.get(m.id) ?? null;
+    meetings: reunioes.map((m) => {
+      const startAt = m.start_at.toISOString();
       const temasDaReuniao = temas.filter((t) => t.meeting_id === m.id);
       const noCronograma = temasDaReuniao.map((t) => ({ id: t.id, durationMinutes: t.duration_minutes }));
       const horarios = new Map(
-        cronogramaDosTemas(horaLocal(atual.startAt, m.timezone), noCronograma).map((h) => [h.id, h]),
+        cronogramaDosTemas(horaLocal(startAt, m.timezone), noCronograma).map((h) => [h.id, h]),
       );
-      /*
-       * Título/horário EXIBIDOS: a versão enviada/aprovada quando existe —
-       * a Agenda Anual não muda com o Pipeline. `current` carrega o valor
-       * AO VIVO à parte, só para o aviso de divergência comparar contra.
-       * Sem versão ainda (rascunho), exibe o valor ao vivo mesmo — nada foi
-       * congelado.
-       */
-      const exibido = naVersao ?? { ...atual, timezone: m.timezone };
-      const diferencas = naVersao ? diferencasAposEnvio(naVersao, atual) : null;
       return {
         id: m.id,
-        title: exibido.title,
-        startAt: exibido.startAt,
-        endAt: exibido.endAt,
-        timezone: naVersao ? naVersao.timezone : m.timezone,
+        title: m.title,
+        startAt,
+        endAt: m.end_at.toISOString(),
+        timezone: m.timezone,
         status: m.status,
         origin: m.origin,
         calendarSyncStatus: m.sync_status,
@@ -1108,24 +962,12 @@ export async function findAnnualAgenda(id: string): Promise<AnnualAgendaDetail> 
         tempo: tempoDaReuniao(minutosDaReuniao(m.start_at, m.end_at), noCronograma),
         /** Quem está NA REUNIÃO (uma vez cada), para a visão consolidada da Agenda. */
         participants: participantesDaReuniao.get(m.id) ?? [],
-        sent: naVersao
-          ? { title: naVersao.title, startAt: naVersao.startAt, endAt: naVersao.endAt, timezone: naVersao.timezone }
-          : null,
-        changedAfterSending: diferencas,
-        /** Valor AO VIVO no Pipeline, só para o aviso comparar — `null` quando igual ao exibido (nada mudou) ou sem versão ainda. */
-        current:
-          diferencas && (diferencas.data || diferencas.titulo)
-            ? { title: atual.title, startAt: atual.startAt, endAt: atual.endAt, timezone: m.timezone }
-            : null,
+        sent: null,
+        changedAfterSending: null,
+        current: null,
       };
-      }),
-      ...(enviado?.reunioes ?? [])
-        .filter((r) => r.meetingId && !idsAtuais.has(r.meetingId))
-        .map(reuniaoCongeladaParaDetail),
-    ].sort((a, b) => a.startAt.localeCompare(b.startAt) || a.id.localeCompare(b.id)),
-    removedAfterSending: (enviado?.reunioes ?? [])
-      .filter((r) => r.meetingId && !idsAtuais.has(r.meetingId))
-      .map((r) => ({ title: r.title, startAt: r.startAt, timezone: r.timezone })),
+    }),
+    removedAfterSending: [],
     candidates: candidatas.map((c) => ({
       id: c.id,
       title: c.title,
@@ -1193,7 +1035,7 @@ interface AgendaTravada {
   governance_body_id: string;
 }
 
-/** Lock na agenda: serializa conteúdo, reserva e aprovação. */
+/** Lock na agenda: serializa conteúdo e reserva. */
 async function travarAgenda(client: PoolClient, id: string): Promise<AgendaTravada> {
   const { rows } = await client.query<AgendaTravada>(
     "SELECT title, year, status, governance_body_id FROM annual_agendas WHERE id = $1 FOR UPDATE",
@@ -1201,100 +1043,6 @@ async function travarAgenda(client: PoolClient, id: string): Promise<AgendaTrava
   );
   if (!rows[0]) throw new HttpError(404, "Agenda Anual não encontrada.");
   return rows[0];
-}
-
-/**
- * Conteúdo da Agenda Anual só muda EM ELABORAÇÃO.
- *
- *   pending_approval  o aprovador está analisando a versão enviada: nada muda
- *                     até RETIRAR da aprovação (volta explícita a draft);
- *   approved          versão aprovada: bloqueada de vez.
- *
- * Substitui a reabertura silenciosa de antes (alterar datas voltava a draft).
- */
-export function exigirEmElaboracao(status: AnnualAgendaStatus): void {
-  if (status === "approved") {
-    throw new HttpError(
-      409,
-      "Agenda Anual aprovada. Esta versão não pode mais ser alterada. A gestão operacional das reuniões continua disponível no Pipeline.",
-    );
-  }
-  if (status === "pending_approval") {
-    throw new HttpError(
-      409,
-      "Agenda Anual enviada para aprovação: o conteúdo está bloqueado. Retire-a da aprovação para voltar a editar.",
-    );
-  }
-}
-
-export interface ReuniaoCongeladaDoCalendario {
-  id: string;
-  title: string;
-  startAt: string;
-  endAt: string;
-  timezone: string;
-  modality: "online" | "in_person" | null;
-  governanceBody: { id: string; name: string };
-  /** A reunião ainda existe em `meetings`? Abrir no Pipeline só faz sentido quando `true`. */
-  existsLive: boolean;
-}
-
-/**
- * Reuniões de TODA Agenda Anual aprovada, na versão congelada — para o
- * Calendário mostrar o aprovado em vez do que está ao vivo no Pipeline,
- * mesma regra da Agenda Anual (`findAnnualAgenda`). Só a versão APROVADA
- * conta: "Enviada" ainda pode ser retirada e voltar a editar, então o
- * Calendário continua ao vivo até a aprovação.
- */
-export async function reunioesCongeladasParaCalendario(): Promise<ReuniaoCongeladaDoCalendario[]> {
-  const { rows } = await pool.query<{
-    snapshot: unknown;
-    governance_body_id: string;
-    governance_body_name: string;
-  }>(
-    `SELECT DISTINCT ON (v.annual_agenda_id)
-            v.snapshot, a.governance_body_id, g.name AS governance_body_name
-       FROM annual_agenda_versions v
-       JOIN annual_agendas a ON a.id = v.annual_agenda_id
-       JOIN governance_bodies g ON g.id = a.governance_body_id
-      WHERE v.approved_at IS NOT NULL
-      ORDER BY v.annual_agenda_id, v.version DESC`,
-  );
-  if (rows.length === 0) return [];
-
-  const porAgenda = rows.map((r) => ({
-    snapshot: lerSnapshot(r.snapshot),
-    governanceBody: { id: r.governance_body_id, name: r.governance_body_name },
-  }));
-
-  const idsDasReunioes = new Set<string>();
-  for (const { snapshot } of porAgenda) {
-    for (const r of snapshot.reunioes) if (r.meetingId) idsDasReunioes.add(r.meetingId);
-  }
-
-  const { rows: vivas } = await pool.query<{ id: string }>(
-    `SELECT id FROM meetings WHERE id = ANY($1::uuid[])`,
-    [Array.from(idsDasReunioes)],
-  );
-  const idsVivos = new Set(vivas.map((v) => v.id));
-
-  const resultado: ReuniaoCongeladaDoCalendario[] = [];
-  for (const { snapshot, governanceBody } of porAgenda) {
-    for (const r of snapshot.reunioes) {
-      if (!r.meetingId) continue;
-      resultado.push({
-        id: r.meetingId,
-        title: r.title,
-        startAt: r.startAt,
-        endAt: r.endAt,
-        timezone: r.timezone,
-        modality: r.modality ?? null,
-        governanceBody,
-        existsLive: idsVivos.has(r.meetingId),
-      });
-    }
-  }
-  return resultado;
 }
 
 export async function createAnnualAgenda(
@@ -1339,6 +1087,7 @@ export async function createAnnualAgenda(
       `UPDATE meetings m SET annual_agenda_id = $1
         WHERE m.governance_body_id = $2
           AND m.annual_agenda_id IS NULL
+          AND m.cancelled_at IS NULL
           AND EXTRACT(YEAR FROM m.start_at AT TIME ZONE m.timezone)::int = $3
         RETURNING m.id`,
       [agendaId, input.governanceBodyId, input.year],
@@ -1368,7 +1117,6 @@ export async function updateAnnualAgenda(
   assertId(id);
   await emTransacao(async (client) => {
     const agenda = await travarAgenda(client, id);
-    exigirEmElaboracao(agenda.status);
     await client.query("UPDATE annual_agendas SET title = $2 WHERE id = $1", [id, input.title]);
     await recordAuditIn(client, {
       actorUserId: actor.userId,
@@ -1384,15 +1132,15 @@ export async function updateAnnualAgenda(
 }
 
 /**
- * Exclui a agenda EM ELABORAÇÃO e SEM reuniões. Com reunião associada, 409: a
- * reunião tem vida própria (Calendário/Pipeline) e a FK SET NULL a deixaria
- * órfã em silêncio. Agenda que já teve versão enviada também não sai (028).
+ * Exclui a agenda SEM reuniões. Com reunião associada, 409: a reunião tem vida
+ * própria (Calendário/Pipeline) e a FK SET NULL a deixaria órfã em silêncio.
+ * Agenda que já teve versão enviada para aprovação (antes de 10/2026) também
+ * não sai: o histórico de versões é preservado (028).
  */
 export async function deleteAnnualAgenda(id: string, actor: MeetingActor): Promise<void> {
   assertId(id);
   await emTransacao(async (client) => {
     const agenda = await travarAgenda(client, id);
-    exigirEmElaboracao(agenda.status);
     const { rows } = await client.query(
       `SELECT 1 FROM meetings WHERE annual_agenda_id = $1
         UNION ALL
@@ -1411,7 +1159,7 @@ export async function deleteAnnualAgenda(id: string, actor: MeetingActor): Promi
       [id],
     );
     if (versoes.length > 0) {
-      throw new HttpError(409, "Esta Agenda Anual já foi enviada para aprovação; o histórico de versões é preservado.");
+      throw new HttpError(409, "Esta Agenda Anual tem versão enviada para aprovação no histórico; ela é preservada e não pode ser excluída.");
     }
     await client.query("DELETE FROM annual_agendas WHERE id = $1", [id]);
     await recordAuditIn(client, {
@@ -1434,7 +1182,6 @@ export async function addAnnualAgendaItem(
   assertId(id);
   await emTransacao(async (client) => {
     const agenda = await travarAgenda(client, id);
-    exigirEmElaboracao(agenda.status);
     assertDentroDoAno(input, agenda.year);
 
     const { rows: total } = await client.query<{ n: number }>(
@@ -1494,7 +1241,6 @@ export async function updateAnnualAgendaItem(
   assertId(itemId, "Identificador da reunião planejada");
   await emTransacao(async (client) => {
     const agenda = await travarAgenda(client, id);
-    exigirEmElaboracao(agenda.status);
     await exigirItemNaoReservado(client, id, itemId);
     assertDentroDoAno(input, agenda.year);
 
@@ -1527,7 +1273,6 @@ export async function deleteAnnualAgendaItem(
   assertId(itemId, "Identificador da reunião planejada");
   await emTransacao(async (client) => {
     const agenda = await travarAgenda(client, id);
-    exigirEmElaboracao(agenda.status);
     const item = await exigirItemNaoReservado(client, id, itemId);
 
     await client.query("DELETE FROM annual_agenda_items WHERE id = $1 AND annual_agenda_id = $2", [itemId, id]);
@@ -1584,7 +1329,6 @@ export async function associarReuniao(
   const meetingId = uuid(meetingIdBruto, "meetingId");
   await emTransacao(async (client) => {
     const agenda = await travarAgenda(client, id);
-    exigirEmElaboracao(agenda.status);
 
     const { rows } = await client.query<{
       title: string;
@@ -1594,7 +1338,7 @@ export async function associarReuniao(
     }>(
       `SELECT title, governance_body_id, annual_agenda_id,
               EXTRACT(YEAR FROM start_at AT TIME ZONE timezone)::int AS ano_local
-         FROM meetings WHERE id = $1 FOR UPDATE`,
+         FROM meetings WHERE id = $1 AND cancelled_at IS NULL FOR UPDATE`,
       [meetingId],
     );
     const reuniao = rows[0];
@@ -1625,7 +1369,7 @@ export async function associarReuniao(
 }
 
 /**
- * Desassocia (só em elaboração). Reunião que NASCEU da reserva desta agenda
+ * Desassocia. Reunião que NASCEU da reserva desta agenda
  * (data planejada com `meeting_id`) não sai: a data voltaria a "não
  * reservada" e uma nova reserva criaria reunião duplicada.
  */
@@ -1638,12 +1382,11 @@ export async function desassociarReuniao(
   assertId(meetingId, "Identificador da reunião");
   await emTransacao(async (client) => {
     const agenda = await travarAgenda(client, id);
-    exigirEmElaboracao(agenda.status);
 
     const { rows } = await client.query<{ title: string; planned: boolean }>(
       `SELECT m.title,
               EXISTS (SELECT 1 FROM annual_agenda_items i WHERE i.meeting_id = m.id) AS planned
-         FROM meetings m WHERE m.id = $1 AND m.annual_agenda_id = $2 FOR UPDATE OF m`,
+         FROM meetings m WHERE m.id = $1 AND m.annual_agenda_id = $2 AND m.cancelled_at IS NULL FOR UPDATE OF m`,
       [meetingId, id],
     );
     if (!rows[0]) throw new HttpError(404, "Reunião não encontrada nesta Agenda Anual.");
@@ -1679,28 +1422,24 @@ export async function desassociarReuniao(
  * Porta de entrada da Agenda Anual para o conteúdo das reuniões, ATÔMICA:
  *
  *   BEGIN
- *     trava a agenda (FOR UPDATE)            — serializa com o envio
+ *     trava a agenda (FOR UPDATE)            — serializa com a reserva
  *     confere que a reunião é desta agenda   — IDOR: 404
- *     revalida "em elaboração"               — 409 enviada/aprovada
  *     executa a operação de `meetings/`      — MESMA transação (ambiente)
+ *     recalcula horários e versiona a reunião
  *   COMMIT
  *
- * O envio para aprovação trava a mesma linha antes de tirar o snapshot: ou a
- * edição termina antes (e entra no snapshot), ou ela espera o envio e recebe
- * 409 sem aplicar nada. Nunca "snapshot enviado + edição aplicada depois".
- *
  * As funções delegadas são as do Pipeline (mesmas tabelas, regras e
- * auditoria). O Pipeline (`/meetings/...`) não passa por aqui e continua
- * operando a reunião depois da aprovação: a versão aprovada está no snapshot.
+ * auditoria). O Pipeline (`/meetings/...`) não passa por aqui.
  *
  * Ordem de locks: agenda -> reunião (a operação trava a reunião). O Pipeline
  * só trava a reunião e nunca a agenda: sem ciclo, sem deadlock.
  */
 async function exigirReuniaoDaAgenda(client: PoolClient, id: string, meetingId: string): Promise<void> {
-  const { rows } = await client.query("SELECT 1 FROM meetings WHERE id = $1 AND annual_agenda_id = $2", [
-    meetingId,
-    id,
-  ]);
+  // Reunião cancelada (036) é histórico: a Agenda não edita o conteúdo dela.
+  const { rows } = await client.query(
+    "SELECT 1 FROM meetings WHERE id = $1 AND annual_agenda_id = $2 AND cancelled_at IS NULL",
+    [meetingId, id],
+  );
   if (rows.length === 0) throw new HttpError(404, "Reunião não encontrada nesta Agenda Anual.");
 }
 
@@ -1787,7 +1526,7 @@ export function parseNovoTemaDaAgenda(body: unknown): NovoTemaDaAgenda {
 
 /**
  * Cria o tema na reunião. Roda DENTRO de `editarConteudoPelaAgenda` (agenda
- * travada e em elaboração; horários recalculados ao final): sem pauta, cria a
+ * travada; horários recalculados ao final): sem pauta, cria a
  * PAUTA PADRÃO; com pauta, usa a informada ou a primeira. Tema NOVO é
  * cadastrado também na Biblioteca; tudo na MESMA transação — se algo falhar
  * (inclusive um participante), nada fica, nem o tema-mestre.
@@ -1899,25 +1638,27 @@ export function parseTemaPatchDaAgenda(body: unknown): AgendaItemPatch {
 export async function editarConteudoPelaAgenda(
   id: string,
   meetingId: string,
+  actor: MeetingActor,
   operacao: (meetingId: string) => Promise<unknown>,
 ): Promise<AnnualAgendaDetail> {
   assertId(id);
   assertId(meetingId, "Identificador da reunião");
   await emTransacao(async (client) => {
-    const agenda = await travarAgenda(client, id);
+    await travarAgenda(client, id);
     await exigirReuniaoDaAgenda(client, id, meetingId);
-    exigirEmElaboracao(agenda.status);
     await dentroDaTransacao(client, () => operacao(meetingId));
     // Ordem/duração podem ter mudado: horários recalculados na mesma transação.
     await regravarHorariosDosTemas(client, meetingId);
+    // UMA versão por operação da Agenda (as funções delegadas não versionam
+    // dentro da transação ambiente), já com os horários finais.
+    await versionarReuniaoSeMudou(client, meetingId, actor);
   });
   return findAnnualAgenda(id);
 }
 
 export {
   updateAgenda as renomearPauta,
-  // Participantes DA REUNIÃO pela Agenda (antes da aprovação o Pipeline não
-  // opera a reunião): mesmas funções da aba Participantes — deduplicação,
+  // Participantes DA REUNIÃO pela Agenda: mesmas funções da aba Participantes — deduplicação,
   // exceção 031 (incluir apaga, remover grava), convite marcado desatualizado.
   addParticipant as incluirParticipanteNaReuniao,
   removeParticipant as removerParticipanteDaReuniao,
@@ -1974,8 +1715,6 @@ export async function reserveAnnualAgenda(
 
   const criadas = await emTransacao(async (client) => {
     const agenda = await travarAgenda(client, id);
-    // Reservar inclui reuniões na agenda: conteúdo, só em elaboração.
-    exigirEmElaboracao(agenda.status);
 
     const { rows } = await client.query<{
       id: string;
@@ -2000,7 +1739,7 @@ export async function reserveAnnualAgenda(
         {
           governanceBodyId: agenda.governance_body_id,
           modality: input.modality,
-          physicalLocationKey: input.physicalLocationKey ?? undefined,
+          physicalLocationId: input.physicalLocationId ?? undefined,
           organizer: input.organizer,
           // Com tipo, o servidor monta o título padronizado (030).
           sessionType: input.sessionType,
@@ -2022,6 +1761,8 @@ export async function reserveAnnualAgenda(
         [item.id, meetingId],
       );
       if (rowCount !== 1) throw new HttpError(409, "Esta data já foi reservada por outra operação.");
+      // Versão 1 da reunião criada pela reserva (034), na mesma transação.
+      await versionarReuniaoSeMudou(client, meetingId, actor, { criacao: true });
     }
 
     if (pendentes.length > 0) {
@@ -2045,6 +1786,7 @@ export async function reserveAnnualAgenda(
        JOIN meetings m ON m.id = i.meeting_id
        JOIN meeting_calendar_integrations ci ON ci.meeting_id = m.id AND ci.provider = 'outlook'
       WHERE i.annual_agenda_id = $1
+        AND m.cancelled_at IS NULL
         AND ci.sync_status IN ('pending', 'failed')
       ORDER BY m.start_at, m.id`,
     [id],
@@ -2150,260 +1892,4 @@ export async function gerarDocumentoDaVersao(id: string): Promise<{ pdf: Buffer;
   });
   const sufixo = versao.approved_at ? `aprovada-v${versao.version}` : `v${versao.version}`;
   return { pdf, nome: nomeDoArquivoDaAgendaAnual(`${snapshot.agenda.title}-${sufixo}`, snapshot.agenda.year) };
-}
-
-/**
- * Envia o compilado ao aprovador pela caixa de QUEM ESTÁ NA SESSÃO
- * (`Mail.Send` delegado + OBO — o mesmo envio já validado; nenhuma permissão
- * nova). UMA transação, com a agenda travada:
- *
- *   BEGIN
- *     trava a agenda e revalida o status
- *     captura o conteúdo (snapshot) e numera a versão
- *     envia o e-mail com o PDF DESSE snapshot
- *     grava a versão e marca "enviada"
- *   COMMIT
- *
- * Edições pela Agenda Anual travam a mesma linha: nenhuma entra entre a
- * captura e a gravação. Falha no e-mail -> ROLLBACK, nada muda. E-mail aceito
- * e COMMIT falhou -> trilha de falha e aviso para NÃO reenviar (mesma janela
- * já tratada na validação de pautas).
- *
- * Reenviar enquanto aguarda (corrigir destinatário) cria a versão seguinte e
- * retira a anterior — no máximo uma versão em aberto (índice da 028).
- */
-/** Falha no envio do e-mail: a mesma causa, dizendo que a Agenda NÃO ficou como enviada. */
-function comAvisoDeNaoEnviada(error: unknown): unknown {
-  const aviso = " A Agenda não foi marcada como enviada.";
-  if (error instanceof GraphError) {
-    return new GraphError(`${error.message}${aviso}`, error.code, error.status, error.retryAfterSeconds);
-  }
-  if (error instanceof HttpError) return new HttpError(error.status, `${error.message}${aviso}`);
-  return error;
-}
-
-export async function solicitarAprovacao(
-  id: string,
-  emailBruto: unknown,
-  actor: MeetingActor,
-  userToken: string,
-  /** Injetável para teste; em produção, `Mail.Send` delegado (OBO). */
-  enviar: (
-    ...args: Parameters<typeof enviarEmail>
-  ) => Promise<Awaited<ReturnType<typeof enviarEmail>> | void> = enviarEmail,
-): Promise<AnnualAgendaDetail> {
-  assertId(id);
-  const email = parseEmailDoAprovador(emailBruto);
-  let enviado = false;
-  let rotulo = "";
-
-  try {
-    await emTransacao(async (client) => {
-      const atual = await travarAgenda(client, id);
-      rotulo = atual.title;
-      if (!podeEnviarParaAprovacao(atual.status)) {
-        throw new HttpError(409, "Esta Agenda Anual já foi aprovada.");
-      }
-
-      const conteudo = await carregarConteudo(client, id);
-      const snapshot = snapshotDoConteudo(conteudo);
-      if (snapshot.reunioes.length === 0) {
-        throw new HttpError(409, "Inclua ao menos uma reunião antes de enviar a Agenda Anual para aprovação.");
-      }
-      // Programação temporal coerente: sem excesso e sem tema sem duração.
-      const problemas = problemasDeTempo(conteudo.reunioes, conteudo.temas);
-      if (problemas.length > 0) {
-        throw new HttpError(
-          409,
-          `Existem reuniões cuja duração dos temas ultrapassa o horário disponível ou tem tema sem duração: ${problemas.join("; ")}.`,
-        );
-      }
-      const { rows: ultima } = await client.query<{ n: number }>(
-        "SELECT coalesce(max(version), 0)::int AS n FROM annual_agenda_versions WHERE annual_agenda_id = $1",
-        [id],
-      );
-      const numero = ultima[0]!.n + 1;
-      const agenda = snapshot.agenda;
-      const totais = totaisDoSnapshot(snapshot);
-
-      const pdf = await pdfDoSnapshot(snapshot, "pending_approval", {
-        tipo: "versao",
-        numero,
-        enviadaEm: new Date().toISOString(),
-        enviadaA: email,
-        aprovadaEm: null,
-      });
-
-      let aceito: { status: number; requestId: string | null } | null = null;
-      try {
-        aceito = (await enviar(userToken, {
-          para: email,
-          assunto: `Aprovação da Agenda Anual ${agenda.year} — ${agenda.title}`,
-          // Texto puro, montado no servidor. Mesma decisao de `mail/send.ts`.
-          corpo:
-            `Olá,\n\n${actor.name} solicita a aprovação da Agenda Anual ${agenda.year} ` +
-            `"${agenda.title}" (${agenda.governanceBody.name}): ${totais.reunioes} reunião(ões), ` +
-            `${totais.pautas} pauta(s) e ${totais.temas} tema(s).\n\n` +
-            `O compilado completo (versão ${numero}) segue no PDF em anexo.\n\n` +
-            "Por favor, responda a este e-mail com a sua aprovação.\n\n" +
-            "--\nPGCP — Plataforma Corporativa de Gestão de Pautas",
-          anexo: {
-            nome: nomeDoArquivoDaAgendaAnual(`${agenda.title}-v${numero}`, agenda.year),
-            tipo: PDF_CONTENT_TYPE,
-            conteudo: pdf,
-          },
-        }, "annual_agenda_send_mail")) || null;
-      } catch (error) {
-        // Nada foi gravado: sem versão, status inalterado (a transação desfaz).
-        const status = (error as { status?: number } | null)?.status;
-        const codigo = (error as { code?: string } | null)?.code;
-        await recordAudit({
-          actorUserId: actor.userId,
-          actorName: actor.name,
-          action: "Falha ao enviar Agenda Anual para aprovação",
-          entityType: "annual_agenda",
-          entityId: id,
-          entityLabel: `${agenda.title}${status ? ` — Microsoft 365 respondeu ${status}` : ""}${codigo ? ` (${codigo})` : ""}`,
-          status: "failure",
-        });
-        throw comAvisoDeNaoEnviada(error);
-      }
-      enviado = true;
-
-      await client.query(
-        `UPDATE annual_agenda_versions SET withdrawn_at = now()
-          WHERE annual_agenda_id = $1 AND approved_at IS NULL AND withdrawn_at IS NULL`,
-        [id],
-      );
-      await client.query(
-        `INSERT INTO annual_agenda_versions (annual_agenda_id, version, snapshot, sent_to, sent_by_user_id)
-              VALUES ($1, $2, $3::jsonb, $4, $5)`,
-        [id, numero, JSON.stringify(snapshot), email, actor.userId],
-      );
-      await client.query(
-        `UPDATE annual_agendas
-            SET status = 'pending_approval', approval_sent_at = now(), approval_sent_to = $2,
-                approved_at = NULL, approved_by_user_id = NULL
-          WHERE id = $1`,
-        [id, email],
-      );
-      await recordAuditIn(client, {
-        actorUserId: actor.userId,
-        actorName: actor.name,
-        action: "Agenda Anual enviada para aprovação",
-        entityType: "annual_agenda",
-        entityId: id,
-        // "Enviada" = ACEITA pelo Microsoft 365 (202); a entrega é do Exchange.
-        entityLabel:
-          `${agenda.title} — versão ${numero} enviada a ${email} (aceita pelo Microsoft 365` +
-          `${aceito?.requestId ? `; request-id ${aceito.requestId}` : ""})`,
-        status: "success",
-      });
-    });
-  } catch (error) {
-    if (!enviado) throw error;
-    // O e-mail saiu, o estado nao gravou.
-    await recordAudit({
-      actorUserId: actor.userId,
-      actorName: actor.name,
-      action: "E-mail da Agenda Anual enviado, mas o estado não foi gravado",
-      entityType: "annual_agenda",
-      entityId: id,
-      entityLabel: `${rotulo} — enviado a ${email}`,
-      status: "failure",
-    }).catch(() => {});
-    throw new HttpError(
-      500,
-      "O e-mail com a Agenda Anual FOI ENVIADO, mas não foi possível registrar o envio no PGCP. Não reenvie.",
-    );
-  }
-
-  return findAnnualAgenda(id);
-}
-
-/**
- * Registra a aprovação (ato humano; a resposta chega por e-mail): a VERSÃO
- * ENVIADA vira a aprovada e a agenda fica bloqueada. Idempotente.
- *
- * Sem versão em aberto (pedido feito antes da 028) não há como saber o que foi
- * aprovado: 409, reenvie para gerar a versão.
- */
-export async function registrarAprovacao(id: string, actor: MeetingActor): Promise<AnnualAgendaDetail> {
-  assertId(id);
-  await emTransacao(async (client) => {
-    const agenda = await travarAgenda(client, id);
-    if (agenda.status === "approved") return;
-    if (!podeRegistrarAprovacao(agenda.status)) {
-      throw new HttpError(409, "Envie a Agenda Anual para aprovação antes de registrar a aprovação.");
-    }
-    const { rows } = await client.query<{ id: string; version: number }>(
-      `UPDATE annual_agenda_versions SET approved_at = now(), approved_by_user_id = $2
-        WHERE annual_agenda_id = $1 AND approved_at IS NULL AND withdrawn_at IS NULL
-        RETURNING id, version`,
-      [id, actor.userId],
-    );
-    if (!rows[0]) {
-      throw new HttpError(
-        409,
-        "Não há versão enviada registrada para esta Agenda Anual. Reenvie para aprovação para gerar a versão a ser aprovada.",
-      );
-    }
-    await client.query(
-      `UPDATE annual_agendas SET status = 'approved', approved_at = now(), approved_by_user_id = $2
-        WHERE id = $1`,
-      [id, actor.userId],
-    );
-    await recordAuditIn(client, {
-      actorUserId: actor.userId,
-      actorName: actor.name,
-      action: "Agenda Anual marcada como aprovada",
-      entityType: "annual_agenda",
-      entityId: id,
-      entityLabel: `${agenda.title} — versão ${rows[0].version}`,
-      status: "success",
-    });
-  });
-  return findAnnualAgenda(id);
-}
-
-/**
- * RETIRA da aprovação (só `pending_approval`): volta a "Em elaboração" de
- * forma explícita e auditada; a versão enviada fica no histórico como
- * retirada. Aprovada não volta.
- */
-export async function retirarDaAprovacao(id: string, actor: MeetingActor): Promise<AnnualAgendaDetail> {
-  assertId(id);
-  await emTransacao(async (client) => {
-    const agenda = await travarAgenda(client, id);
-    if (agenda.status !== "pending_approval") {
-      throw new HttpError(
-        409,
-        agenda.status === "approved"
-          ? "Agenda Anual aprovada não pode ser retirada da aprovação."
-          : "Esta Agenda Anual não está aguardando aprovação.",
-      );
-    }
-    await client.query(
-      `UPDATE annual_agenda_versions SET withdrawn_at = now()
-        WHERE annual_agenda_id = $1 AND approved_at IS NULL AND withdrawn_at IS NULL`,
-      [id],
-    );
-    await client.query(
-      `UPDATE annual_agendas
-          SET status = 'draft', approval_sent_at = NULL, approval_sent_to = NULL,
-              approved_at = NULL, approved_by_user_id = NULL
-        WHERE id = $1`,
-      [id],
-    );
-    await recordAuditIn(client, {
-      actorUserId: actor.userId,
-      actorName: actor.name,
-      action: "Agenda Anual retirada da aprovação",
-      entityType: "annual_agenda",
-      entityId: id,
-      entityLabel: agenda.title,
-      status: "success",
-    });
-  });
-  return findAnnualAgenda(id);
 }

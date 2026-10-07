@@ -3,7 +3,6 @@ import { Columns3, List, MapPin, MonitorSmartphone, RefreshCw, Search, Users, Wo
 import type { Meeting } from "../types";
 import { groupByStage, originLabel, PIPELINE_STAGES, type PipelineStage } from "../lib/pipeline";
 import { filtrarPorOrgao } from "../lib/governance-filter";
-import { operacionalNoPipeline } from "../lib/pipeline";
 import { lembrarModoDoPipeline, modoInicialDoPipeline, type ModoDoPipeline } from "../lib/pipeline-list";
 
 /**
@@ -65,10 +64,9 @@ export default function PipelineView({
   const [busca, setBusca] = useState("");
   const orgao = orgaoContexto;
 
-  // Órgão vale para Quadro e Lista; a busca textual é do Quadro.
-  // Reuniões de Agenda Anual ainda não aprovada ficam na Agenda (servidor decide).
-  const emPreparacao = useMemo(() => filtrarPorOrgao(meetings, orgao).filter((m) => !operacionalNoPipeline(m)).length, [meetings, orgao]);
-  const doOrgao = useMemo(() => filtrarPorOrgao(meetings, orgao).filter(operacionalNoPipeline), [meetings, orgao]);
+  // Órgão vale para Quadro e Lista; a busca textual é do Quadro. Toda reunião
+  // (avulsa ou da Agenda Anual) opera aqui desde o agendamento (10/2026).
+  const doOrgao = useMemo(() => filtrarPorOrgao(meetings, orgao), [meetings, orgao]);
   const filtradas = useMemo(() => {
     const termo = busca.trim().toLowerCase();
     return doOrgao.filter(
@@ -88,16 +86,9 @@ export default function PipelineView({
           </h2>
           <p className="text-xs text-slate-500 font-medium mt-1">
             {pt
-              ? "Reuniões em operação: avulsas do Calendário e as de Agendas Anuais já aprovadas. Abra uma reunião para preparar pautas, temas, participantes e documentos."
-              : "Meetings in operation: standalone Calendar meetings and those from approved Annual plans. Open a meeting to prepare agendas, topics, participants and documents."}
+              ? "Reuniões em operação: do Calendário e das Agendas Anuais. Abra uma reunião para preparar pautas, temas, participantes e documentos."
+              : "Meetings in operation: from the Calendar and Annual plans. Open a meeting to prepare agendas, topics, participants and documents."}
           </p>
-          {emPreparacao > 0 && (
-            <p className="text-[11px] text-slate-500 font-semibold mt-1">
-              {pt
-                ? `${emPreparacao} ${emPreparacao === 1 ? "reunião está" : "reuniões estão"} em preparação na Agenda Anual e ${emPreparacao === 1 ? "entra" : "entram"} aqui após a aprovação.`
-                : `${emPreparacao} meeting(s) are being prepared in the Annual plan and will appear here after approval.`}
-            </p>
-          )}
         </div>
         <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl p-1 self-start md:self-auto">
           {([

@@ -22,7 +22,7 @@ interface QueryLog {
   params: unknown[];
 }
 
-/** Por padrao a reuniao esta pronta: pautas aprovadas e convite sincronizado. */
+/** Por padrao a reuniao esta pronta: convite sincronizado (validacao nao conta mais). */
 function clientForStatus(
   initialStatus: string,
   preparo: { validacao?: string; convite?: string | null } = {},
@@ -32,11 +32,11 @@ function clientForStatus(
   const client = {
     async query(sql: string, params: unknown[] = []) {
       queries.push({ sql, params });
-      if (sql.includes("agenda_validation_status") && sql.includes("meeting_calendar_integrations")) {
+      if (sql.includes("SELECT m.status") && sql.includes("meeting_calendar_integrations")) {
         return {
           rows: [{
             status,
-            agenda_validation_status: preparo.validacao ?? "approved",
+            // Validação de pautas não é mais consultada: fica fora da linha de propósito.
             sync_status: preparo.convite === undefined ? "synced" : preparo.convite,
           }],
           rowCount: 1,
@@ -100,31 +100,32 @@ test("duas conclusoes concorrentes produzem uma unica transicao", async () => {
   assert.equal(fake.queries.filter((q) => q.sql.includes("INSERT INTO audit_logs")).length, 1);
 });
 
-test("pendencias: exige pautas aprovadas e convite com evento", () => {
-  assert.deepEqual(pendenciasParaIniciar({ agendaValidationStatus: "approved", calendarSyncStatus: "synced" }), []);
-  assert.deepEqual(pendenciasParaIniciar({ agendaValidationStatus: "approved", calendarSyncStatus: "stale" }), []);
-  assert.deepEqual(
-    pendenciasParaIniciar({ agendaValidationStatus: "sent", calendarSyncStatus: "synced" }),
-    ["pautas_nao_aprovadas"],
-  );
+test("pendencias: so o convite com evento; aprovacao das pautas nao e mais exigida", () => {
+  assert.deepEqual(pendenciasParaIniciar({ calendarSyncStatus: "synced" }), []);
+  assert.deepEqual(pendenciasParaIniciar({ calendarSyncStatus: "stale" }), []);
   for (const semEvento of ["pending", "failed", null]) {
-    assert.deepEqual(
-      pendenciasParaIniciar({ agendaValidationStatus: "approved", calendarSyncStatus: semEvento }),
-      ["convite_nao_enviado"],
-    );
+    assert.deepEqual(pendenciasParaIniciar({ calendarSyncStatus: semEvento }), ["convite_nao_enviado"]);
   }
-  assert.deepEqual(
-    pendenciasParaIniciar({ agendaValidationStatus: "draft", calendarSyncStatus: null }),
-    ["pautas_nao_aprovadas", "convite_nao_enviado"],
-  );
 });
 
-test("barreira recusa com 409 reuniao pre-inicio sem aprovacao ou convite", async () => {
+test("reuniao com pautas NAO aprovadas (draft/sent) inicia normalmente quando ha convite", async () => {
+  for (const validacao of ["draft", "sent"]) {
+    const fake = clientForStatus("scheduled", { validacao, convite: "synced" });
+    await exigirProntaParaIniciar(fake.client, MEETING_ID);
+    assert.equal(
+      await startMeetingWhenAgendaItemCompletes(fake.client, MEETING_ID, "Reunião executiva", ACTOR),
+      true,
+    );
+  }
+});
+
+test("barreira recusa com 409 reuniao pre-inicio sem convite", async () => {
   const fake = clientForStatus("scheduled", { validacao: "draft", convite: null });
   await assert.rejects(exigirProntaParaIniciar(fake.client, MEETING_ID), (error: unknown) => {
     assert.ok(error instanceof HttpError);
     assert.equal(error.status, 409);
-    assert.match(error.message, /pautas ainda não foram aprovadas e o convite/);
+    assert.match(error.message, /convite do Outlook\/Teams ainda não foi enviado/);
+    assert.doesNotMatch(error.message, /aprovad/);
     return true;
   });
 });
@@ -136,8 +137,8 @@ test("barreira nao se aplica a reuniao que ja saiu da fase pre-inicio", async ()
   }
 });
 
-test("concluir pauta de reuniao nao pronta nao inicia a reuniao", async () => {
-  const fake = clientForStatus("scheduled", { validacao: "sent" });
+test("concluir pauta de reuniao sem convite nao inicia a reuniao", async () => {
+  const fake = clientForStatus("scheduled", { validacao: "approved", convite: "pending" });
   await assert.rejects(
     startMeetingWhenAgendaItemCompletes(fake.client, MEETING_ID, "Reunião executiva", ACTOR),
     (error: unknown) => error instanceof HttpError && error.status === 409,
@@ -169,7 +170,8 @@ test("transicao e conclusao permanecem na mesma transacao e sob lock", () => {
   const end = source.indexOf("export async function removeAgendaItem(", start);
   const body = source.slice(start, end);
 
-  assert.match(body, /await emTransacao\(async \(client\) =>/);
+  // Transação da mutação + versão da reunião (034) no fim da MESMA transação.
+  assert.match(body, /await emTransacaoVersionada\(meetingId, actor, async \(client\) =>/);
   assert.match(body, /exigirReuniaoTravada\(client, meetingId\)/);
   assert.match(body, /UPDATE meeting_agenda_items/);
   assert.match(body, /startMeetingWhenAgendaItemCompletes\(client, meetingId, titulo, actor\)/);

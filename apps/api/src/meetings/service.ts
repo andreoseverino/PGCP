@@ -1,9 +1,9 @@
+import type { PoolClient } from "pg";
 import pool from "../database.js";
-import { liberadaParaPipeline } from "./pipeline-release.js";
 import { HttpError } from "../http-error.js";
 import type { AgendaValidationStatus } from "./agenda-validation.js";
 import { findCalendarIntegration, type CalendarIntegration, type CalendarSyncStatus } from "../calendar/service.js";
-import { encontrarLocalFisico, type LocalFisico } from "./locations.js";
+import { lerLocalDaReuniao, type LocalFisico } from "./locations.js";
 
 /**
  * Leitura de reunioes. SOMENTE LEITURA nesta etapa.
@@ -53,6 +53,12 @@ export interface MeetingGovernanceBody {
    */
   chairEntraObjectId: string | null;
   chairName: string | null;
+  /**
+   * Presidente da Mesa EXTERNO (035): cadastro `external_participants`, sem
+   * conta no PGCP e sem identidade Microsoft. Exclusivo com
+   * `chairEntraObjectId`. Não concede acesso a nada.
+   */
+  chairExternalParticipantId: string | null;
 }
 
 /**
@@ -103,11 +109,11 @@ export interface MeetingSummary {
   /** Status da Agenda Anual da reunião (`null` = reunião avulsa). */
   annualAgendaStatus: "draft" | "pending_approval" | "approved" | null;
   /**
-   * Operacional no Pipeline? Avulsa: sempre. Com Agenda Anual: só depois de
-   * APROVADA (antes disso a reunião é preparada na Agenda). Decidido aqui, no
-   * servidor; a mesma regra protege as mutações (`pipeline-release.ts`).
+   * Operacional no Pipeline? SEMPRE `true` desde 10/2026: a Agenda Anual não
+   * tem mais aprovação que segure a reunião. Mantido no contrato para clientes
+   * que ainda leem o campo.
    */
-  releasedToPipeline: boolean;
+  releasedToPipeline: true;
   /**
    * Estado do convite (`meeting_calendar_integrations.sync_status`), tambem no
    * resumo para o Pipeline nao precisar abrir cada reuniao. `null` = sem
@@ -123,15 +129,22 @@ export interface MeetingSummary {
   sessionType: "ordinary" | "extraordinary" | null;
   status: MeetingStatus;
   /**
+   * Cancelada/excluída logicamente (036). `null` = ativa. Cancelada sai das
+   * listagens ativas e é somente leitura; o detalhe continua legível (histórico).
+   */
+  cancelledAt: string | null;
+  /** Evento do Outlook/Teams cancelado. `null` com reunião cancelada e evento = pendente. */
+  calendarEventCancelledAt: string | null;
+  /**
    * Ciclo da PAUTA — eixo SEPARADO de `status`, que e o ciclo da reuniao.
    *
    *   draft     em preparacao; nada saiu do PGCP
    *   sent      PDF enviado ao aprovador, aguardando validacao
    *   approved  validacao registrada pela Secretaria
    *
-   * Desde a 025 o convite NAO depende deste eixo: a reuniao e reservada no
-   * calendario ao ser agendada (Calendario ou Agenda Anual). A aprovacao das
-   * pautas continua exigida para INICIAR a reuniao (`meeting-start.ts`).
+   * Desde a 025 o convite NAO depende deste eixo, e desde 10/2026 iniciar a
+   * reuniao tambem nao (`meeting-start.ts`): a validacao e OPCIONAL, gravada
+   * como historico.
    */
   agendaValidation: {
     status: AgendaValidationStatus;
@@ -283,7 +296,7 @@ interface MeetingRow {
   meeting_link: string | null;
   online_meeting_provider: "teamsForBusiness" | null;
   modality: "online" | "in_person";
-  physical_location_key: string | null;
+  physical_location_snapshot: unknown;
   origin: "manual" | "annual_agenda";
   annual_agenda_id: string | null;
   annual_agenda_status: "draft" | "pending_approval" | "approved" | null;
@@ -291,6 +304,8 @@ interface MeetingRow {
   minutes_status: MinutesStatusResumo | null;
   session_type: "ordinary" | "extraordinary" | null;
   status: MeetingStatus;
+  cancelled_at: Date | null;
+  calendar_event_cancelled_at: Date | null;
   agenda_validation_status: AgendaValidationStatus;
   agenda_validation_sent_at: Date | null;
   agenda_validation_sent_to: string | null;
@@ -303,6 +318,7 @@ interface MeetingRow {
   governance_body_name: string;
   governance_body_chair_entra_object_id: string | null;
   governance_body_chair_name: string | null;
+  governance_body_chair_external_id: string | null;
   organizer_user_id: string | null;
   organizer_name: string | null;
   participants_count: number;
@@ -359,6 +375,7 @@ function toSummary(row: MeetingRow): MeetingSummary {
       name: row.governance_body_name,
       chairEntraObjectId: row.governance_body_chair_entra_object_id,
       chairName: row.governance_body_chair_name,
+      chairExternalParticipantId: row.governance_body_chair_external_id,
     },
     organizer:
       row.organizer_user_id && row.organizer_name
@@ -370,15 +387,18 @@ function toSummary(row: MeetingRow): MeetingSummary {
     meetingLink: row.meeting_link,
     onlineMeetingProvider: row.online_meeting_provider,
     modality: row.modality,
-    physicalLocation: row.modality === "in_person" ? encontrarLocalFisico(row.physical_location_key) : null,
+    // Copia congelada no momento da escolha (038), nunca o cadastro atual.
+    physicalLocation: row.modality === "in_person" ? lerLocalDaReuniao(row.physical_location_snapshot) : null,
     origin: row.origin,
     annualAgendaId: row.annual_agenda_id,
     annualAgendaStatus: row.annual_agenda_status,
-    releasedToPipeline: liberadaParaPipeline(row.annual_agenda_status),
+    releasedToPipeline: true,
     calendarSyncStatus: row.calendar_sync_status,
     minutesStatus: row.minutes_status,
     sessionType: row.session_type,
     status: row.status,
+    cancelledAt: row.cancelled_at?.toISOString() ?? null,
+    calendarEventCancelledAt: row.calendar_event_cancelled_at?.toISOString() ?? null,
     agendaValidation: {
       status: row.agenda_validation_status,
       sentAt: row.agenda_validation_sent_at?.toISOString() ?? null,
@@ -468,7 +488,7 @@ const SUMMARY_SELECT = `
          m.meeting_link,
          m.online_meeting_provider,
          m.modality,
-         m.physical_location_key,
+         m.physical_location_snapshot,
          m.origin,
          m.annual_agenda_id,
          (SELECT aa.status FROM annual_agendas aa WHERE aa.id = m.annual_agenda_id) AS annual_agenda_status,
@@ -477,6 +497,8 @@ const SUMMARY_SELECT = `
          (SELECT mm.status FROM meeting_minutes mm WHERE mm.meeting_id = m.id) AS minutes_status,
          m.session_type,
          m.status,
+         m.cancelled_at,
+         m.calendar_event_cancelled_at,
          m.agenda_validation_status,
          m.agenda_validation_sent_at,
          m.agenda_validation_sent_to,
@@ -488,7 +510,9 @@ const SUMMARY_SELECT = `
          gb.id                    AS governance_body_id,
          gb.name                  AS governance_body_name,
          gb.chair_entra_object_id AS governance_body_chair_entra_object_id,
-         gb.chair_name            AS governance_body_chair_name,
+         -- Externo: o nome ATUAL do cadastro; Entra: o snapshot da escolha.
+         COALESCE(chair_ext.full_name, gb.chair_name) AS governance_body_chair_name,
+         gb.chair_external_participant_id AS governance_body_chair_external_id,
          m.organizer_user_id,
          org.name AS organizer_name,
          (SELECT count(*) FROM meeting_participants mp WHERE mp.meeting_id = m.id)::int AS participants_count,
@@ -497,6 +521,7 @@ const SUMMARY_SELECT = `
          (SELECT count(*) FROM documents dc WHERE dc.meeting_id = m.id)::int AS documents_count
     FROM meetings m
     JOIN governance_bodies gb ON gb.id = m.governance_body_id
+    LEFT JOIN external_participants chair_ext ON chair_ext.id = gb.chair_external_participant_id
     LEFT JOIN users org       ON org.id = m.organizer_user_id
 `;
 
@@ -509,8 +534,10 @@ export interface ListMeetingsFilters {
   limit: number;
 }
 
-export async function listMeetings(filters: ListMeetingsFilters): Promise<MeetingSummary[]> {
-  const conditions: string[] = [];
+export async function listMeetings(filters: ListMeetingsFilters, db: Executor = pool): Promise<MeetingSummary[]> {
+  // Listagem = fluxos ATIVOS (Pipeline, Calendário, Visão Geral, busca):
+  // reunião cancelada (036) não volta. O detalhe (`findMeeting`) segue legível.
+  const conditions: string[] = ["m.cancelled_at IS NULL"];
   const params: unknown[] = [];
 
   const bind = (value: unknown): string => {
@@ -547,7 +574,7 @@ export async function listMeetings(filters: ListMeetingsFilters): Promise<Meetin
 
   // `m.id` como criterio de desempate mantem a ordem estavel entre chamadas
   // quando duas reunioes comecam no mesmo instante.
-  const { rows } = await pool.query<MeetingRow>(
+  const { rows } = await db.query<MeetingRow>(
     `${SUMMARY_SELECT} ${where} ORDER BY m.start_at DESC, m.id LIMIT ${bind(filters.limit)}`,
     params,
   );
@@ -555,28 +582,39 @@ export async function listMeetings(filters: ListMeetingsFilters): Promise<Meetin
   return rows.map(toSummary);
 }
 
-export async function findMeeting(id: string): Promise<MeetingDetail> {
+type Executor = Pick<PoolClient, "query">;
+
+/**
+ * Detalhe da reuniao. `db` permite ler DENTRO de uma transacao (versionamento:
+ * a foto precisa ver o que a mutacao acabou de gravar, antes do COMMIT). Num
+ * cliente de transacao as consultas vao em sequencia — o `pg` nao paraleliza
+ * no mesmo cliente.
+ */
+export async function findMeeting(id: string, db: Executor = pool): Promise<MeetingDetail> {
   assertValidId(id);
 
-  const { rows } = await pool.query<MeetingRow>(`${SUMMARY_SELECT} WHERE m.id = $1`, [id]);
+  const { rows } = await db.query<MeetingRow>(`${SUMMARY_SELECT} WHERE m.id = $1`, [id]);
   const row = rows[0];
 
   if (!row) {
     throw new HttpError(404, "Reunião não encontrada.");
   }
 
-  const [participants, agendas, agendaItems, calendar] = await Promise.all([
-    listParticipants(id),
-    listAgendas(id),
-    listAgendaItems(id),
-    findCalendarIntegration(id),
-  ]);
+  const [participants, agendas, agendaItems, calendar] =
+    db === pool
+      ? await Promise.all([listParticipants(id), listAgendas(id), listAgendaItems(id), findCalendarIntegration(id)])
+      : [
+          await listParticipants(id, db),
+          await listAgendas(id, db),
+          await listAgendaItems(id, db),
+          await findCalendarIntegration(id, db),
+        ];
 
   return { ...toSummary(row), participants, agendas, agendaItems, calendar };
 }
 
-async function listAgendas(meetingId: string): Promise<MeetingAgenda[]> {
-  const { rows } = await pool.query<MeetingAgenda>(
+async function listAgendas(meetingId: string, db: Executor = pool): Promise<MeetingAgenda[]> {
+  const { rows } = await db.query<MeetingAgenda>(
     `SELECT id, title, position
        FROM meeting_agendas
       WHERE meeting_id = $1
@@ -586,8 +624,8 @@ async function listAgendas(meetingId: string): Promise<MeetingAgenda[]> {
   return rows;
 }
 
-async function listParticipants(meetingId: string): Promise<MeetingParticipant[]> {
-  const { rows } = await pool.query<ParticipantRow>(
+async function listParticipants(meetingId: string, db: Executor = pool): Promise<MeetingParticipant[]> {
+  const { rows } = await db.query<ParticipantRow>(
     `SELECT mp.id,
             mp.user_id,
             u.name AS user_name,
@@ -622,8 +660,8 @@ async function listParticipants(meetingId: string): Promise<MeetingParticipant[]
   return rows.map(toParticipant);
 }
 
-async function listAgendaItems(meetingId: string): Promise<MeetingAgendaItem[]> {
-  const { rows } = await pool.query<AgendaItemRow>(
+async function listAgendaItems(meetingId: string, db: Executor = pool): Promise<MeetingAgendaItem[]> {
+  const { rows } = await db.query<AgendaItemRow>(
     `SELECT ai.id,
             ai.meeting_agenda_id,
             ai.title,
@@ -654,7 +692,7 @@ async function listAgendaItems(meetingId: string): Promise<MeetingAgendaItem[]> 
 
   // Participantes POR PAUTA (020): uma consulta para toda a reunião, agrupada por
   // item. `name` prioriza o nome de exibição/usuário; e-mail é último recurso.
-  const { rows: vinculos } = await pool.query<{
+  const { rows: vinculos } = await db.query<{
     meeting_agenda_item_id: string;
     participant_id: string;
     name: string;

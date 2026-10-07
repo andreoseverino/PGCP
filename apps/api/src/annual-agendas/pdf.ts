@@ -238,7 +238,7 @@ export function tipoDoDocumento(documento: DocumentoDaAgendaNoPdf | undefined): 
 /** Texto da faixa de identificação do documento. */
 export function rotuloDoDocumento(documento: DocumentoDaAgendaNoPdf | undefined): string {
   if (!documento || documento.tipo === "previa") {
-    return "PRÉVIA — Este documento reflete o estado atual e não representa a versão aprovada.";
+    return "PRÉVIA — Este documento reflete o estado atual da Agenda Anual na data de emissão.";
   }
   const envio = `enviada em ${dataHora(documento.enviadaEm)} a ${documento.enviadaA}`;
   if (!documento.aprovadaEm) return `Versão ${documento.numero} — ${envio}; aguardando aprovação.`;
@@ -344,7 +344,11 @@ function identificacao(doc: Doc, agenda: AgendaAnualNoPdf): void {
   const celulas: Array<[string, string]> = [
     ["Órgão colegiado", limitar(agenda.orgao, 60)],
     ["Ano", String(agenda.ano)],
-    ["Status", ROTULO_DO_STATUS[agenda.status]],
+    // Prévia: sem aprovação (10/2026) não há status a afirmar; vale a emissão.
+    // Versão antiga: o status é o que ela teve (histórico).
+    !agenda.documento || agenda.documento.tipo === "previa"
+      ? ["Emitido em", dataHora(agenda.emitidoEm)]
+      : ["Status", ROTULO_DO_STATUS[agenda.status]],
     ["Documento", documento],
     ["Reuniões", String(agenda.reunioes.length)],
     ["Temas", String(temas)],

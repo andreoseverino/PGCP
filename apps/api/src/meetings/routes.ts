@@ -2,9 +2,9 @@ import { Router, type Request, type Response } from "express";
 import { HttpError } from "../http-error.js";
 import { requireActivePgcpUser } from "../users/middleware.js";
 import { requirePgcpAssessoria } from "../authz/app-roles.js";
-import { findMeeting, listMeetings, parseListFilters } from "./service.js";
+import { assertValidId, findMeeting, listMeetings, parseListFilters } from "./service.js";
 import { createMeeting, parseCreateInput } from "./create.js";
-import { deleteMeeting } from "./delete.js";
+import { deleteMeeting, recusarMutacaoEmReuniaoCancelada } from "./delete.js";
 import { postponeAgendaItem, resumeAgendaItem } from "./postpone.js";
 import {
   CalendarPreconditionError,
@@ -12,7 +12,10 @@ import {
   syncMeetingCalendar,
 } from "../calendar/service.js";
 import { GraphError } from "../graph/client.js";
-import { teamsMessageRateLimit } from "../security/limiters.js";
+import { calendarExportRateLimit, teamsMessageRateLimit } from "../security/limiters.js";
+import { exportarCalendario, parseFiltrosDeExportacao } from "./export.js";
+import { gerarPdfDaVersao, listarVersoesDaReuniao } from "./versions.js";
+import { podeVisualizarReuniao, type EspectadorPgcp } from "./visibility.js";
 import {
   assertEmptyTeamsCallInput,
   parseTeamsMessageInput,
@@ -27,14 +30,13 @@ import {
   parseEmailDoAprovador,
 } from "./agenda-validation.js";
 import { addAgenda, parseAgendaInput, removeAgenda, updateAgenda } from "./agendas.js";
-import { listarLocaisFisicos } from "./locations.js";
+import { listActiveMeetingLocations } from "../meeting-locations/service.js";
 import {
   clearMinutesHandler,
   getMinutesHandler,
   putMinutesHandler,
 } from "../meeting-minutes/routes.js";
 import { findMeetingMinutes } from "../meeting-minutes/service.js";
-import { exigirLiberadaParaPipeline } from "./pipeline-release.js";
 import express from "express";
 import { adicionarDocumentoDaReuniao } from "../documents/service.js";
 import { tamanhoMaximo, descreverTamanho } from "../documents/file-rules.js";
@@ -59,12 +61,14 @@ import {
 
 export const meetingsRouter = Router();
 
-/**
- * Reunião de Agenda Anual ainda não aprovada é preparada NA AGENDA: aqui, toda
- * mutação em `/:id/...` (exceto o convite de calendário) responde 409. Fica
- * ANTES das rotas para valer para todas. A Agenda edita pelas próprias rotas.
+/*
+ * SEM GUARDA DE "LIBERAÇÃO PARA O PIPELINE" (10/2026): a Agenda Anual não tem
+ * mais aprovação, e a reunião vinculada a ela é operada no Pipeline desde o
+ * agendamento. A barreira de mutação é a App Role, em cada rota.
+ *
+ * Reunião CANCELADA (036) é somente leitura: guarda única, antes das rotas.
  */
-meetingsRouter.use("/:id", exigirLiberadaParaPipeline());
+meetingsRouter.use("/:id", recusarMutacaoEmReuniaoCancelada());
 
 /**
  * Reunioes — leitura e escrita.
@@ -128,12 +132,45 @@ meetingsRouter.get("/", requireActivePgcpUser, async (req: Request, res: Respons
 /**
  * GET /meetings/locations
  *
- * Catalogo de locais fisicos para reuniao presencial. Nomes do produto;
- * endereco so quando configurado no ambiente (nunca inventado). Registrada
+ * Locais ATIVOS do cadastro (038) para escolher na reuniao presencial: nome e
+ * endereco, sem observacao interna nem status. Inativos nao aparecem (a
+ * reuniao que ja usa um local inativo mostra a propria copia). Registrada
  * ANTES de `/:id` para "locations" nao ser lido como identificador.
  */
-meetingsRouter.get("/locations", requireActivePgcpUser, (_req: Request, res: Response) => {
-  res.json({ locations: listarLocaisFisicos() });
+meetingsRouter.get("/locations", requireActivePgcpUser, async (_req: Request, res: Response) => {
+  try {
+    res.json({ locations: await listActiveMeetingLocations() });
+  } catch (error) {
+    sendError(res, error, "listar locais");
+  }
+});
+
+function espectadorDa(req: Request): EspectadorPgcp {
+  const usuario = req.pgcpUser;
+  const principal = req.principal;
+  if (!usuario || !principal) throw new HttpError(500, "Erro interno ao resolver a identidade.");
+  return { userId: usuario.id, entraTenantId: principal.entraTenantId, entraObjectId: principal.entraObjectId ?? null };
+}
+
+/**
+ * GET /meetings/export?format=pdf|xlsx[&dateFrom&dateTo&governanceBodyId]
+ *
+ * Exporta o CALENDÁRIO filtrado. Leitura: mesma política do Calendário
+ * (usuário ativo + `visibility.ts`); o servidor decide o que entra no arquivo
+ * (sem descrição, sem e-mail — ver `export.ts`). Registrada ANTES de `/:id`.
+ * Nome do arquivo montado no servidor, só ASCII.
+ */
+meetingsRouter.get("/export", requireActivePgcpUser, calendarExportRateLimit, async (req: Request, res: Response) => {
+  try {
+    const filtros = parseFiltrosDeExportacao(req.query as Record<string, unknown>);
+    const arquivo = await exportarCalendario(filtros, espectadorDa(req));
+    res.setHeader("Content-Type", arquivo.tipo);
+    res.setHeader("Content-Disposition", `attachment; filename="${arquivo.nome}"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(arquivo.conteudo);
+  } catch (error) {
+    sendError(res, error, "exportar calendário");
+  }
 });
 
 /**
@@ -468,10 +505,9 @@ meetingsRouter.post("/:id/calendar-sync", requirePgcpAssessoria, async (req, res
      * SEM PRE-CONDICAO DE PAUTA APROVADA (025).
      *
      * Regra de produto: agendar RESERVA a agenda de executivos de baixa
-     * disponibilidade — pela Agenda Anual antes mesmo da aprovacao do
-     * planejamento, e pelo Calendario antes de existir pauta. O gate
-     * `agenda_not_approved` (016) foi retirado daqui; a aprovacao das pautas
-     * continua exigida para INICIAR a reuniao (`meeting-start.ts`).
+     * disponibilidade — pela Agenda Anual e pelo Calendario, antes de existir
+     * pauta. Desde 10/2026 a aprovacao das pautas tambem nao e exigida para
+     * INICIAR a reuniao (`meeting-start.ts`): so o convite.
      *
      * O que continua barrando: papel (`PGCP.Assessoria`), pre-condicoes do
      * convite (organizador Microsoft, participantes com endereco — 422) e a
@@ -499,15 +535,12 @@ meetingsRouter.post("/:id/calendar-sync", requirePgcpAssessoria, async (req, res
 });
 
 /**
- * DELETE /meetings/:id
+ * DELETE /meetings/:id — CANCELAMENTO LÓGICO (036). Nada é apagado: a reunião
+ * sai dos fluxos ativos e vira histórico (versões, PDFs, documentos, Ata,
+ * trilha). Depois do commit local, cancela o evento do Outlook/Teams; falha no
+ * Graph deixa `calendarCancellation: "pending"` e repetir a chamada retenta.
  *
- * Apaga a reuniao, participantes, pautas vinculadas, Anotacoes, Ata e a
- * integracao de calendario local (cascata das FKs — ver `delete.ts`). Os temas
- * na Biblioteca e os FUPs sobrevivem, so perdendo o vinculo de origem.
- *
- * EXIGE `PGCP.Assessoria` — a mesma barreira de toda mutacao aqui. Se a
- * reuniao ja tinha convite real no Outlook, tenta cancela-lo primeiro
- * (melhor esforco: falha no Graph nao impede a exclusao local).
+ * 200 com o resultado (antes era 204 sem corpo). EXIGE `PGCP.Assessoria`.
  */
 meetingsRouter.delete<{ id: string }>("/:id", requirePgcpAssessoria, async (req, res) => {
   const usuario = req.pgcpUser;
@@ -517,8 +550,7 @@ meetingsRouter.delete<{ id: string }>("/:id", requirePgcpAssessoria, async (req,
   }
 
   try {
-    await deleteMeeting(req.params.id, { id: usuario.id, name: usuario.name });
-    res.status(204).end();
+    res.json(await deleteMeeting(req.params.id, { id: usuario.id, name: usuario.name }));
   } catch (error) {
     sendError(res, error, "excluir");
   }
@@ -536,7 +568,8 @@ meetingsRouter.delete<{ id: string }>("/:id", requirePgcpAssessoria, async (req,
  * externa real, e aceitar a confirmacao do navegador seria assinatura falsa.
  */
 /**
- * VALIDACAO DE PAUTAS — o passo entre preparar e convidar.
+ * VALIDACAO DE PAUTAS — passo OPCIONAL desde 10/2026: nada no fluxo depende
+ * dele (iniciar exige so o convite). Mantido como estava ate decisao futura.
  *
  * `POST /:id/agenda-validation` gera o .pdf, envia ao aprovador pela caixa de
  * QUEM ESTA NA SESSAO (Graph delegado, On-Behalf-Of) e marca `sent`. O
@@ -599,8 +632,8 @@ meetingsRouter.post("/:id/agenda-approval", requirePgcpAssessoria, async (req, r
 /**
  * POST /:id/documents — anexo da reunião (ou do tema DESTA reunião, via
  * `?agendaItemId=`). Corpo = bytes do arquivo (`application/octet-stream`);
- * nome e descrição em cabeçalho (URL-encoded). Pipeline: `PGCP.Assessoria` e a
- * guarda de liberação (Agenda Anual aprovada) valem aqui como em toda mutação.
+ * nome e descrição em cabeçalho (URL-encoded). `PGCP.Assessoria`, como em toda
+ * mutação.
  * Validação, S3 e metadado: `documents/service.ts`.
  */
 meetingsRouter.post("/:id/documents", requirePgcpAssessoria, async (req: Request, res: Response) => {
@@ -651,6 +684,38 @@ meetingsRouter.post("/:id/documents", requirePgcpAssessoria, async (req: Request
     res.status(201).json({ document: documento });
   } catch (error) {
     sendError(res, error, "adicionar documento");
+  }
+});
+
+/**
+ * VERSÕES da reunião (034): lista e PDF de cada uma. Leitura, mesma política
+ * do detalhe (usuário ativo + `visibility.ts`; reunião invisível = 404). A
+ * versão é buscada pelo par (reunião, versão): id de versão de OUTRA reunião
+ * responde 404 — sem IDOR.
+ */
+meetingsRouter.get("/:id/versions", requireActivePgcpUser, async (req: Request, res: Response) => {
+  try {
+    const meetingId = req.params.id as string;
+    assertValidId(meetingId); // 400 antes de ir ao banco
+    if (!(await podeVisualizarReuniao(meetingId, espectadorDa(req)))) throw new HttpError(404, "Reunião não encontrada.");
+    res.json({ versions: await listarVersoesDaReuniao(meetingId) });
+  } catch (error) {
+    sendError(res, error, "listar versões");
+  }
+});
+
+meetingsRouter.get("/:id/versions/:versionId/pdf", requireActivePgcpUser, async (req: Request, res: Response) => {
+  try {
+    const meetingId = req.params.id as string;
+    assertValidId(meetingId); // 400 antes de ir ao banco
+    if (!(await podeVisualizarReuniao(meetingId, espectadorDa(req)))) throw new HttpError(404, "Reunião não encontrada.");
+    const { pdf, nome } = await gerarPdfDaVersao(meetingId, req.params.versionId as string);
+    res.setHeader("Content-Type", PDF_CONTENT_TYPE);
+    res.setHeader("Content-Disposition", `attachment; filename="${nome}"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(pdf);
+  } catch (error) {
+    sendError(res, error, "gerar PDF da versão");
   }
 });
 

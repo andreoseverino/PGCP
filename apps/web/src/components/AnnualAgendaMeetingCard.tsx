@@ -61,8 +61,8 @@ import type { TemaDaBibliotecaResumo } from "../lib/annual-agenda-rules";
 /**
  * Uma reunião da Agenda Anual, orientada a TEMAS ("+ Novo tema", "Adicionar da
  * Biblioteca"). O modelo segue Reunião -> Pauta -> Tema nas MESMAS entidades
- * que o Pipeline opera. Em elaboração, a Agenda edita pautas e temas por rotas
- * próprias (estado e pertença conferidos no servidor); fora disso, só leitura.
+ * que o Pipeline opera. Com permissão, a Agenda edita pautas e temas por rotas
+ * próprias (pertença conferida no servidor); sem permissão, só leitura.
  *
  * Pauta: com uma só (o caso comum, inclusive a pauta padrão criada pelo
  * servidor no primeiro tema), ela fica oculta e os temas aparecem direto; com
@@ -84,8 +84,6 @@ interface Props {
   orgao: { id: string; name: string };
   meeting: AnnualAgendaMeeting;
   editable: boolean;
-  /** Versão enviada/aprovada existe: mostrar diferenças "após envio/aprovação". */
-  approved: boolean;
   ocupado: boolean;
   libraryTopics: TemaDaBibliotecaResumo[];
   /** Taxonomias da Administração (tipo/natureza do tema). */
@@ -150,7 +148,6 @@ export default function AnnualAgendaMeetingCard({
   orgao,
   meeting,
   editable,
-  approved,
   ocupado,
   libraryTopics,
   pautaTypes,
@@ -562,30 +559,12 @@ export default function AnnualAgendaMeetingCard({
             <span>· {originLabel(meeting.origin, language)}</span>
             <span>· {meeting.agendas.length} {pt ? "pauta(s)" : "agenda(s)"} · {meeting.items.length} {pt ? "tema(s)" : "topic(s)"}</span>
           </p>
-          {meeting.removedFromPipeline && (
-            <p className="mt-1 text-[10px] font-semibold text-rose-700 bg-rose-50 border border-rose-100 rounded-lg px-2 py-1">
-              {pt
-                ? `Excluída do Pipeline após ${approved ? "a aprovação" : "o envio"} — este cartão é a versão ${approved ? "aprovada" : "enviada"}, somente leitura.`
-                : `Removed from the Pipeline after ${approved ? "approval" : "sending"} — this card is the ${approved ? "approved" : "sent"} version, read-only.`}
-            </p>
-          )}
-          {!meeting.removedFromPipeline && meeting.current && meeting.changedAfterSending && (
-            <p className="mt-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1">
-              {meeting.changedAfterSending.data &&
-                (pt
-                  ? `Data ${approved ? "aprovada" : "enviada"}: ${quando(meeting.startAt, meeting.timezone)} · Data atual no Pipeline: ${quando(meeting.current.startAt, meeting.current.timezone)}. `
-                  : `${approved ? "Approved" : "Sent"} date: ${quando(meeting.startAt, meeting.timezone)} · Current in the Pipeline: ${quando(meeting.current.startAt, meeting.current.timezone)}. `)}
-              {meeting.changedAfterSending.titulo && (pt ? `Título ${approved ? "aprovado" : "enviado"}: “${meeting.title}”. ` : `${approved ? "Approved" : "Sent"} title: “${meeting.title}”. `)}
-              {pt ? `Alterada no Pipeline após ${approved ? "a aprovação" : "o envio"} — este cartão mostra a versão ${approved ? "aprovada" : "enviada"}.` : `Changed in the Pipeline after ${approved ? "approval" : "sending"} — this card shows the ${approved ? "approved" : "sent"} version.`}
-            </p>
-          )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          {approved && !meeting.removedFromPipeline && (
-            <button type="button" onClick={() => onOpenMeeting(meeting.id)} className="p-1.5 text-[#00658d] hover:bg-sky-50 rounded-lg cursor-pointer" title={pt ? "Abrir no Pipeline" : "Open in Pipeline"} aria-label={pt ? "Abrir no Pipeline" : "Open in Pipeline"}>
-              <ExternalLink className="w-3.5 h-3.5" />
-            </button>
-          )}
+          {/* Toda reunião da Agenda opera no Pipeline desde o agendamento (10/2026). */}
+          <button type="button" onClick={() => onOpenMeeting(meeting.id)} className="p-1.5 text-[#00658d] hover:bg-sky-50 rounded-lg cursor-pointer" title={pt ? "Abrir no Pipeline" : "Open in Pipeline"} aria-label={pt ? "Abrir no Pipeline" : "Open in Pipeline"}>
+            <ExternalLink className="w-3.5 h-3.5" />
+          </button>
           {editable && !meeting.plannedItemId && (
             <button
               type="button"
@@ -640,7 +619,7 @@ export default function AnnualAgendaMeetingCard({
           {tempo.semDuracao > 0 && (
             <p role="alert" className="text-[10px] font-semibold text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-1.5">
               {pt
-                ? `${tempo.semDuracao} tema(s) sem duração: defina a duração para calcular os horários e enviar para aprovação.`
+                ? `${tempo.semDuracao} tema(s) sem duração: defina a duração para calcular os horários.`
                 : `${tempo.semDuracao} topic(s) without duration.`}
             </p>
           )}
@@ -649,9 +628,8 @@ export default function AnnualAgendaMeetingCard({
             TODOS OS PARTICIPANTES DA REUNIÃO — quem está de fato convidado
             (meeting_participants, uma vez cada — não a soma dos temas).
             Recolhida: nomes como destinatários de e-mail ("A; B; C; +5").
-            Em elaboração a Agenda gerencia (o Pipeline só opera depois da
-            aprovação), pelo MESMO seletor e pelas MESMAS regras da aba
-            Participantes do Pipeline. Enviada/aprovada: só leitura.
+            Com permissão, a Agenda gerencia pelo MESMO seletor e pelas MESMAS
+            regras da aba Participantes do Pipeline. Sem permissão: só leitura.
           */}
           <section aria-label={pt ? "Todos os participantes da reunião" : "All meeting participants"} className="rounded-xl border border-slate-100 bg-slate-50/60">
             <button
@@ -743,14 +721,8 @@ export default function AnnualAgendaMeetingCard({
                       <Plus className="w-3 h-3" />{pt ? "Gerenciar participantes" : "Manage participants"}
                     </button>
                   )
-                ) : approved ? (
-                  <button type="button" onClick={() => onOpenMeeting(meeting.id)} className="text-[10px] font-bold text-[#00658d] hover:underline cursor-pointer inline-flex items-center gap-1">
-                    <ExternalLink className="w-3 h-3" />{pt ? "Agenda aprovada: participantes são gerenciados no Pipeline" : "Approved: manage participants in the Pipeline"}
-                  </button>
                 ) : (
-                  <p className="text-[10px] text-slate-400 font-semibold">
-                    {pt ? "Somente leitura. Para alterar, retire a Agenda da aprovação." : "Read-only. Withdraw the plan from approval to edit."}
-                  </p>
+                  <p className="text-[10px] text-slate-400 font-semibold">{pt ? "Somente leitura." : "Read-only."}</p>
                 )}
               </div>
             )}

@@ -79,21 +79,11 @@ export interface AnnualAgendaMeeting {
   tempo: { reuniaoMin: number; temasMin: number; semDuracao: number; excessoMin: number; disponivelMin: number };
   /** Participantes DA REUNIÃO (`meeting_participants`), uma vez cada. */
   participants: Array<{ id: string; name: string; email: string | null; external: boolean; inGovernanceBodyGroup: boolean }>;
-  /**
-   * `title`/`startAt`/`endAt`/`timezone` acima mostram a versão
-   * enviada/aprovada quando existe — a Agenda Anual não muda com o Pipeline.
-   * `current` é o valor AO VIVO, só para o aviso de divergência comparar.
+  /*
+   * Sem aprovação (10/2026) a Agenda mostra sempre a reunião AO VIVO; os
+   * campos de comparação com a versão aprovada (`current`, `sent`,
+   * `changedAfterSending`) vêm sempre `null` do servidor e não são lidos.
    */
-  current: { title: string; startAt: string; endAt: string; timezone: string } | null;
-  /** Como estava na versão enviada/aprovada. */
-  sent: { title: string; startAt: string; endAt: string; timezone: string } | null;
-  changedAfterSending: { data: boolean; titulo: boolean } | null;
-  /**
-   * Estava na versão enviada/aprovada e foi excluída do Pipeline depois —
-   * o cartão inteiro vem do snapshot (a reunião não existe mais). Somente
-   * leitura: não abre no Pipeline, não edita.
-   */
-  removedFromPipeline?: boolean;
 }
 
 export interface AnnualAgendaVersion {
@@ -107,6 +97,7 @@ export interface AnnualAgendaVersion {
 }
 
 export interface AnnualAgendaDetail extends AnnualAgendaSummary {
+  /** Sempre `true` desde a remoção da aprovação; a permissão é `canManage`. */
   editable: boolean;
   /** Datas planejadas (reserva). */
   items: AnnualAgendaItem[];
@@ -120,7 +111,7 @@ export interface AnnualAgendaDetail extends AnnualAgendaSummary {
     origin: "manual" | "annual_agenda";
     linkedToOtherAgenda: boolean;
   }>;
-  removedAfterSending: Array<{ title: string; startAt: string; timezone: string }>;
+  /** Última versão enviada/aprovada ANTES de 10/2026 — só histórico. */
   version: AnnualAgendaVersion | null;
   totals: { reunioes: number; pautas: number; temas: number };
 }
@@ -139,30 +130,6 @@ export async function listAnnualAgendas(signal?: AbortSignal): Promise<AnnualAge
     signal
   });
   return annualAgendas;
-}
-
-/**
- * Reunião de uma Agenda Anual APROVADA, na versão congelada — o Calendário
- * usa isso para não mudar com o Pipeline. `existsLive` diz se ainda dá pra
- * abrir no Pipeline (a reunião pode ter sido excluída depois da aprovação).
- */
-export interface FrozenCalendarMeeting {
-  id: string;
-  title: string;
-  startAt: string;
-  endAt: string;
-  timezone: string;
-  modality: "online" | "in_person" | null;
-  governanceBody: { id: string; name: string };
-  existsLive: boolean;
-}
-
-export async function listFrozenCalendarMeetings(signal?: AbortSignal): Promise<FrozenCalendarMeeting[]> {
-  const { meetings } = await apiRequest<{ meetings: FrozenCalendarMeeting[] }>("/annual-agendas/frozen-calendar", {
-    auth: true,
-    signal
-  });
-  return meetings;
 }
 
 /** Ano -> órgão -> agenda formal (ou não) -> reuniões do Calendário. */
@@ -202,22 +169,13 @@ export const createAnnualAgenda = (payload: { governanceBodyId: string; year: nu
 export const deleteAnnualAgenda = (id: string) =>
   apiRequest<void>(`/annual-agendas/${id}`, { auth: true, method: "DELETE" });
 
-export const requestAnnualAgendaApproval = (id: string, approverEmail: string) =>
-  apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/approval-request`, json("POST", { approverEmail }));
-
-export const markAnnualAgendaApproved = (id: string) =>
-  apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/approval`, json("POST"));
-
-/** PRÉVIA: estado atual (não é o documento aprovado). */
+/** PRÉVIA: compilado do estado atual (PDF). */
 export const downloadAnnualAgendaPdf = (id: string) =>
   apiRequestBlob(`/annual-agendas/${id}/pdf`, { auth: true });
 
-/** Documento da versão enviada/aprovada (snapshot gravado). */
+/** Documento da versão enviada/aprovada antes de 10/2026 (histórico, snapshot gravado). */
 export const downloadAnnualAgendaDocument = (id: string) =>
   apiRequestBlob(`/annual-agendas/${id}/document`, { auth: true });
-
-export const withdrawAnnualAgendaApproval = (id: string) =>
-  apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/withdraw`, json("POST"));
 
 /** Associa reunião existente (só o vínculo; nenhum convite novo). */
 export const associateAnnualMeeting = (id: string, meetingId: string) =>
@@ -288,7 +246,7 @@ export const createAnnualTema = (id: string, meetingId: string, payload: NovoTem
 export const reorderAnnualTemas = (id: string, meetingId: string, agendaItemIds: string[]) =>
   apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agenda-items/order`, json("PUT", { agendaItemIds }));
 
-/** Participantes DA REUNIÃO pela Agenda (em elaboração; mesmas regras da aba Participantes do Pipeline). */
+/** Participantes DA REUNIÃO pela Agenda (mesmas regras da aba Participantes do Pipeline). */
 export const addAnnualMeetingParticipant = (id: string, meetingId: string, payload: CreateParticipantPayload) =>
   apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/participants`, json("POST", payload));
 
@@ -307,11 +265,12 @@ export const unlinkAnnualTemaParticipant = (id: string, meetingId: string, itemI
 export const deleteAnnualTema = (id: string, meetingId: string, itemId: string) =>
   apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agenda-items/${itemId}`, { auth: true, method: "DELETE" });
 
-export function annualStatusLabel(status: AnnualAgendaStatus, language: "en" | "pt"): string {
-  const pt = language === "pt";
-  if (status === "approved") return pt ? "Aprovada" : "Approved";
-  if (status === "pending_approval") return pt ? "Aguardando aprovação" : "Awaiting approval";
-  return pt ? "Em elaboração" : "Draft";
+/**
+ * Rótulo da Agenda Anual formalizada. Sem aprovação (10/2026) o status gravado
+ * (`draft`/`pending_approval`/`approved`) é só histórico e não muda o rótulo.
+ */
+export function annualStatusLabel(_status: AnnualAgendaStatus, language: "en" | "pt"): string {
+  return language === "pt" ? "Formalizada" : "Prepared";
 }
 
 export function describeAnnualAgendaError(error: unknown, language: "en" | "pt"): string {

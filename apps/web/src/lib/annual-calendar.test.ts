@@ -87,7 +87,7 @@ test("criação pelo Calendário continua sem Pauta/Tema", () => {
     timezone: "America/Sao_Paulo",
     governanceBodyId: "g",
     modality: "online",
-    physicalLocationKey: "",
+    physicalLocationId: "",
     participants: []
   });
   assert.deepEqual(payload.agendaItems, []);

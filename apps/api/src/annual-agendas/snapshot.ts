@@ -204,21 +204,6 @@ export function totaisDoSnapshot(s: Pick<SnapshotDaAgenda, "reunioes">): { reuni
   return { reunioes: s.reunioes.length, pautas, temas };
 }
 
-/**
- * O que mudou numa reunião DEPOIS do envio/aprovação (feito pelo Pipeline).
- * O snapshot não muda; a tela só informa a diferença.
- */
-export function diferencasAposEnvio(
-  enviada: Pick<ReuniaoNoSnapshot, "title" | "startAt" | "endAt">,
-  atual: Pick<ReuniaoDaAgenda, "title" | "startAt" | "endAt">,
-): { data: boolean; titulo: boolean } {
-  const mesmoInstante = (a: string, b: string) => new Date(a).getTime() === new Date(b).getTime();
-  return {
-    data: !mesmoInstante(enviada.startAt, atual.startAt) || !mesmoInstante(enviada.endAt, atual.endAt),
-    titulo: enviada.title !== atual.title,
-  };
-}
-
 /** Lê um snapshot persistido. Formato desconhecido: erro explícito, nunca adivinhar. */
 export function lerSnapshot(valor: unknown): SnapshotDaAgenda {
   const s = valor as Partial<SnapshotDaAgenda> | null;

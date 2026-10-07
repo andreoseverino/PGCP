@@ -1,5 +1,6 @@
 import { HttpError } from "../http-error.js";
-import { descreverLocalFisico, type LocalFisico } from "../meetings/locations.js";
+import { descreverLocalFisico, formatarCep, logradouroComNumero, type LocalFisico } from "../meetings/locations.js";
+import { descricaoComoHtml, escaparHtml } from "../meetings/rich-text.js";
 
 /**
  * Traducao PGCP -> evento de calendario. PURO: nao fala com o banco nem com o
@@ -186,7 +187,7 @@ export interface ReuniaoParaCalendario {
   onlineMeetingProvider: "teamsForBusiness" | null;
   /** Modalidade (025). Ausente = online (comportamento anterior). */
   modality?: "online" | "in_person";
-  /** Local do catalogo, ja resolvido. So no presencial. */
+  /** Copia do local gravada na reuniao (038). So no presencial. */
   physicalLocation?: LocalFisico | null;
 }
 
@@ -194,12 +195,12 @@ export interface ReuniaoParaCalendario {
 export interface LocalGraph {
   displayName: string;
   locationType: "default";
-  address?: { street?: string; city?: string; state?: string };
+  address?: { street?: string; city?: string; state?: string; postalCode?: string };
 }
 
 export interface EventoGraph {
   subject: string;
-  body: { contentType: "text"; content: string };
+  body: { contentType: "html"; content: string };
   start: { dateTime: string; timeZone: string };
   end: { dateTime: string; timeZone: string };
   attendees: AttendeeGraph[];
@@ -225,17 +226,19 @@ export const AVISO_TEAMS_CONTINGENCIA =
   "O link do Microsoft Teams deste convite está disponível como contingência.";
 
 /**
- * `location` do evento a partir do local do catalogo.
+ * `location` do evento a partir da COPIA do local gravada na reuniao (038).
  *
- * Endereco so entra se estiver configurado; sem ele, o convite leva o nome da
- * sede e nada mais — completar com endereco presumido seria inventar dado.
+ * So entra o que existe; um local importado sem endereco leva apenas o nome —
+ * completar com endereco presumido seria inventar dado.
  */
 export function montarLocalDoEvento(local: LocalFisico): LocalGraph {
   const endereco: NonNullable<LocalGraph["address"]> = {};
-  const rua = [local.address, local.complement].filter(Boolean).join(", ");
+  const rua = [logradouroComNumero(local), local.complement, local.neighborhood].filter(Boolean).join(", ");
   if (rua) endereco.street = rua;
   if (local.city) endereco.city = local.city;
   if (local.state) endereco.state = local.state;
+  const cep = formatarCep(local.postalCode);
+  if (cep) endereco.postalCode = cep;
 
   return {
     displayName: descreverLocalFisico(local),
@@ -270,18 +273,23 @@ export function montarEvento(
 
   const presencial = reuniao.modality === "in_person" && reuniao.physicalLocation;
   const modalidade = presencial
-    ? `Reunião presencial — Local: ${descreverLocalFisico(reuniao.physicalLocation!)}.\n${AVISO_TEAMS_CONTINGENCIA}`
+    ? `<p>${escaparHtml(`Reunião presencial — Local: ${descreverLocalFisico(reuniao.physicalLocation!)}.`)}<br>${escaparHtml(AVISO_TEAMS_CONTINGENCIA)}</p>`
     : null;
+  const link = reuniao.meetingLink?.trim();
 
-  const corpo = [modalidade, reuniao.description?.trim(), reuniao.meetingLink?.trim()]
-    .filter((linha): linha is string => Boolean(linha))
-    .join("\n\n");
+  /*
+   * HTML, e so HTML que o PGCP controla: a descricao ja chega saneada do banco
+   * e e REPASSADA pelo sanitizador (`descricaoComoHtml`, que tambem converte o
+   * texto puro das reunioes antigas em paragrafos); modalidade e link sao texto
+   * escapado. Nenhum atributo, nenhum script, nenhuma imagem externa.
+   */
+  const corpo = [modalidade, descricaoComoHtml(reuniao.description) || null, link ? `<p>${escaparHtml(link)}</p>` : null]
+    .filter((bloco): bloco is string => Boolean(bloco))
+    .join("");
 
   const evento: EventoGraph = {
     subject: reuniao.title,
-    // `text`, nao HTML: a descricao da reuniao e texto puro no PGCP, e
-    // converte-la para HTML aqui inventaria formatacao que ninguem escreveu.
-    body: { contentType: "text", content: corpo },
+    body: { contentType: "html", content: corpo },
     start: { dateTime: instanteParaHoraLocal(reuniao.startAt, timezone), timeZone: timezone },
     end: { dateTime: instanteParaHoraLocal(reuniao.endAt, timezone), timeZone: timezone },
     attendees,
@@ -357,7 +365,7 @@ export const CAMPOS_QUE_DESATUALIZAM = [
   "onlineMeetingProvider",
   // Modalidade e local aparecem no corpo e no `location` do convite (025).
   "modality",
-  "physicalLocationKey",
+  "physicalLocationId",
 ] as const;
 
 /** Alguma mudanca do PATCH exige atualizar o evento? */

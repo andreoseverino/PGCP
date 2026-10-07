@@ -43,7 +43,11 @@ test("reunião manual e reunião da Agenda Anual aparecem no Pipeline", () => {
 test("etapas derivadas dos estados existentes, sem status novo", () => {
   const etapa = (extra: Partial<ApiMeetingSummary>) => pipelineStage(meetingFromApi(resumo(extra)));
   assert.equal(etapa({}), "scheduled");
-  assert.equal(etapa({ agendaItemsCount: 2 }), "preparing");
+  // Sem aprovação obrigatória: tema + convite enviado = pronta para reunião.
+  assert.equal(etapa({ agendaItemsCount: 2 }), "ready");
+  assert.equal(etapa({ agendaItemsCount: 2, calendarSyncStatus: "stale" }), "ready");
+  assert.equal(etapa({ agendaItemsCount: 2, calendarSyncStatus: "pending" }), "preparing");
+  assert.equal(etapa({ agendaItemsCount: 2, calendarSyncStatus: "failed" }), "preparing");
   assert.equal(
     etapa({ agendaValidation: { status: "sent", sentAt: "x", sentTo: "a@b.co", approvedAt: null } }),
     "preparing"

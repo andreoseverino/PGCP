@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { HttpError } from "../http-error.js";
-import { diferencasAposEnvio, lerSnapshot, montarSnapshot, totaisDoSnapshot } from "./snapshot.js";
+import { lerSnapshot, montarSnapshot, totaisDoSnapshot } from "./snapshot.js";
 import { conteudoDaReuniao, formatarTema, gerarPdfDaAgendaAnual, pessoaComEmail, rotuloDoDocumento, tipoDoDocumento } from "./pdf.js";
 import {
-  exigirEmElaboracao,
   motivoParaNaoAssociar,
   parseTemaPatchDaAgenda,
   reunioesDoPdf,
@@ -61,15 +60,7 @@ test("snapshot é JSON estável e lido de volta; formato desconhecido é recusad
   assert.throws(() => lerSnapshot(null));
 });
 
-test("alteração depois do envio é detectada sem tocar o snapshot (data aprovada x atual)", () => {
-  const aprovada = snapshot.reunioes[0]!;
-  assert.deepEqual(diferencasAposEnvio(aprovada, { title: aprovada.title, startAt: aprovada.startAt, endAt: aprovada.endAt }), { data: false, titulo: false });
-  assert.deepEqual(
-    diferencasAposEnvio(aprovada, { title: aprovada.title, startAt: "2027-01-27T12:00:00.000Z", endAt: "2027-01-27T14:00:00.000Z" }),
-    { data: true, titulo: false },
-  );
-  // Mesmo instante em outra grafia ISO não é "alteração".
-  assert.equal(diferencasAposEnvio(aprovada, { ...aprovada, startAt: "2027-01-20T12:00:00Z" }).data, false);
+test("snapshot guarda o instante normalizado em ISO", () => {
   assert.equal(snapshot.reunioes[0]!.startAt, "2027-01-20T12:00:00.000Z");
 });
 
@@ -82,13 +73,13 @@ test("associação: mesmo órgão, mesmo ano, fora de outra agenda — origem n�
   assert.match(motivoParaNaoAssociar(agenda, { governanceBodyId: "exec", anoLocal: 2027, annualAgendaId: "outra" })!, /outra Agenda/);
 });
 
-test("conteúdo só muda em elaboração; enviada pede retirada; aprovada bloqueia de vez", () => {
-  assert.doesNotThrow(() => exigirEmElaboracao("draft"));
-  assert.throws(() => exigirEmElaboracao("pending_approval"), (e: unknown) => e instanceof HttpError && e.status === 409 && /Retire-a da aprovação/.test(e.message));
-  assert.throws(
-    () => exigirEmElaboracao("approved"),
-    (e: unknown) => e instanceof HttpError && /Esta versão não pode mais ser alterada\. A gestão operacional das reuniões continua disponível no Pipeline\./.test(e.message),
-  );
+test("sem aprovação: nenhuma mutação da Agenda Anual depende do status gravado", () => {
+  const fonte = readFileSync(new URL("./service.ts", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.ok(!/exigirEmElaboracao|pending_approval'|SET status = 'approved'|annual_agenda_versions \(/.test(fonte));
+  assert.ok(!/solicitarAprovacao|registrarAprovacao|retirarDaAprovacao|reunioesCongeladasParaCalendario/.test(fonte));
+  assert.match(fonte, /editable: true,/);
+  // O histórico continua legível: documento da versão antiga sai do snapshot.
+  assert.match(fonte, /export async function gerarDocumentoDaVersao/);
 });
 
 test("tema pela Agenda Anual: só renomear e mover entre pautas (mass assignment recusado)", () => {
@@ -116,7 +107,7 @@ test("PDF: múltiplas pautas viram grupos (sem 'Pauta:'); ordem do snapshot; num
   assert.equal(linhas[2]!.reservada, false, "data planejada sem reunião");
   const texto = JSON.stringify(c0);
   assert.ok(!/Pauta:/.test(texto));
-  assert.match(rotuloDoDocumento({ tipo: "previa" }), /^PRÉVIA — Este documento reflete o estado atual e não representa a versão aprovada\.$/);
+  assert.match(rotuloDoDocumento({ tipo: "previa" }), /^PRÉVIA — Este documento reflete o estado atual da Agenda Anual na data de emissão\.$/);
   assert.match(
     rotuloDoDocumento({ tipo: "versao", numero: 2, enviadaEm: "2026-10-01T12:00:00Z", enviadaA: "a@b.c", aprovadaEm: "2026-10-02T12:00:00Z", aprovadaPor: "Ana Secretaria" }),
     /^Versão 2 — aprovada em 02\/10\/2026,? 09:00 \(registrada por Ana Secretaria\); enviada em 01\/10\/2026,? 09:00 a a@b\.c\.$/,
@@ -136,12 +127,9 @@ test("PDF: múltiplas pautas viram grupos (sem 'Pauta:'); ordem do snapshot; num
 
 test("documento da versão sai do snapshot gravado, nunca do estado atual", () => {
   const fonte = readFileSync(new URL("./service.ts", import.meta.url), "utf8");
-  const doc = fonte.slice(fonte.indexOf("export async function gerarDocumentoDaVersao"), fonte.indexOf("export async function solicitarAprovacao"));
+  const doc = fonte.slice(fonte.indexOf("export async function gerarDocumentoDaVersao"));
   assert.match(doc, /lerSnapshot\(versao\.snapshot\)/);
   assert.ok(!/carregarConteudo|findAnnualAgenda/.test(doc));
-  // Aprovar marca a versão ENVIADA; não tira foto nova.
-  const aprovar = fonte.slice(fonte.indexOf("export async function registrarAprovacao"), fonte.indexOf("export async function retirarDaAprovacao"));
-  assert.ok(!/INSERT INTO annual_agenda_versions|snapshotDoConteudo/.test(aprovar));
   // Associar não chama Outlook.
   const associar = fonte.slice(fonte.indexOf("export async function associarReuniao"), fonte.indexOf("export async function desassociarReuniao"));
   assert.ok(!/syncMeetingCalendar|calendar/i.test(associar.replace(/\/\*[\s\S]*?\*\//g, "")));
@@ -150,18 +138,11 @@ test("documento da versão sai do snapshot gravado, nunca do estado atual", () =
 test("concorrência: conteúdo pela Agenda trava a agenda e executa na MESMA transação", async () => {
   const fonte = readFileSync(new URL("./service.ts", import.meta.url), "utf8");
   const editar = fonte.slice(fonte.indexOf("export async function editarConteudoPelaAgenda"), fonte.indexOf("export {"));
-  // lock -> pertença -> status -> operação, tudo dentro de emTransacao.
-  const ordem = ["await emTransacao(", "travarAgenda(client, id)", "exigirReuniaoDaAgenda(client", "exigirEmElaboracao(agenda.status)", "dentroDaTransacao(client"];
+  // lock -> pertença -> operação -> horários -> versão da reunião, tudo dentro de emTransacao.
+  const ordem = ["await emTransacao(", "travarAgenda(client, id)", "exigirReuniaoDaAgenda(client", "dentroDaTransacao(client", "regravarHorariosDosTemas(client, meetingId)", "versionarReuniaoSeMudou(client, meetingId"];
   const posicoes = ordem.map((trecho) => editar.indexOf(trecho));
   assert.ok(posicoes.every((p) => p >= 0), "todos os passos presentes");
   assert.deepEqual([...posicoes].sort((a, b) => a - b), posicoes, "na ordem certa");
-  // Envio: lock e captura do snapshot na transação; e-mail antes de gravar.
-  const enviar = fonte.slice(fonte.indexOf("export async function solicitarAprovacao"), fonte.indexOf("export async function registrarAprovacao"));
-  const passos = ["await emTransacao(", "travarAgenda(client, id)", "carregarConteudo(client, id)", "await enviar(", "INSERT INTO annual_agenda_versions", "SET status = 'pending_approval'"];
-  const p2 = passos.map((trecho) => enviar.indexOf(trecho));
-  assert.ok(p2.every((p) => p >= 0));
-  assert.deepEqual([...p2].sort((a, b) => a - b), p2);
-  assert.ok(!/carregarConteudo\(pool/.test(enviar), "snapshot não é lido fora da transação");
   // Os módulos de reunião reaproveitam a transação ambiente.
   for (const arq of ["../meetings/agendas.ts", "../meetings/update.ts"]) {
     assert.match(readFileSync(new URL(arq, import.meta.url), "utf8"), /const ambienteAtual = transacaoAmbiente\(\);\s*if \(ambienteAtual\)/);
@@ -215,7 +196,9 @@ test("órgão + ano: formalizar associa reuniões existentes; Calendário associ
   const auto = criarReuniao.slice(criarReuniao.indexOf("export async function associarAAgendaAnualDoOrgaoEAno"));
   assert.match(auto, /a\.governance_body_id = m\.governance_body_id/);
   assert.match(auto, /FOR UPDATE OF a/);
-  assert.match(auto, /agenda\.status !== "draft"\) return null/);
+  // Sem aprovação (10/2026): associa qualquer que seja o status gravado da Agenda.
+  assert.match(auto, /if \(!agenda\) return null;/);
+  assert.ok(!/status !== "draft"/.test(auto));
   const mig = readFileSync(new URL("../../migrations/029_annual_agenda_body_year_unique.sql", import.meta.url), "utf8");
   assert.match(mig, /CREATE UNIQUE INDEX annual_agendas_body_year_uk ON annual_agendas \(governance_body_id, year\)/);
   assert.match(mig, /RAISE EXCEPTION 'Agendas Anuais duplicadas/);

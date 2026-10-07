@@ -69,6 +69,23 @@
   background: #94a3b8;
 }
 
+/*
+ * Modais sem barra de rolagem. Os modais são dimensionados para caber na tela;
+ * em tela pequena o conteúdo ainda rola (roda do mouse/toque), só a barra some.
+ */
+[role="dialog"],
+[role="dialog"] *,
+[role="alertdialog"],
+[role="alertdialog"] * {
+  scrollbar-width: none;
+}
+[role="dialog"]::-webkit-scrollbar,
+[role="dialog"] ::-webkit-scrollbar,
+[role="alertdialog"]::-webkit-scrollbar,
+[role="alertdialog"] ::-webkit-scrollbar {
+  display: none;
+}
+
 /* ---------------------------------------------------------------------------
    Editor de anotações (Tiptap). O reset do Tailwind zera h1/ul/ol, então as
    marcações do rich text precisam ser redeclaradas para aparecerem formatadas.
@@ -171,4 +188,26 @@
   float: left;
   height: 0;
   pointer-events: none;
+}
+
+/* Descrição da reunião (texto rico mínimo: p, br, strong, em, ul, ol, li). */
+.rich-text p {
+  margin: 0 0 0.4rem;
+}
+.rich-text ul,
+.rich-text ol {
+  margin: 0 0 0.4rem;
+  padding-left: 1.25rem;
+}
+.rich-text ul {
+  list-style: disc;
+}
+.rich-text ol {
+  list-style: decimal;
+}
+.rich-text strong {
+  font-weight: 700;
+}
+.rich-text em {
+  font-style: italic;
 }

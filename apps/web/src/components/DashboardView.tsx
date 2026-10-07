@@ -31,7 +31,6 @@ import { calendarDayState } from "../lib/calendar-day-style";
 import { filtrarPorOrgao } from "../lib/governance-filter";
 import { DEFAULT_TIMEZONE, instantToLocal } from "../lib/meeting-adapters";
 import { calcularResumoOperacional } from "../lib/dashboard-kpis";
-import { listAnnualAgendas, type AnnualAgendaSummary } from "../lib/annual-agendas";
 
 /** Quantos itens a Visão Geral mostra. A gestão detalhada é na página de FUPs. */
 const LIMITE_PENDENCIAS_VISIVEIS = 4;
@@ -221,26 +220,6 @@ export default function DashboardView({
     chartAppointmentsSub: language === "en" ? "Quantity of registered meetings in each month of the year." : "Quantidade de reuniões registradas em cada mês do ano.",
   };
 
-  /*
-   * Agenda Anual: única carga extra da Visão Geral (aprovações pendentes).
-   * Falha não derruba a tela: o card de aprovações mostra "—".
-   */
-  const [agendasAnuais, setAgendasAnuais] = useState<AnnualAgendaSummary[] | null>(null);
-  const [agendasAnuaisEstado, setAgendasAnuaisEstado] = useState<"loading" | "ready" | "error">("loading");
-  useEffect(() => {
-    const controlador = new AbortController();
-    listAnnualAgendas(controlador.signal)
-      .then((lista) => {
-        setAgendasAnuais(lista);
-        setAgendasAnuaisEstado("ready");
-      })
-      .catch((erro) => {
-        if ((erro as Error)?.name === "AbortError") return;
-        setAgendasAnuaisEstado("error");
-      });
-    return () => controlador.abort();
-  }, []);
-
   // FUPs concluídos nesta sessão já saem da conta, como na lista abaixo.
   const resumo = useMemo(
     () =>
@@ -249,10 +228,9 @@ export default function DashboardView({
         hoje: todayStr,
         governanceBodies,
         meetings,
-        actionItems: actionItems.filter((item) => !completedItems[item.id]),
-        annualAgendas: agendasAnuais
+        actionItems: actionItems.filter((item) => !completedItems[item.id])
       }),
-    [orgaoContexto, todayStr, governanceBodies, meetings, actionItems, completedItems, agendasAnuais]
+    [orgaoContexto, todayStr, governanceBodies, meetings, actionItems, completedItems]
   );
 
   const pt = language === "pt";
@@ -282,11 +260,10 @@ export default function DashboardView({
     },
     {
       id: "aprovacoes",
-      titulo: pt ? "Pendências de aprovação" : "Pending approvals",
-      valor: valorOu(meetingsLoading || agendasAnuaisEstado === "loading", resumo.aprovacoes, agendasAnuaisEstado === "error"),
-      auxiliar: agendasAnuaisEstado === "error"
-        ? (pt ? "indisponível no momento" : "unavailable")
-        : pt ? "aguardando aprovação" : "awaiting approval",
+      // Validação de pautas é OPCIONAL (10/2026); a Agenda Anual não tem mais aprovação.
+      titulo: pt ? "Pautas em validação" : "Agendas in validation",
+      valor: valorOu(meetingsLoading, resumo.aprovacoes),
+      auxiliar: pt ? "envio opcional aguardando resposta" : "optional, awaiting reply",
       icone: "approval",
       corIcone: "bg-amber-50 text-amber-600"
     },
@@ -866,8 +843,8 @@ export default function DashboardView({
                         className="group flex items-center justify-between gap-4 p-3 bg-white hover:bg-[#c6e7ff]/20 border border-slate-100 group-hover:border-sky-300 rounded-xl cursor-pointer transition-all duration-200"
                       >
                         {/* Details on the Left */}
-                        <div className="truncate flex-1 text-left">
-                          <p className="font-extrabold text-xs text-slate-800 leading-tight group-hover:text-[#00658d] transition truncate">
+                        <div className="min-w-0 flex-1 text-left">
+                          <p className="font-extrabold text-xs text-slate-800 leading-snug group-hover:text-[#00658d] transition break-words">
                             {meet.title}
                           </p>
                           <p className="text-[10px] text-[#00658d] font-bold uppercase tracking-wider mt-1.5 flex items-center gap-1.5 bg-[#c6e7ff]/10 inline-block px-1.5 py-0.2 rounded border border-[#00658d]/5 max-w-max">
@@ -917,12 +894,12 @@ export default function DashboardView({
                         className="group flex items-center justify-between gap-4 p-3 bg-white hover:bg-slate-50 border border-slate-100 rounded-xl cursor-pointer transition-all duration-200"
                       >
                         {/* Details on the Left with Date badge */}
-                        <div className="truncate flex-1 text-left space-y-1.5">
-                          <div className="flex items-center gap-1.5">
+                        <div className="min-w-0 flex-1 text-left space-y-1.5">
+                          <div className="flex items-start gap-1.5">
                             <span className="text-[9px] uppercase tracking-wider bg-slate-100 text-slate-500 font-extrabold border rounded px-1.5 py-0.5 text-center shrink-0">
                               {meet.date.split("-")[2]}/{meet.date.split("-")[1]}
                             </span>
-                            <span className="font-extrabold text-xs text-slate-800 truncate leading-tight group-hover:text-[#00658d] transition">
+                            <span className="min-w-0 font-extrabold text-xs text-slate-800 break-words leading-snug group-hover:text-[#00658d] transition">
                               {meet.title}
                             </span>
                           </div>

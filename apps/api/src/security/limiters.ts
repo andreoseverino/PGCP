@@ -24,6 +24,11 @@ import { createRateLimiter } from "./rate-limit.js";
  *  teams-message     POST de mensagem por pauta. Cada destinatario implica
  *                    criar/localizar um chat e enviar uma mensagem; 10/min por
  *                    pessoa cobre uso humano e protege a cota compartilhada.
+ *
+ *  calendar-export   GET /meetings/export — gera PDF/Excel do calendario no
+ *                    servidor (CPU e memoria). 10/min por pessoa cobre exportar,
+ *                    ajustar o periodo e exportar de novo; corta extracao em
+ *                    massa roteirizada.
  */
 
 export const directorySearchRateLimit = createRateLimiter({
@@ -40,6 +45,12 @@ export const ownCalendarRateLimit = createRateLimiter({
 
 export const integrationTestRateLimit = createRateLimiter({
   name: "integration-test",
+  windowMs: 60_000,
+  max: 10,
+});
+
+export const calendarExportRateLimit = createRateLimiter({
+  name: "calendar-export",
   windowMs: 60_000,
   max: 10,
 });

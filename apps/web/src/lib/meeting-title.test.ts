@@ -23,7 +23,7 @@ test("prévia do título = padrão do servidor", () => {
 test("Nova reunião manda o tipo e NUNCA o título", () => {
   const payload = buildNewMeetingPayload({
     sessionType: "extraordinary", date: "2027-03-17", startTime: "09:00", endTime: "10:00",
-    timezone: "America/Sao_Paulo", governanceBodyId: "g", modality: "in_person", physicalLocationKey: "sede-matriz", participants: []
+    timezone: "America/Sao_Paulo", governanceBodyId: "g", modality: "in_person", physicalLocationId: "sede-matriz", participants: []
   });
   assert.equal(payload.sessionType, "extraordinary");
   assert.equal("title" in payload, false);
@@ -42,8 +42,10 @@ test("telas: sem campo de título digitável com tipo; formato Presencial/Videoc
   assert.match(modal, /id="nmTitlePreview"/);
   const campos = codigo("../components/MeetingInviteFields.tsx");
   assert.match(campos, /"Videoconferência"/);
-  const pipeline = codigo("../components/MeetingDetailView.tsx");
-  assert.match(pipeline, /editedSessionType \? \{ sessionType: editedSessionType \} : \{ title: editedTitle \}/);
+  // Edição (Pipeline e Calendário): um só modal; com tipo, só o tipo vai ao servidor.
+  assert.match(codigo("../components/MeetingDetailView.tsx"), /<EditMeetingModal/);
+  const edicao = codigo("./edit-meeting.ts");
+  assert.match(edicao, /if \(f\.sessionType\) \{\s*if \(f\.sessionType !== base\.sessionType\) patch\.sessionType = f\.sessionType;\s*\} else if/);
   // A reserva por datas planejadas saiu da Agenda Anual; o título padronizado nasce no Calendário.
   assert.ok(!/reserveAnnualAgenda/.test(codigo("../components/AnnualAgendaView.tsx")));
 });

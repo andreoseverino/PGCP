@@ -12,7 +12,6 @@ import {
   meetingFromApi,
   updateMeeting
 } from "./lib/meetings";
-import { listFrozenCalendarMeetings, type FrozenCalendarMeeting } from "./lib/annual-agendas";
 import {
   actionItemFromApi,
   buildActionItemPayload,
@@ -75,6 +74,7 @@ import SystemSettingsView from "./components/SystemSettingsView";
 import AdministrationView from "./components/AdministrationView";
 import QuickSearchView from "./components/QuickSearchView";
 import NewMeetingModal from "./components/NewMeetingModal";
+import EditMeetingModal from "./components/EditMeetingModal";
 import CalendarView from "./components/CalendarView";
 import PipelineView from "./components/PipelineView";
 import AnnualAgendaView from "./components/AnnualAgendaView";
@@ -194,6 +194,8 @@ export default function App() {
   const [newMeetingDate, setNewMeetingDate] = useState<string | null>(null);
   /** Reunião com exclusão pendente de confirmação. `null` = modal fechado. */
   const [meetingParaExcluir, setMeetingParaExcluir] = useState<Meeting | null>(null);
+  /** Reunião em edição a partir do CALENDÁRIO (mesmo modal do Pipeline). */
+  const [meetingEmEdicao, setMeetingEmEdicao] = useState<Meeting | null>(null);
 
   /*
    * REUNIÕES: PostgreSQL, via GET /meetings.
@@ -210,50 +212,6 @@ export default function App() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [meetingsLoading, setMeetingsLoading] = useState(true);
   const [meetingsError, setMeetingsError] = useState<string | null>(null);
-
-  /**
-   * Reuniões CONGELADAS de toda Agenda Anual aprovada — o Calendário troca a
-   * reunião ao vivo pela versão aprovada quando existe uma (abaixo, em
-   * `calendarMeetings`). Carregada à parte: não é "a lista de reuniões", é
-   * só o que está congelado.
-   */
-  const [frozenCalendarMeetings, setFrozenCalendarMeetings] = useState<FrozenCalendarMeeting[]>([]);
-
-  /**
-   * O que o Calendário efetivamente mostra: reuniões ao vivo, exceto as que
-   * têm versão congelada (Agenda Anual aprovada) — essas entram com o
-   * título/horário/modalidade da versão aprovada, não o que está no Pipeline
-   * agora. `existsLive=false` continua aparecendo (a reunião foi excluída
-   * depois da aprovação); abrir cai no erro normal de "não encontrada", já
-   * tratado em `openMeeting`.
-   */
-  const calendarMeetings = useMemo<Meeting[]>(() => {
-    if (frozenCalendarMeetings.length === 0) return meetings;
-    const congeladas = new Map(frozenCalendarMeetings.map((m) => [m.id, m]));
-    const aoVivoSemCongelada = meetings.filter((m) => !congeladas.has(m.id));
-    const doSnapshot: Meeting[] = frozenCalendarMeetings.map((m) => {
-      const inicio = instantToLocal(m.startAt, m.timezone);
-      const fim = instantToLocal(m.endAt, m.timezone);
-      return {
-        id: m.id,
-        title: m.title,
-        date: inicio.date,
-        startTime: inicio.time,
-        endTime: fim.time,
-        timeZone: m.timezone,
-        category: m.governanceBody.name,
-        governanceBodyId: m.governanceBody.id,
-        status: "Scheduled",
-        expectedParticipantsCount: 0,
-        agendaItemsCount: 0,
-        description: "",
-        organizer: "",
-        modality: m.modality ?? undefined,
-        origin: "annual_agenda"
-      };
-    });
-    return [...aoVivoSemCongelada, ...doSnapshot];
-  }, [meetings, frozenCalendarMeetings]);
 
   /** Resultados ao vivo da busca do topo — mesma lógica da aba "Busca Rápida". */
   const globalSearchResults = useMemo(
@@ -522,45 +480,11 @@ export default function App() {
     }
   };
 
-  /** Reuniões congeladas (Agenda Anual aprovada) para o Calendário. */
-  const loadFrozenCalendarMeetings = async () => {
-    try {
-      setFrozenCalendarMeetings(await listFrozenCalendarMeetings());
-    } catch {
-      // Silencioso: o Calendário cai de volta pro ao vivo, que já é o que
-      // mostrava antes desta funcionalidade existir — não é um erro que
-      // trava a tela.
-    }
-  };
-
-  /*
-   * Recarrega sempre que o Calendário é aberto — aprovar uma Agenda Anual
-   * acontece em outra tela (Agenda Anual), e o Calendário só precisa estar
-   * em dia no momento em que a pessoa olha para ele.
-   */
-  useEffect(() => {
-    if (activeTab === "calendar" && isAuthenticated) void loadFrozenCalendarMeetings();
-  }, [activeTab, isAuthenticated]);
-
   /**
    * Abre a reunião buscando o DETALHE na API — participantes e pautas só vêm
    * por ali. Não procura antes em `cielo_meetings`: a fonte é o banco.
    */
-  /** Reunião de Agenda Anual ainda não aprovada é preparada na Agenda, não no Pipeline. */
-  const aindaNaAgendaAnual = (meet: Pick<Meeting, "releasedToPipeline">) => {
-    if (meet.releasedToPipeline !== false) return false;
-    setSelectedMeeting(null);
-    setActiveTab("annual-agenda");
-    triggerToast(
-      language === "en"
-        ? "This meeting is still being prepared in the Annual plan and will reach the Pipeline after approval."
-        : "Esta reunião ainda está em preparação na Agenda Anual e será liberada para o Pipeline após a aprovação."
-    );
-    return true;
-  };
-
   const openMeeting = async (meet: Meeting) => {
-    if (aindaNaAgendaAnual(meet)) return;
     setSelectedMeeting(meet);
     try {
       setSelectedMeeting(meetingFromApi(await getMeeting(meet.id)));
@@ -676,16 +600,26 @@ export default function App() {
    * ao Pipeline.
    */
   const abrirNoPipeline = (meet: Meeting) => {
-    if (aindaNaAgendaAnual(meet)) return;
     setActiveTab("pipeline");
     void openMeeting(meet);
+  };
+
+  /**
+   * Calendário -> Editar: busca o DETALHE (o resumo da lista não traz tudo) e
+   * abre o MESMO `EditMeetingModal` do Pipeline. Servidor exige a App Role.
+   */
+  const editarPeloCalendario = async (meet: Meeting) => {
+    try {
+      setMeetingEmEdicao(meetingFromApi(await getMeeting(meet.id)));
+    } catch (error) {
+      triggerToast(describeMeetingError(error, language));
+    }
   };
 
   /** Abre pelo id (Agenda Anual -> reunião reservada no Pipeline). */
   const openMeetingById = async (meetingId: string) => {
     try {
       const reuniao = meetingFromApi(await getMeeting(meetingId));
-      if (aindaNaAgendaAnual(reuniao)) return;
       setSelectedMeeting(reuniao);
       setActiveTab("pipeline");
     } catch (error) {
@@ -821,10 +755,19 @@ export default function App() {
     if (!alvo) return;
 
     try {
-      await apiDeleteMeeting(alvo.id);
+      const resultado = await apiDeleteMeeting(alvo.id);
       if (selectedMeeting?.id === alvo.id) setSelectedMeeting(null);
       await loadMeetings();
-      triggerToast(language === "en" ? "Meeting deleted." : "Reunião excluída.");
+      triggerToast(
+        resultado.calendarCancellation === "pending"
+          ? resultado.warning ??
+              (language === "en"
+                ? "Meeting cancelled in PGCP; the Outlook/Teams cancellation is pending — delete again to retry."
+                : "Reunião cancelada no PGCP; o cancelamento no Outlook/Teams ficou pendente — exclua de novo para tentar outra vez.")
+          : language === "en"
+            ? "Meeting cancelled. History was kept."
+            : "Reunião cancelada. O histórico foi preservado."
+      );
     } catch (error) {
       triggerToast(describeMeetingError(error, language));
     } finally {
@@ -1027,7 +970,8 @@ export default function App() {
           setSelectedMeeting={setSelectedMeeting}
           triggerToast={triggerToast}
           currentUser={currentUser}
-          canSchedule={usuarioPodeAgendar}
+          // Cancelada (036): somente leitura — o servidor também recusa (409).
+          canSchedule={usuarioPodeAgendar && !selectedMeeting.cancelledAt}
           podeGerenciarFup={podeGerenciarFup}
           pautaTypes={pautaTypes}
           pautaNatures={pautaNatures}
@@ -1089,12 +1033,14 @@ export default function App() {
         return (
           <CalendarView
             language={language}
-            meetings={calendarMeetings}
+            meetings={meetings}
             meetingsLoading={meetingsLoading}
             orgaoContexto={orgaoContexto}
             canSchedule={usuarioPodeAgendar}
             onNewMeeting={(date) => setNewMeetingDate(date)}
             onMeetingClick={abrirNoPipeline}
+            onEditMeeting={(m) => void editarPeloCalendario(m)}
+            nomeDoOrgaoContexto={governanceBodies.find((b) => b.id === orgaoContexto)?.name ?? null}
           />
         );
       case "annual-agenda":
@@ -1222,6 +1168,7 @@ export default function App() {
             governanceBodies={governanceBodies}
             meetings={meetings}
             orgaoContexto={orgaoContexto}
+            canUpload={usuarioPodeAgendar}
             onOpenMeeting={(meetingId) => void openMeetingById(meetingId)}
             onOpenAnnualAgenda={() => setActiveTab("annual-agenda")}
             triggerToast={triggerToast}
@@ -1477,6 +1424,25 @@ export default function App() {
         />
       )}
 
+      {meetingEmEdicao && (
+        <EditMeetingModal
+          language={language}
+          meeting={meetingEmEdicao}
+          governanceBodies={governanceBodies}
+          onClose={() => setMeetingEmEdicao(null)}
+          onUnchanged={() => {
+            setMeetingEmEdicao(null);
+            triggerToast(language === "en" ? "No changes to save." : "Nenhuma alteração para salvar.");
+          }}
+          onSaved={(atualizada) => {
+            setMeetings((prev) => prev.map((m) => (m.id === atualizada.id ? atualizada : m)));
+            if (selectedMeeting?.id === atualizada.id) setSelectedMeeting(atualizada);
+            setMeetingEmEdicao(null);
+            triggerToast(language === "en" ? "Meeting updated successfully" : "Dados da reunião atualizados com sucesso");
+          }}
+        />
+      )}
+
       {/* MODAL: confirmação de exclusão de reunião — identifica pelo título e
           deixa claro que a Biblioteca não é afetada (mesmo padrão visual do
           modal de excluir pauta em MeetingDetailView). */}
@@ -1502,8 +1468,8 @@ export default function App() {
                 {language === "pt" ? "Excluir a reunião " : "Delete the meeting "}
                 <span className="font-extrabold text-slate-900">&ldquo;{meetingParaExcluir.title}&rdquo;</span>
                 {language === "pt"
-                  ? "? Isso apaga participantes, anotações, Ata e o vínculo com as pautas. Esta ação não pode ser desfeita."
-                  : "? This deletes participants, Notes, Minutes and the link to its agenda items. This action cannot be undone."}
+                  ? "? A reunião é cancelada: sai do Pipeline e do Calendário, e o convite do Outlook/Teams é cancelado para os convidados. Versões, documentos, Ata e auditoria ficam preservados como histórico. Não pode ser reativada."
+                  : "? The meeting is cancelled: it leaves the Pipeline and Calendar, and the Outlook/Teams invitation is cancelled for attendees. Versions, documents, Minutes and audit are kept as history. It cannot be reactivated."}
               </p>
               <p className="text-xs text-slate-400 font-medium leading-relaxed mt-2">
                 {language === "pt"

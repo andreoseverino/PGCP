@@ -13,8 +13,17 @@ export interface GovernanceBody {
    * nao da reuniao. Ver migration 023. `null` = ninguem cadastrado ainda.
    */
   chairEntraObjectId: string | null;
-  /** Snapshot de exibicao, capturado no momento da escolha no diretorio. */
+  /**
+   * Nome de exibicao do presidente: snapshot da escolha no diretorio (Entra)
+   * ou o nome ATUAL do cadastro externo.
+   */
   chairName: string | null;
+  /**
+   * Presidente da Mesa EXTERNO (035): cadastro `external_participants`, sem
+   * conta no PGCP e sem identidade Microsoft. Exclusivo com
+   * `chairEntraObjectId`. Ser presidente nao concede acesso a nada.
+   */
+  chairExternalParticipantId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -26,20 +35,22 @@ interface GovernanceBodyRow {
   is_active: boolean;
   chair_entra_object_id: string | null;
   chair_name: string | null;
+  chair_external_participant_id: string | null;
   created_at: Date;
   updated_at: Date;
 }
 
 /**
- * Presidente da Mesa escolhido no diretorio corporativo.
+ * Presidente da Mesa: pessoa do diretorio corporativo OU participante externo.
  *
- * So `entraObjectId`: o tenant vem do token do ator, nunca do corpo — mesmo
- * principio de `OrganizerInput` em `meetings/create.ts`.
+ *   Entra    `entraObjectId` + `displayName`; o tenant vem do token do ator,
+ *            nunca do corpo — mesmo principio de `OrganizerInput`.
+ *   Externo  so `externalParticipantId`; o NOME e resolvido pelo servidor no
+ *            cadastro (035). O cliente nao escolhe o nome de um externo.
  */
-export interface ChairInput {
-  entraObjectId?: string;
-  displayName?: string;
-}
+export type ChairInput =
+  | { entraObjectId: string; displayName: string }
+  | { externalParticipantId: string };
 
 export interface GovernanceBodyInput {
   name: string;
@@ -74,7 +85,15 @@ export interface GovernanceBodyActor {
 const AUDIT_ENTITY = "governance_body";
 
 const COLUMNS =
-  "id, name, icon, is_active, chair_entra_object_id, chair_name, created_at, updated_at";
+  "id, name, icon, is_active, chair_entra_object_id, chair_name, chair_external_participant_id, created_at, updated_at";
+
+/** Leitura com o nome ATUAL do presidente externo (o snapshot vale para o Entra). */
+const SELECT_COM_PRESIDENTE = `
+  SELECT gb.id, gb.name, gb.icon, gb.is_active, gb.chair_entra_object_id,
+         COALESCE(ep.full_name, gb.chair_name) AS chair_name,
+         gb.chair_external_participant_id, gb.created_at, gb.updated_at
+    FROM governance_bodies gb
+    LEFT JOIN external_participants ep ON ep.id = gb.chair_external_participant_id`;
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -87,6 +106,7 @@ function toGovernanceBody(row: GovernanceBodyRow): GovernanceBody {
     isActive: row.is_active,
     chairEntraObjectId: row.chair_entra_object_id,
     chairName: row.chair_name,
+    chairExternalParticipantId: row.chair_external_participant_id,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -117,6 +137,19 @@ function parseChairInput(valor: unknown): ChairInput | undefined {
     }
   }
 
+  // Presidente EXTERNO: só o id do cadastro; nome e e-mail vêm do servidor.
+  if (dados.externalParticipantId !== undefined) {
+    for (const chave of Object.keys(dados)) {
+      if (chave !== "externalParticipantId") {
+        throw new HttpError(400, `O campo 'chair.${chave}' não pode ser informado com 'chair.externalParticipantId'.`);
+      }
+    }
+    if (typeof dados.externalParticipantId !== "string" || !UUID_PATTERN.test(dados.externalParticipantId)) {
+      throw new HttpError(400, "O campo 'chair.externalParticipantId' deve ser um identificador válido.");
+    }
+    return { externalParticipantId: dados.externalParticipantId.toLowerCase() };
+  }
+
   const { entraObjectId, displayName } = dados;
   if (entraObjectId !== undefined && typeof entraObjectId !== "string") {
     throw new HttpError(400, "O campo 'chair.entraObjectId' deve ser um texto.");
@@ -137,7 +170,7 @@ function parseChairInput(valor: unknown): ChairInput | undefined {
     );
   }
 
-  return { entraObjectId, displayName: nome };
+  return { entraObjectId, displayName: nome! };
 }
 
 /** Garante que o :id da rota e um UUID antes de ir ao banco. */
@@ -209,19 +242,36 @@ function translateDatabaseError(error: unknown): never {
 }
 
 export async function listGovernanceBodies(): Promise<GovernanceBody[]> {
-  const { rows } = await pool.query<GovernanceBodyRow>(
-    `SELECT ${COLUMNS} FROM governance_bodies ORDER BY name`,
-  );
+  const { rows } = await pool.query<GovernanceBodyRow>(`${SELECT_COM_PRESIDENTE} ORDER BY gb.name`);
   return rows.map(toGovernanceBody);
+}
+
+/**
+ * Colunas do presidente a gravar. Externo: confere o cadastro e copia o nome
+ * como snapshot; Entra: par (tenant do token, oid) + nome escolhido. As duas
+ * origens são exclusivas (CHECK da 035).
+ */
+async function colunasDoPresidente(
+  client: PoolClient,
+  chair: ChairInput | null | undefined,
+  actor: GovernanceBodyActor,
+): Promise<{ tenant: string | null; oid: string | null; nome: string | null; externo: string | null }> {
+  if (!chair) return { tenant: null, oid: null, nome: null, externo: null };
+  if ("externalParticipantId" in chair) {
+    const { rows } = await client.query<{ full_name: string }>(
+      "SELECT full_name FROM external_participants WHERE id = $1",
+      [chair.externalParticipantId],
+    );
+    if (!rows[0]) throw new HttpError(404, "Participante externo não encontrado para Presidente da Mesa.");
+    return { tenant: null, oid: null, nome: rows[0].full_name, externo: chair.externalParticipantId };
+  }
+  return { tenant: actor.entraTenantId, oid: chair.entraObjectId, nome: chair.displayName, externo: null };
 }
 
 export async function findGovernanceBody(id: string): Promise<GovernanceBody> {
   assertValidId(id);
 
-  const { rows } = await pool.query<GovernanceBodyRow>(
-    `SELECT ${COLUMNS} FROM governance_bodies WHERE id = $1`,
-    [id],
-  );
+  const { rows } = await pool.query<GovernanceBodyRow>(`${SELECT_COM_PRESIDENTE} WHERE gb.id = $1`, [id]);
 
   if (rows.length === 0) {
     throw new HttpError(404, "Órgão de governança não encontrado.");
@@ -245,18 +295,21 @@ export async function createGovernanceBody(
   try {
     await client.query("BEGIN");
 
+    const presidente = await colunasDoPresidente(client, input.chair, actor);
     const { rows } = await client.query<GovernanceBodyRow>(
       `INSERT INTO governance_bodies
-              (name, icon, is_active, chair_entra_tenant_id, chair_entra_object_id, chair_name)
-       VALUES ($1, $2, COALESCE($3, true), $4, $5, $6)
+              (name, icon, is_active, chair_entra_tenant_id, chair_entra_object_id, chair_name,
+               chair_external_participant_id)
+       VALUES ($1, $2, COALESCE($3, true), $4, $5, $6, $7)
        RETURNING ${COLUMNS}`,
       [
         input.name,
         input.icon ?? null,
         input.isActive ?? null,
-        input.chair?.entraObjectId ? actor.entraTenantId : null,
-        input.chair?.entraObjectId ?? null,
-        input.chair?.displayName ?? null,
+        presidente.tenant,
+        presidente.oid,
+        presidente.nome,
+        presidente.externo,
       ],
     );
 
@@ -343,9 +396,7 @@ export async function updateGovernanceBody(
     // CASE decide pelo flag `chairProvided`, calculado no service a partir da
     // presenca da chave no corpo (`parseInput`).
     const chairProvided = input.chair !== undefined;
-    const chairEntraTenantId = chairProvided && input.chair?.entraObjectId ? actor.entraTenantId : null;
-    const chairEntraObjectId = chairProvided ? input.chair?.entraObjectId ?? null : null;
-    const chairName = chairProvided ? input.chair?.displayName ?? null : null;
+    const presidente = await colunasDoPresidente(client, input.chair, actor);
 
     const { rows } = await client.query<GovernanceBodyRow>(
       `UPDATE governance_bodies
@@ -354,7 +405,8 @@ export async function updateGovernanceBody(
               is_active             = COALESCE($4, is_active),
               chair_entra_tenant_id = CASE WHEN $5 THEN $6 ELSE chair_entra_tenant_id END,
               chair_entra_object_id = CASE WHEN $5 THEN $7 ELSE chair_entra_object_id END,
-              chair_name            = CASE WHEN $5 THEN $8 ELSE chair_name END
+              chair_name            = CASE WHEN $5 THEN $8 ELSE chair_name END,
+              chair_external_participant_id = CASE WHEN $5 THEN $9::uuid ELSE chair_external_participant_id END
         WHERE id = $1
         RETURNING ${COLUMNS}`,
       [
@@ -363,9 +415,10 @@ export async function updateGovernanceBody(
         input.icon ?? null,
         input.isActive ?? null,
         chairProvided,
-        chairEntraTenantId,
-        chairEntraObjectId,
-        chairName,
+        presidente.tenant,
+        presidente.oid,
+        presidente.nome,
+        presidente.externo,
       ],
     );
 
