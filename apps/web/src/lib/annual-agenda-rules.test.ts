@@ -75,8 +75,12 @@ test("tela: conteúdo pelas rotas da Agenda (mesmas entidades); edição condici
   const view = codigo("../components/AnnualAgendaView.tsx");
   assert.match(view, /const editavel = podeEditarAgenda\(agenda, canManage\)/);
   assert.match(view, /"Gerar prévia"/);
-  assert.match(view, /"Visualizar documento aprovado \(histórico\)"/);
-  for (const removido of ["Retirar da aprovação", "Enviar para aprovação", "Registrar aprovação", "E-mail de quem aprova"]) {
+  // Ponte histórica pro documento aprovado (pré-remoção): confundia mais do
+  // que ajudava — sumia o conteúdo mas o botão continuava ali. Removida.
+  for (const removido of [
+    "Retirar da aprovação", "Enviar para aprovação", "Registrar aprovação", "E-mail de quem aprova",
+    "Visualizar documento aprovado", "Documento enviado (histórico)"
+  ]) {
     assert.ok(!view.includes(removido), removido);
   }
   // Sem filtro local de órgão: o contexto global continua sendo a fonte.

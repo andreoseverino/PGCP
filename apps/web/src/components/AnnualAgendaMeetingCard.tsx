@@ -55,6 +55,7 @@ import ConfirmRemovalDialog from "./ConfirmRemovalDialog";
 import ParticipantPicker from "./ParticipantPicker";
 import AnnualTemaModal, { type DadosDoTemaCompleto } from "./AnnualTemaModal";
 import AnnualBibliotecaModal from "./AnnualBibliotecaModal";
+import MeetingVersionsPanel from "./MeetingVersionsPanel";
 import type { TaxonomyItem } from "../lib/agenda-topic-adapters";
 import type { TemaDaBibliotecaResumo } from "../lib/annual-agenda-rules";
 
@@ -91,6 +92,7 @@ interface Props {
   pautaNatures: TaxonomyItem[];
   executar: (acao: () => Promise<AnnualAgendaDetail | void>, sucesso?: string) => Promise<void>;
   onOpenMeeting: (meetingId: string) => void;
+  triggerToast: (msg: string) => void;
 }
 
 type Tema = AnnualAgendaMeeting["items"][number];
@@ -153,7 +155,8 @@ export default function AnnualAgendaMeetingCard({
   pautaTypes,
   pautaNatures,
   executar,
-  onOpenMeeting
+  onOpenMeeting,
+  triggerToast
 }: Props) {
   const pt = language === "pt";
   const [aberta, setAberta] = useState(true);
@@ -811,6 +814,14 @@ export default function AnnualAgendaMeetingCard({
               )}
             </>
           )}
+          <div className="pt-1">
+            <MeetingVersionsPanel
+              language={language}
+              meetingId={meeting.id}
+              recarregarQuando={`${meeting.title}|${meeting.startAt}|${meeting.items.length}`}
+              triggerToast={triggerToast}
+            />
+          </div>
         </div>
       )}
 

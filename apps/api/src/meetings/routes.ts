@@ -14,7 +14,7 @@ import {
 import { GraphError } from "../graph/client.js";
 import { calendarExportRateLimit, teamsMessageRateLimit } from "../security/limiters.js";
 import { exportarCalendario, parseFiltrosDeExportacao } from "./export.js";
-import { gerarPdfDaVersao, listarVersoesDaReuniao } from "./versions.js";
+import { diferencasDaVersaoPorId, gerarPdfDaVersao, listarVersoesDaReuniao } from "./versions.js";
 import { podeVisualizarReuniao, type EspectadorPgcp } from "./visibility.js";
 import {
   assertEmptyTeamsCallInput,
@@ -716,6 +716,17 @@ meetingsRouter.get("/:id/versions/:versionId/pdf", requireActivePgcpUser, async 
     res.send(pdf);
   } catch (error) {
     sendError(res, error, "gerar PDF da versão");
+  }
+});
+
+meetingsRouter.get("/:id/versions/:versionId/changes", requireActivePgcpUser, async (req: Request, res: Response) => {
+  try {
+    const meetingId = req.params.id as string;
+    assertValidId(meetingId); // 400 antes de ir ao banco
+    if (!(await podeVisualizarReuniao(meetingId, espectadorDa(req)))) throw new HttpError(404, "Reunião não encontrada.");
+    res.json(await diferencasDaVersaoPorId(meetingId, req.params.versionId as string));
+  } catch (error) {
+    sendError(res, error, "obter o que mudou na versão");
   }
 });
 

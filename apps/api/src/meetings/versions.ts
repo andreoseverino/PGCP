@@ -235,6 +235,116 @@ export function resumoDaMudanca(
   return `Alterado: ${secoes.join(", ") || "dados da reunião"}`;
 }
 
+/** Um campo que mudou entre duas versões, pronto para exibir. */
+export interface DiferencaDaVersao {
+  /** Agrupador para a tela ("Data e horário", "Tema: Orçamento 2027", ...). */
+  grupo: string;
+  campo: string;
+  antes: string | null;
+  depois: string | null;
+}
+
+const vazio = (v: string | null | undefined) => v === null || v === undefined || v.trim() === "";
+const formatarHora = (hhmm: string | null) => hhmm ?? "—";
+const formatarDuracao = (min: number | null) => (min === null ? "—" : `${min} min`);
+const formatarBooleano = (v: boolean) => (v ? "Sim" : "Não");
+
+/** Participantes do tema: string única ordenada, para comparar e exibir igual. */
+const participantesDoTema = (t: TemaNaVersao) => t.participantes.join(", ") || "—";
+
+/**
+ * Diferenças de UM tema entre duas versões (mesmo título) — campo a campo,
+ * só os que mudaram.
+ */
+function diferencasDoTema(grupo: string, anterior: TemaNaVersao, atual: TemaNaVersao): DiferencaDaVersao[] {
+  const diffs: DiferencaDaVersao[] = [];
+  const campo = (nome: string, a: string | null, b: string | null) => {
+    if (a !== b) diffs.push({ grupo, campo: nome, antes: a, depois: b });
+  };
+  campo("Horário", formatarHora(anterior.inicio), formatarHora(atual.inicio));
+  campo("Duração", formatarDuracao(anterior.duracaoMin), formatarDuracao(atual.duracaoMin));
+  campo("Responsável", anterior.responsavel, atual.responsavel);
+  campo("Apresentador", anterior.apresentador, atual.apresentador);
+  campo("Tipo", anterior.tipo, atual.tipo);
+  campo("Natureza", anterior.natureza, atual.natureza);
+  if (anterior.circular !== atual.circular) campo("Tema circular", formatarBooleano(anterior.circular), formatarBooleano(atual.circular));
+  if (anterior.postergado !== atual.postergado) campo("Postergado", formatarBooleano(anterior.postergado), formatarBooleano(atual.postergado));
+  if (participantesDoTema(anterior) !== participantesDoTema(atual)) {
+    campo("Participantes do tema", participantesDoTema(anterior), participantesDoTema(atual));
+  }
+  return diffs;
+}
+
+/**
+ * Diferenças CAMPO A CAMPO entre duas versões — para a pessoa ver exatamente
+ * o que mudou (não só a seção, como `resumoDaMudanca`). Usada pela tela que
+ * expande uma versão do histórico.
+ *
+ * Temas são casados por TÍTULO (não há id estável no snapshot — ver
+ * `TemaNaVersao`): tema com título repetido na mesma reunião casa com o
+ * primeiro disponível, que é o caso raro e ainda assim não quebra nada,
+ * só pode casar o tema errado entre dois homônimos.
+ */
+export function diferencasDaVersao(anterior: ConteudoDaVersao | null, atual: ConteudoDaVersao): DiferencaDaVersao[] {
+  if (!anterior) return [];
+  const diffs: DiferencaDaVersao[] = [];
+  const campo = (grupo: string, nome: string, a: string | null, b: string | null) => {
+    if (a !== b) diffs.push({ grupo, campo: nome, antes: a, depois: b });
+  };
+
+  campo("Título", "Título", anterior.titulo, atual.titulo);
+  if (anterior.tipoDeSessao !== atual.tipoDeSessao) campo("Título", "Tipo de sessão", anterior.tipoDeSessao, atual.tipoDeSessao);
+  campo("Data e horário", "Início", anterior.inicio, atual.inicio);
+  campo("Data e horário", "Término", anterior.fim, atual.fim);
+  if (anterior.fuso !== atual.fuso) campo("Data e horário", "Fuso horário", anterior.fuso, atual.fuso);
+  if (anterior.modalidade !== atual.modalidade) campo("Modalidade/local", "Modalidade", anterior.modalidade, atual.modalidade);
+  campo("Modalidade/local", "Local", anterior.local, atual.local);
+  if (anterior.status !== atual.status) campo("Situação", "Situação", anterior.status, atual.status);
+  if (textoDaDescricao(anterior.descricao ?? "") !== textoDaDescricao(atual.descricao ?? "")) {
+    campo("Descrição", "Descrição", textoDaDescricao(anterior.descricao ?? "") || null, textoDaDescricao(atual.descricao ?? "") || null);
+  }
+  campo("Outros dados", "Organizador", anterior.organizador, atual.organizador);
+  campo("Outros dados", "Recorrência", anterior.recorrencia, atual.recorrencia);
+  campo("Outros dados", "Pendências", anterior.pendencias, atual.pendencias);
+
+  // Participantes: quem entrou e quem saiu, não a lista inteira repetida.
+  const nomesAntes = new Set(anterior.participantes.map((p) => p.nome));
+  const nomesDepois = new Set(atual.participantes.map((p) => p.nome));
+  const entraram = atual.participantes.map((p) => p.nome).filter((n) => !nomesAntes.has(n));
+  const sairam = anterior.participantes.map((p) => p.nome).filter((n) => !nomesDepois.has(n));
+  if (entraram.length > 0) campo("Participantes", "Incluídos", null, entraram.join(", "));
+  if (sairam.length > 0) campo("Participantes", "Removidos", sairam.join(", "), null);
+
+  // Temas: achata pautas + temas sem pauta, casa por título.
+  const temaComGrupo = (titulo: string) => `Tema: ${titulo}`;
+  const todosAntes = new Map<string, TemaNaVersao>();
+  for (const p of anterior.pautas) for (const t of p.temas) if (!todosAntes.has(t.titulo)) todosAntes.set(t.titulo, t);
+  for (const t of anterior.temasSemPauta) if (!todosAntes.has(t.titulo)) todosAntes.set(t.titulo, t);
+  const todosDepois = new Map<string, TemaNaVersao>();
+  for (const p of atual.pautas) for (const t of p.temas) if (!todosDepois.has(t.titulo)) todosDepois.set(t.titulo, t);
+  for (const t of atual.temasSemPauta) if (!todosDepois.has(t.titulo)) todosDepois.set(t.titulo, t);
+
+  for (const [titulo, tAntes] of todosAntes) {
+    const tDepois = todosDepois.get(titulo);
+    if (!tDepois) diffs.push({ grupo: temaComGrupo(titulo), campo: "Tema", antes: "Presente", depois: "Removido" });
+    else diffs.push(...diferencasDoTema(temaComGrupo(titulo), tAntes, tDepois));
+  }
+  for (const [titulo] of todosDepois) {
+    if (!todosAntes.has(titulo)) diffs.push({ grupo: temaComGrupo(titulo), campo: "Tema", antes: null, depois: "Adicionado" });
+  }
+
+  if (!vazio(JSON.stringify(anterior.convite)) && jsonCanonico(anterior.convite) !== jsonCanonico(atual.convite)) {
+    campo(
+      "Convite Outlook/Teams",
+      "Convite",
+      anterior.convite.enviado ? "Enviado" : "Não enviado",
+      atual.convite.enviado ? "Enviado" : "Não enviado",
+    );
+  }
+
+  return diffs;
+}
+
 // ---------------------------------------------------------------------------
 // Persistência
 // ---------------------------------------------------------------------------
@@ -378,6 +488,43 @@ export function lerSnapshotDaVersao(valor: unknown): SnapshotDaVersao {
     throw new Error("Formato de versão da reunião não reconhecido.");
   }
   return s as SnapshotDaVersao;
+}
+
+export interface DetalheDaMudancaDaVersao {
+  version: number;
+  previousVersion: number | null;
+  changeSummary: string;
+  changes: DiferencaDaVersao[];
+}
+
+/**
+ * O que mudou NESTA versão em relação à anterior (campo a campo, não só a
+ * seção) — para expandir uma versão do histórico e comparar antes/depois.
+ * Primeira versão (sem anterior) devolve `changes: []`: nada para comparar.
+ */
+export async function diferencasDaVersaoPorId(meetingId: string, versionId: string): Promise<DetalheDaMudancaDaVersao> {
+  if (!UUID.test(meetingId) || !UUID.test(versionId)) throw new HttpError(400, "Identificador inválido.");
+  const { rows } = await pool.query<{ version: number; snapshot: unknown; change_summary: string }>(
+    `SELECT version, snapshot, change_summary FROM meeting_versions WHERE id = $2 AND meeting_id = $1`,
+    [meetingId, versionId],
+  );
+  const atual = rows[0];
+  if (!atual) throw new HttpError(404, "Versão não encontrada para esta reunião.");
+
+  const { rows: anterioresRows } = await pool.query<{ snapshot: unknown }>(
+    `SELECT snapshot FROM meeting_versions WHERE meeting_id = $1 AND version = $2`,
+    [meetingId, atual.version - 1],
+  );
+
+  const snapshotAtual = lerSnapshotDaVersao(atual.snapshot);
+  const snapshotAnterior = anterioresRows[0] ? lerSnapshotDaVersao(anterioresRows[0].snapshot) : null;
+
+  return {
+    version: atual.version,
+    previousVersion: snapshotAnterior ? atual.version - 1 : null,
+    changeSummary: atual.change_summary,
+    changes: diferencasDaVersao(snapshotAnterior?.conteudo ?? null, snapshotAtual.conteudo),
+  };
 }
 
 /**

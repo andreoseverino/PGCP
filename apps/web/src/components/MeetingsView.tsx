@@ -20,6 +20,7 @@ import {
   Trash2
 } from "lucide-react";
 import { Meeting } from "../types";
+import { textoDaDescricao } from "../lib/rich-text";
 import {
   aplicarFiltrosDaLista,
   FILTROS_DA_LISTA_VAZIOS,
@@ -520,7 +521,8 @@ export default function MeetingsView({
                                   {meet.title}
                                 </div>
                                 <div className="text-[10.5px] text-slate-400 font-semibold mt-0.5 truncate">
-                                  {meet.description || (language === "en" ? "No description." : "Sem descrição.")}
+                                  {/* `description` é HTML saneado (034) — aqui é só prévia de uma linha, texto puro. */}
+                                  {textoDaDescricao(meet.description) || (language === "en" ? "No description." : "Sem descrição.")}
                                 </div>
                               </div>
                             </td>

@@ -5,7 +5,6 @@ import {
   CheckCircle,
   ExternalLink,
   Eye,
-  FileCheck2,
   Info,
   Link2,
   Lock,
@@ -23,7 +22,6 @@ import {
   createAnnualAgenda,
   deleteAnnualAgenda,
   describeAnnualAgendaError,
-  downloadAnnualAgendaDocument,
   downloadAnnualAgendaPdf,
   getAnnualAgenda,
   getAnnualOverview,
@@ -297,6 +295,7 @@ export default function AnnualAgendaView({
               void carregar();
             }}
             setErro={setErro}
+            triggerToast={triggerToast}
           />
         ) : grupoAtual && !grupoAtual.agenda ? (
           <GrupoNaoFormalizado
@@ -447,6 +446,7 @@ interface AgendaDetailProps {
   onMeetingsChanged: () => void;
   onDeleted: () => void;
   setErro: (erro: string | null) => void;
+  triggerToast: (msg: string) => void;
 }
 
 /**
@@ -467,16 +467,17 @@ function AgendaDetail({
   onOpenMeeting,
   onMeetingsChanged,
   onDeleted,
-  setErro
+  setErro,
+  triggerToast
 }: AgendaDetailProps) {
   const pt = language === "pt";
   const editavel = podeEditarAgenda(agenda, canManage);
   const resumo = resumoDaAgenda(agenda);
   const associaveis = candidatasAssociaveis(agenda);
 
-  const baixar = async (tipo: "previa" | "documento") => {
+  const baixar = async () => {
     try {
-      const { blob, filename } = await (tipo === "previa" ? downloadAnnualAgendaPdf(agenda.id) : downloadAnnualAgendaDocument(agenda.id));
+      const { blob, filename } = await downloadAnnualAgendaPdf(agenda.id);
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
       a.download = filename ?? `agenda-anual-${agenda.year}.pdf`;
@@ -500,29 +501,12 @@ function AgendaDetail({
             <span className="text-[10px] text-slate-500 font-semibold">
               {resumo.reunioes} {pt ? "reuniões" : "meetings"} · {resumo.pautas} {pt ? "pautas" : "agendas"} · {resumo.temas} {pt ? "temas" : "topics"}
             </span>
-            {/* Histórico: versão enviada/aprovada antes da remoção da aprovação. */}
-            {agenda.version && (
-              <span className="text-[10px] text-slate-400 font-semibold">
-                {pt ? `Histórico: versão ${agenda.version.number}` : `History: version ${agenda.version.number}`}
-                {agenda.version.state === "approved"
-                  ? pt ? ` aprovada em ${new Date(agenda.version.approvedAt!).toLocaleDateString("pt-BR")}` : " approved"
-                  : pt ? ` enviada a ${agenda.version.sentTo}` : ` sent to ${agenda.version.sentTo}`}
-              </span>
-            )}
           </div>
         </div>
         <div className="flex gap-2 flex-wrap shrink-0">
-          <button type="button" onClick={() => void baixar("previa")} className="px-3 py-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer">
+          <button type="button" onClick={() => void baixar()} className="px-3 py-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer">
             <Eye className="w-3.5 h-3.5" />{pt ? "Gerar prévia" : "Preview"}
           </button>
-          {agenda.version && (
-            <button type="button" onClick={() => void baixar("documento")} className="px-3 py-2 border border-emerald-200 rounded-xl text-xs font-bold text-emerald-700 hover:bg-emerald-50 inline-flex items-center gap-1.5 cursor-pointer">
-              <FileCheck2 className="w-3.5 h-3.5" />
-              {agenda.version.state === "approved"
-                ? pt ? "Visualizar documento aprovado (histórico)" : "View approved document (history)"
-                : pt ? "Documento enviado (histórico)" : "Sent document (history)"}
-            </button>
-          )}
           {podeExcluir && (
             <button
               type="button"
@@ -566,6 +550,7 @@ function AgendaDetail({
             /* Mutações de conteúdo da reunião: Calendário/Pipeline recarregam (1x por ação). */
             executar={(acao, sucesso) => executar(acao, sucesso, onMeetingsChanged)}
             onOpenMeeting={onOpenMeeting}
+            triggerToast={triggerToast}
           />
         ))}
       </div>
