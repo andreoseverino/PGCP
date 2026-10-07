@@ -6,6 +6,7 @@ import {
 import type { Participant } from "../types";
 import type { SessionType } from "./meeting-title";
 import { ehHorarioValido } from "./time-options";
+import { sanitizarHtml, textoDaDescricao } from "./rich-text";
 
 /**
  * Agendamento pelo CALENDÁRIO — o cadastro inicial, deliberadamente simples.
@@ -38,12 +39,22 @@ export interface NewMeetingForm {
   timezone: string;
   governanceBodyId: string;
   modality: Modality;
-  /** Chave do catálogo. Só no presencial. */
-  physicalLocationKey: string;
+  /** Id do local cadastrado (Administração → Locais). Só no presencial. */
+  physicalLocationId: string;
   organizer?: CreateOrganizerPayload;
+  /**
+   * Descrição (HTML da lista fechada do editor). Vai ao convite do Outlook.
+   * O servidor saneia de novo; vazio = sem descrição.
+   */
+  description?: string;
   participants: Array<
-    Pick<Participant, "name" | "role" | "confirmed" | "entraObjectId"> & { email?: string }
+    Pick<Participant, "name" | "role" | "confirmed" | "entraObjectId"> & { email?: string; doOrgao?: boolean }
   >;
+  /**
+   * A lista já partiu do grupo do órgão (carregado na tela) e foi ajustada pela
+   * usuária: o servidor não recoloca ninguém. Falso = servidor inclui o grupo.
+   */
+  participantsIncludeGroup?: boolean;
 }
 
 /**
@@ -66,7 +77,7 @@ export function validateNewMeeting(form: NewMeetingForm, language: "en" | "pt"):
       : "The end time must be after the start time.";
   }
   if (!form.governanceBodyId) return pt ? "Selecione o órgão de governança." : "Select the governance body.";
-  if (form.modality === "in_person" && !form.physicalLocationKey) {
+  if (form.modality === "in_person" && !form.physicalLocationId) {
     return pt ? "Selecione o local físico da reunião presencial." : "Select the physical location.";
   }
   return null;
@@ -90,10 +101,13 @@ export function buildNewMeetingPayload(form: NewMeetingForm): CreateMeetingPaylo
     agendaItems: []
   });
 
+  const descricao = form.description ? sanitizarHtml(form.description) : "";
   return {
     ...payload,
+    ...(textoDaDescricao(descricao) ? { description: descricao } : {}),
     sessionType: form.sessionType || undefined,
     modality: form.modality,
-    ...(form.modality === "in_person" ? { physicalLocationKey: form.physicalLocationKey } : {})
+    ...(form.modality === "in_person" ? { physicalLocationId: form.physicalLocationId } : {}),
+    ...(form.participantsIncludeGroup ? { participantsIncludeGroup: true } : {})
   };
 }

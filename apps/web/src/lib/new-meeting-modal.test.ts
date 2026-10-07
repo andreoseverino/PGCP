@@ -18,26 +18,33 @@ test("Nova reunião: centralizado via portal, fundo só desfocado (mesmo padrão
   assert.ok(modal.includes(overlay));
   assert.ok(tema.includes(overlay), "mesmo overlay do modal de Tema");
   assert.ok(!/bg-slate-900\/|bg-black/.test(modal), "sem blackout");
-  const caixa = "bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-fade-in";
-  assert.ok(modal.includes(caixa) && tema.includes(caixa), "mesma caixa (largura, raio, sombra, altura)");
+  // Mesma caixa do modal de EDIÇÃO (largura, raio, sombra, altura).
+  const caixa = "bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[94vh] flex flex-col overflow-hidden animate-fade-in";
+  assert.ok(modal.includes(caixa) && codigo("../components/EditMeetingModal.tsx").includes(caixa), "mesma caixa da edição");
   assert.match(modal, /role="dialog"/);
   assert.match(modal, /e\.key === "Escape" && !salvando\) onClose\(\)/);
 });
 
-test("Nova reunião: dados à esquerda, pessoas à direita (md+), empilha abaixo de md", () => {
-  assert.match(modal, /md:grid md:grid-cols-\[minmax\(0,1fr\)_minmax\(0,360px\)\]/);
-  const iDados = modal.indexOf('aria-labelledby="nova-reuniao-dados"');
-  const iPessoas = modal.indexOf('aria-labelledby="nova-reuniao-pessoas"');
+test("Nova reunião: mesmo layout da edição — dados e formato à esquerda, organizador e pessoas à direita; empilha em tela estreita", () => {
+  const grade = "grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-x-8 gap-y-4";
+  assert.ok(modal.includes(grade));
+  assert.ok(codigo("../components/EditMeetingModal.tsx").includes(grade), "mesma grade da edição");
+  const iDados = modal.indexOf('data-coluna="dados"');
+  const iPessoas = modal.indexOf('data-coluna="pessoas"');
   assert.ok(iDados > 0 && iPessoas > iDados);
   const dados = modal.slice(iDados, iPessoas);
-  for (const campo of ['id="nmType"', 'id="nmTitlePreview"', 'id="nmDate"', 'id="nmStart"', 'id="nmEnd"', 'id="nmBody"', "<ModalityFields"]) {
+  for (const campo of ['id="nmType"', 'id="nmTitlePreview"', 'id="nmDate"', 'id="nmStart"', 'id="nmEnd"', 'id="nmBody"', "<ModalityFields", 'id="nmDescription"']) {
     assert.ok(dados.includes(campo), `${campo} na coluna de dados`);
   }
-  const pessoas = modal.slice(iPessoas, modal.indexOf("</aside>", iPessoas));
-  assert.match(pessoas, /"Pessoas da reunião"/);
-  assert.match(pessoas, /<OrganizerAndParticipants/);
+  // Ordem igual à da edição: tipo, título, data/horário, órgão, formato, descrição.
+  const ordem = ['id="nmType"', 'id="nmTitlePreview"', 'id="nmDate"', 'id="nmBody"', "<ModalityFields", 'id="nmDescription"'].map((c) => dados.indexOf(c));
+  assert.deepEqual([...ordem].sort((a, b) => a - b), ordem);
+  const pessoas = modal.slice(iPessoas, modal.indexOf("</form>", iPessoas));
+  assert.ok(pessoas.indexOf("<DirectoryUserPicker") >= 0 && pessoas.indexOf("<DirectoryUserPicker") < pessoas.indexOf("<ParticipantsField"), "organizador no topo da direita");
+  assert.match(pessoas, /<ParticipantsField/);
   assert.match(pessoas, /<ModalityDisclaimer language=\{language\} \/>/, "aviso Teams na coluna de pessoas");
-  assert.match(pessoas, /md:border-l/);
+  // Organizador escolhido também entra como convidado (regra mantida).
+  assert.match(modal, /setParticipants\(\(lista\) => addParticipantOnce\(lista, convidadoDoDiretorio\(u, language\)\)\)/);
 });
 
 test("Nova reunião: rodapé fixo com Cancelar/Revisar; etapa de revisão preservada", () => {

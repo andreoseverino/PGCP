@@ -42,15 +42,12 @@ test("grupo do órgão: na criação, depois dos manuais e antes dos temas", () 
   }
 });
 
-test("entrar no grupo: reuniões ABERTAS existentes recebem a pessoa; sair do grupo não mexe em reunião", () => {
+test("sem vínculo vivo: entrar ou sair do grupo NÃO muda reunião já criada", () => {
   const grupos = fonte("./groups.ts");
-  // Mesma regra da etapa "Realizada" do Pipeline; passadas não encerradas também ficam de fora.
-  assert.match(grupos, /m\.status NOT IN \('done', 'approved', 'closed'\)/);
-  assert.match(grupos, /m\.end_at >= now\(\) OR m\.status = 'in_progress'/);
   const adicionar = grupos.slice(grupos.indexOf("export async function adicionarAoGrupoDoOrgao("), grupos.indexOf("export async function removerDoGrupoDoOrgao("));
-  assert.match(adicionar, /FOR UPDATE/, "reuniões travadas na mesma transação");
-  assert.match(adicionar, /incluirMembroDoGrupo\(client, reuniao\.id, pessoa, ator, reuniao\.title\)/);
-  assert.match(adicionar, /mantida\(s\) fora por exceção/, "auditoria conta as exceções");
+  assert.ok(!/meetings|meeting_participants|incluirMembroDoGrupo|versionar/.test(adicionar), "entrar no grupo não toca em reunião");
+  // Lista do grupo traz o oid para a tela montar o convite.
+  assert.match(grupos, /dp\.entra_object_id/);
   const remover = grupos.slice(grupos.indexOf("export async function removerDoGrupoDoOrgao("));
   assert.ok(!/meeting_participants|incluirMembroDoGrupo|excluirMeetingParticipant/.test(remover));
 });

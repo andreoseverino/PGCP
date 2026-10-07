@@ -345,24 +345,7 @@ export async function incluirGrupoDoOrgao(
   actor: MeetingActor,
   titulo: string,
 ): Promise<number> {
-  const { rows: membros } = await client.query<{
-    entra_object_id: string | null;
-    nome: string;
-    email: string | null;
-    externo: boolean;
-  }>(
-    `SELECT dp.entra_object_id, dp.display_name AS nome, dp.email, false AS externo
-       FROM participant_governance_bodies g
-       JOIN directory_people dp ON dp.id = g.directory_person_id
-      WHERE g.governance_body_id = $1 AND dp.entra_tenant_id = $2
-     UNION ALL
-     SELECT NULL, ep.full_name, ep.email, true
-       FROM participant_governance_bodies g
-       JOIN external_participants ep ON ep.id = g.external_participant_id
-      WHERE g.governance_body_id = $1
-      ORDER BY nome`,
-    [governanceBodyId, actor.entraTenantId],
-  );
+  const membros = await membrosDoGrupoDoOrgao(client, governanceBodyId, actor.entraTenantId);
 
   let incluidos = 0;
   for (const m of membros) {
@@ -388,6 +371,76 @@ export async function incluirGrupoDoOrgao(
     });
   }
   return incluidos;
+}
+
+/**
+ * Membros do grupo do órgão (diretório do tenant + externos). Fonte única da
+ * inclusão automática e da lista da tela (`participants/groups.ts` lê a mesma
+ * relação `participant_governance_bodies`).
+ */
+async function membrosDoGrupoDoOrgao(client: PoolClient, governanceBodyId: string, tenantId: string) {
+  const { rows } = await client.query<{
+    entra_object_id: string | null;
+    nome: string;
+    email: string | null;
+    externo: boolean;
+  }>(
+    `SELECT dp.entra_object_id, dp.display_name AS nome, dp.email, false AS externo
+       FROM participant_governance_bodies g
+       JOIN directory_people dp ON dp.id = g.directory_person_id
+      WHERE g.governance_body_id = $1 AND dp.entra_tenant_id = $2
+     UNION ALL
+     SELECT NULL, ep.full_name, ep.email, true
+       FROM participant_governance_bodies g
+       JOIN external_participants ep ON ep.id = g.external_participant_id
+      WHERE g.governance_body_id = $1
+      ORDER BY nome`,
+    [governanceBodyId, tenantId],
+  );
+  return rows;
+}
+
+/**
+ * Criação a partir da TELA (Nova reunião): a lista enviada JÁ partiu do grupo
+ * do órgão e foi ajustada pela usuária — é a autoridade. Nada é recolocado.
+ * Quem é do grupo e ficou de fora foi REMOVIDO DESTA reunião: registra a mesma
+ * exceção (031) da remoção pelo Pipeline, para nenhuma inclusão automática
+ * (ex.: participantes padrão de tema) trazê-lo de volta. O grupo não muda.
+ */
+export async function registrarOmitidosDoGrupo(
+  client: PoolClient,
+  meetingId: string,
+  governanceBodyId: string,
+  actor: MeetingActor,
+  titulo: string,
+): Promise<number> {
+  const membros = await membrosDoGrupoDoOrgao(client, governanceBodyId, actor.entraTenantId);
+  let omitidos = 0;
+  for (const m of membros) {
+    const { rows } = await client.query(
+      `SELECT 1 FROM meeting_participants
+        WHERE meeting_id = $1
+          AND ( ($2::uuid IS NOT NULL AND entra_object_id = $2)
+             OR ($3::text IS NOT NULL AND lower(email) = lower($3)) )
+        LIMIT 1`,
+      [meetingId, m.entra_object_id, m.email],
+    );
+    if (rows.length > 0) continue;
+    const identidade = await identidadeDe(client, { entraObjectId: m.entra_object_id, email: m.email }, actor.entraTenantId);
+    if (await registrarExclusao(client, meetingId, identidade, actor.userId)) omitidos += 1;
+  }
+  if (omitidos > 0) {
+    await recordAuditIn(client, {
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      action: `Participantes do grupo do órgão retirados desta reunião na criação (${omitidos})`,
+      entityType: "meeting",
+      entityId: meetingId,
+      entityLabel: titulo,
+      status: "success",
+    });
+  }
+  return omitidos;
 }
 
 // -----------------------------------------------------------------------------

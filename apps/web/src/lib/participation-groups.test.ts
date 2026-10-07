@@ -34,15 +34,13 @@ test("participante padrão do tema: Cielo pela identidade; externo por nome + e-
   assert.ok(!("entraObjectId" in ext) && !("userId" in ext));
 });
 
-test("entrar no grupo: aviso diz quantas reuniões abertas receberam a pessoa e quantas ficaram de fora por exceção", () => {
-  assert.equal(avisoDeInclusaoNoGrupo("Maria", 2, 0, "pt"), "Maria adicionado(a) ao grupo e incluído(a) em 2 reuniões abertas.");
-  assert.equal(avisoDeInclusaoNoGrupo("Maria", 0, 0, "pt"), "Maria adicionado(a) ao grupo. Nenhuma reunião aberta precisou ser atualizada.");
+test("entrar no grupo: aviso deixa claro que vale só para as próximas reuniões (sem vínculo vivo)", () => {
   assert.equal(
-    avisoDeInclusaoNoGrupo("Maria", 1, 1, "pt"),
-    "Maria adicionado(a) ao grupo e incluído(a) em 1 reunião aberta. 1 reunião continua sem a pessoa, porque ela foi removida antes."
+    avisoDeInclusaoNoGrupo("Maria", "pt"),
+    "Maria adicionado(a) ao grupo. Entra nas próximas reuniões do órgão; reuniões já criadas não mudam."
   );
   const painel = readFileSync(new URL("../components/ParticipantsPanel.tsx", import.meta.url), "utf8");
-  assert.match(painel, /setAviso\(avisoDeInclusaoNoGrupo\(nome, r\.reunioesAtualizadas, r\.reunioesComExcecao, language\)\)/);
+  assert.match(painel, /setAviso\(avisoDeInclusaoNoGrupo\(nome, language\)\)/);
 });
 
 test("origem Cielo/Externo, contagem e quem já está no grupo", () => {

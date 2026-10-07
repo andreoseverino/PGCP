@@ -10,7 +10,7 @@ const form = (extra: Partial<NewMeetingForm> = {}): NewMeetingForm => ({
   timezone: "America/Sao_Paulo",
   governanceBodyId: "11111111-1111-1111-1111-111111111111",
   modality: "online",
-  physicalLocationKey: "",
+  physicalLocationId: "",
   participants: [
     { name: "Pessoa", role: "Convidado", confirmed: false, entraObjectId: "22222222-2222-2222-2222-222222222222", email: "p@empresa.com" }
   ],
@@ -24,16 +24,16 @@ test("criação sem pauta: o payload nunca leva temas", () => {
 
 test("online: modalidade online, sem local físico no payload", () => {
   assert.equal(validateNewMeeting(form(), "pt"), null);
-  const payload = buildNewMeetingPayload(form({ physicalLocationKey: "sede-matriz" }));
+  const payload = buildNewMeetingPayload(form({ physicalLocationId: "sede-matriz" }));
   assert.equal(payload.modality, "online");
-  assert.equal("physicalLocationKey" in payload, false, "online não envia local (a API recusaria)");
+  assert.equal("physicalLocationId" in payload, false, "online não envia local (a API recusaria)");
 });
 
 test("presencial exige local; com local, envia a chave do catálogo", () => {
   assert.match(validateNewMeeting(form({ modality: "in_person" }), "pt") ?? "", /local físico/);
-  const payload = buildNewMeetingPayload(form({ modality: "in_person", physicalLocationKey: "sede-leopoldo" }));
+  const payload = buildNewMeetingPayload(form({ modality: "in_person", physicalLocationId: "sede-leopoldo" }));
   assert.equal(payload.modality, "in_person");
-  assert.equal(payload.physicalLocationKey, "sede-leopoldo");
+  assert.equal(payload.physicalLocationId, "sede-leopoldo");
 });
 
 test("payload correto: instantes no fuso da reunião, órgão e participantes", () => {

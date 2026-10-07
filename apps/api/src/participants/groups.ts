@@ -9,19 +9,20 @@ import {
   type Ator,
   type DirectoryLookup,
 } from "../directory-people/service.js";
-import { incluirMembroDoGrupo, type MembroDeGrupo } from "../meetings/agenda-item-participants.js";
 
 /**
  * GRUPOS DE PARTICIPAÇÃO — Grupo do ÓRGÃO COLEGIADO.
  *
  * "Quem faz parte deste Comitê?" É a mesma relação da 027
- * (`participant_governance_bodies`), vista a partir do órgão. Pertencer ao
- * grupo INCLUI a pessoa automaticamente:
- *   - nas reuniões NOVAS do órgão (`incluirGrupoDoOrgao`, na criação);
- *   - ao ENTRAR no grupo, nas reuniões ABERTAS já existentes do órgão
- *     (`REUNIAO_ABERTA`), respeitando a exceção de cada reunião.
- * SAIR do grupo não remove ninguém de reunião nenhuma. Não autoriza nada e não
- * é App Role.
+ * (`participant_governance_bodies`), vista a partir do órgão. O grupo é o
+ * PONTO DE PARTIDA da lista de participantes das reuniões NOVAS do órgão:
+ * a tela de Nova reunião carrega o grupo (ajustável só para aquela reunião) e,
+ * sem a tela, a criação inclui o grupo (`incluirGrupoDoOrgao`).
+ *
+ * Sem vínculo vivo: ENTRAR ou SAIR do grupo não muda reunião já criada (decisão
+ * de produto, out/2026 — antes, entrar no grupo incluía a pessoa nas reuniões
+ * abertas). Reunião existente muda só pela edição dela. Não autoriza nada e
+ * não é App Role.
  *
  * O grupo do TEMA são os participantes padrão do tema da Biblioteca
  * (`agenda_topic_participants`), mantidos pelas rotas de `/agenda-topics`.
@@ -50,6 +51,8 @@ export interface MembroDoGrupo {
   origin: "entra" | "external";
   displayName: string;
   email: string | null;
+  /** `oid` da pessoa do diretório (para virar convidada); `null` para externo. */
+  entraObjectId: string | null;
 }
 
 /** Novo membro: SÓ a pessoa escolhida (oid do diretório OU externo cadastrado). */
@@ -104,37 +107,36 @@ async function nomeDoOrgao(executor: Pick<PoolClient, "query">, governanceBodyId
 export async function listarMembrosDoOrgao(governanceBodyId: string, tenantId: string): Promise<MembroDoGrupo[]> {
   const id = assertId(governanceBodyId, "Identificador do órgão colegiado");
   await nomeDoOrgao(pool, id);
-  const { rows } = await pool.query<{ id: string; origin: "entra" | "external"; display_name: string; email: string | null }>(
-    `SELECT g.id, 'entra' AS origin, dp.display_name, dp.email
+  const { rows } = await pool.query<{
+    id: string;
+    origin: "entra" | "external";
+    display_name: string;
+    email: string | null;
+    entra_object_id: string | null;
+  }>(
+    `SELECT g.id, 'entra' AS origin, dp.display_name, dp.email, dp.entra_object_id
        FROM participant_governance_bodies g
        JOIN directory_people dp ON dp.id = g.directory_person_id
       WHERE g.governance_body_id = $1 AND dp.entra_tenant_id = $2
      UNION ALL
-     SELECT g.id, 'external', ep.full_name, ep.email
+     SELECT g.id, 'external', ep.full_name, ep.email, NULL
        FROM participant_governance_bodies g
        JOIN external_participants ep ON ep.id = g.external_participant_id
       WHERE g.governance_body_id = $1
       ORDER BY 3, 1`,
     [id, tenantId],
   );
-  return rows.map((r) => ({ id: r.id, origin: r.origin, displayName: r.display_name, email: r.email }));
+  return rows.map((r) => ({
+    id: r.id,
+    origin: r.origin,
+    displayName: r.display_name,
+    email: r.email,
+    entraObjectId: r.entra_object_id,
+  }));
 }
-
-/**
- * Reunião ainda ABERTA: não realizada/encerrada (mesma regra da etapa
- * "Realizada" do Pipeline: done | approved | closed) e ainda por acontecer —
- * término no futuro, ou em andamento. Reunião passada que ninguém encerrou não
- * recebe gente nova: é histórico.
- */
-const REUNIAO_ABERTA = `m.status NOT IN ('done', 'approved', 'closed')
-   AND (m.end_at >= now() OR m.status = 'in_progress')`;
 
 export interface ResultadoDaInclusao {
   members: MembroDoGrupo[];
-  /** Reuniões abertas que receberam a pessoa agora. */
-  meetingsUpdated: number;
-  /** Reuniões abertas de onde a pessoa foi removida antes (exceção mantida). */
-  meetingsSkippedByException: number;
 }
 
 async function emTransacao<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -155,9 +157,8 @@ async function emTransacao<T>(fn: (client: PoolClient) => Promise<T>): Promise<T
 /**
  * Adiciona ao grupo do órgão. Pessoa do diretório: confirmada no Graph (fail
  * closed) e gravada em `directory_people` sem tocar nos outros vínculos dela.
- * Externo: precisa existir no cadastro. Já membro → 409. Na MESMA transação, a
- * pessoa entra nas reuniões ABERTAS existentes do órgão (exceção respeitada);
- * realizadas/encerradas/passadas não mudam.
+ * Externo: precisa existir no cadastro. Já membro → 409. Reuniões já criadas
+ * do órgão NÃO mudam (sem vínculo vivo): só as próximas partem do grupo novo.
  */
 export async function adicionarAoGrupoDoOrgao(
   governanceBodyId: string,
@@ -169,15 +170,15 @@ export async function adicionarAoGrupoDoOrgao(
   // Graph fora da transação: rede não segura conexão do banco.
   const doDiretorio = "entraObjectId" in membro ? await confirmarNoDiretorio(membro.entraObjectId, lookup) : null;
 
-  const { atualizadas, ignoradas } = await emTransacao(async (client) => {
+  await emTransacao(async (client) => {
     const orgao = await nomeDoOrgao(client, orgaoId);
     let coluna: "directory_person_id" | "external_participant_id";
     let pessoaId: string;
-    let pessoa: MembroDeGrupo;
+    let nome: string;
     if ("entraObjectId" in membro) {
       pessoaId = await gravarPessoaDoDiretorio(client, ator, membro.entraObjectId, doDiretorio!.nome, doDiretorio!.email);
       coluna = "directory_person_id";
-      pessoa = { entraObjectId: membro.entraObjectId, nome: doDiretorio!.nome, email: doDiretorio!.email, externo: false };
+      nome = doDiretorio!.nome;
     } else {
       const { rows } = await client.query<{ full_name: string; email: string }>(
         "SELECT full_name, email FROM external_participants WHERE id = $1",
@@ -186,9 +187,8 @@ export async function adicionarAoGrupoDoOrgao(
       if (!rows[0]) throw new HttpError(404, "Participante externo não encontrado.");
       pessoaId = membro.externalParticipantId;
       coluna = "external_participant_id";
-      pessoa = { entraObjectId: null, nome: rows[0].full_name, email: rows[0].email, externo: true };
+      nome = rows[0].full_name;
     }
-    const nome = pessoa.nome;
     // Coluna de mapa fechado, nunca do cliente. Índices parciais da 027 barram duplicata.
     const { rowCount } = await client.query(
       `INSERT INTO participant_governance_bodies (${coluna}, governance_body_id) VALUES ($1, $2)
@@ -197,23 +197,8 @@ export async function adicionarAoGrupoDoOrgao(
     );
     if ((rowCount ?? 0) === 0) throw new HttpError(409, "Esta pessoa já faz parte do grupo.");
 
-    // Reuniões ABERTAS já existentes do órgão: a pessoa entra (mesmo caminho da
-    // inclusão manual: calendário fica desatualizado para reenvio, trilha),
-    // exceto onde foi removida antes. Travadas, em ordem, nesta transação.
-    const { rows: abertas } = await client.query<{ id: string; title: string }>(
-      `SELECT m.id, m.title FROM meetings m
-        WHERE m.governance_body_id = $1 AND ${REUNIAO_ABERTA}
-        ORDER BY m.start_at, m.id
-        FOR UPDATE`,
-      [orgaoId],
-    );
-    let atualizadas = 0;
-    let ignoradas = 0;
-    for (const reuniao of abertas) {
-      const r = await incluirMembroDoGrupo(client, reuniao.id, pessoa, ator, reuniao.title);
-      if (r === "incluida") atualizadas += 1;
-      if (r === "excluida") ignoradas += 1;
-    }
+    // Sem vínculo vivo: reuniões já existentes do órgão NÃO recebem a pessoa.
+    // Ela entra nas reuniões NOVAS (lista carregada na Nova reunião).
 
     await recordAuditIn(client, {
       actorUserId: ator.userId,
@@ -221,18 +206,11 @@ export async function adicionarAoGrupoDoOrgao(
       action: "Participante adicionado ao grupo do órgão colegiado",
       entityType: "governance_body",
       entityId: orgaoId,
-      entityLabel:
-        `${orgao.slice(0, 120)} — ${nome.slice(0, 120)} — incluído(a) em ${atualizadas} reunião(ões) aberta(s)` +
-        (ignoradas > 0 ? `; ${ignoradas} mantida(s) fora por exceção` : ""),
+      entityLabel: `${orgao.slice(0, 120)} — ${nome.slice(0, 120)}`,
       status: "success",
     });
-    return { atualizadas, ignoradas };
   });
-  return {
-    members: await listarMembrosDoOrgao(orgaoId, ator.entraTenantId),
-    meetingsUpdated: atualizadas,
-    meetingsSkippedByException: ignoradas,
-  };
+  return { members: await listarMembrosDoOrgao(orgaoId, ator.entraTenantId) };
 }
 
 /**

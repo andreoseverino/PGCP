@@ -10,9 +10,12 @@ import { findMeeting, type MeetingDetail } from "./service.js";
 import {
   garantirResponsavelComoParticipante,
   incluirGrupoDoOrgao,
+  registrarOmitidosDoGrupo,
   snapshotTopicParticipantsIntoItem,
 } from "./agenda-item-participants.js";
-import { localFisicoExiste } from "./locations.js";
+import { resolverLocalParaReuniao } from "../meeting-locations/service.js";
+import { parseDescricao } from "./rich-text.js";
+import { versionarReuniaoSeMudou } from "./versions.js";
 
 /**
  * Criacao de reuniao — reuniao, participantes e pautas em UMA transacao.
@@ -139,8 +142,8 @@ export interface CreateMeetingInput {
   governanceBodyId: string;
   /** Ausente no corpo = `online` (clientes anteriores a 025). */
   modality: Modalidade;
-  /** Chave do catalogo (`locations.ts`). Obrigatoria so no presencial. */
-  physicalLocationKey?: string;
+  /** Local cadastrado (`meeting_locations`, 038). Obrigatorio so no presencial. */
+  physicalLocationId?: string;
   /** Ausente = o proprio ator organiza. Ver `parseCreateInput`. */
   organizer?: OrganizerInput;
   /**
@@ -161,6 +164,12 @@ export interface CreateMeetingInput {
   recurrence?: string;
   pendingRequirements?: string;
   participants: ParticipantInput[];
+  /**
+   * `true` = a lista JÁ veio do grupo do órgão, ajustada na tela (Nova reunião):
+   * o servidor não recoloca ninguém e registra quem do grupo ficou de fora.
+   * Ausente = comportamento anterior (o servidor inclui o grupo).
+   */
+  participantsIncludeGroup?: boolean;
   /**
    * Mantido por compatibilidade de contrato. O agendamento pelo Calendario NAO
    * envia temas: pautas e temas entram depois, pela preparacao (Pipeline).
@@ -501,12 +510,14 @@ export function parseOrganizerInput(valor: unknown): OrganizerInput | undefined 
 export const PROVIDER_REUNIAO_ONLINE = "teamsForBusiness" as const;
 
 /**
- * Modalidade + local fisico, com a mesma regra do CHECK da 025:
- * presencial exige local do catalogo; online nao carrega local.
+ * Modalidade + local fisico, com a mesma regra do CHECK da 038:
+ * presencial exige local cadastrado; online nao carrega local.
  *
  * Recusar local no online (em vez de descartar) e deliberado: aceitar em
  * silencio faria a tela acreditar que gravou um endereco que o servidor jogou
- * fora. A chave e validada contra o catalogo — texto livre nao vira endereco.
+ * fora. Aqui so a FORMA (UUID); existencia e status (ativo) sao conferidos no
+ * banco, dentro da transacao (`resolverLocalParaReuniao`). Texto livre nunca
+ * vira endereco.
  *
  * `padrao` = modalidade assumida quando o corpo nao informa. Na criacao e
  * `online` (clientes anteriores a 025); no PATCH e a modalidade ATUAL da
@@ -515,7 +526,7 @@ export const PROVIDER_REUNIAO_ONLINE = "teamsForBusiness" as const;
 export function parseModalidade(
   dados: Record<string, unknown>,
   padrao: Modalidade = "online",
-): { modality: Modalidade; physicalLocationKey: string | null } {
+): { modality: Modalidade; physicalLocationId: string | null } {
   let modality: Modalidade = padrao;
   if (dados.modality !== undefined) {
     if (!(MODALIDADES as readonly unknown[]).includes(dados.modality)) {
@@ -524,22 +535,22 @@ export function parseModalidade(
     modality = dados.modality as Modalidade;
   }
 
-  let physicalLocationKey: string | undefined;
-  if (dados.physicalLocationKey !== undefined && dados.physicalLocationKey !== null) {
-    physicalLocationKey = textoOpcional(dados.physicalLocationKey, "physicalLocationKey", 64);
-    if (physicalLocationKey && !localFisicoExiste(physicalLocationKey)) {
-      throw new HttpError(400, "O local físico informado não existe no catálogo de locais.");
-    }
+  const physicalLocationId = uuidOpcional(dados.physicalLocationId, "physicalLocationId");
+
+  if (modality === "in_person" && !physicalLocationId) {
+    throw new HttpError(400, "Reunião presencial exige o local ('physicalLocationId').");
+  }
+  if (modality === "online" && physicalLocationId) {
+    throw new HttpError(400, "Reunião online não tem local físico: remova 'physicalLocationId'.");
   }
 
-  if (modality === "in_person" && !physicalLocationKey) {
-    throw new HttpError(400, "Reunião presencial exige o local físico ('physicalLocationKey').");
-  }
-  if (modality === "online" && physicalLocationKey) {
-    throw new HttpError(400, "Reunião online não tem local físico: remova 'physicalLocationKey'.");
-  }
+  return { modality, physicalLocationId: modality === "online" ? null : physicalLocationId!.toLowerCase() };
+}
 
-  return { modality, physicalLocationKey: modality === "online" ? null : physicalLocationKey! };
+function lerBooleanoOpcional(valor: unknown, campo: string): boolean | undefined {
+  if (valor === undefined || valor === null) return undefined;
+  if (typeof valor !== "boolean") throw new HttpError(400, `O campo '${campo}' deve ser booleano.`);
+  return valor;
 }
 
 export function parseCreateInput(body: unknown): CreateMeetingInput {
@@ -568,7 +579,7 @@ export function parseCreateInput(body: unknown): CreateMeetingInput {
     return valor;
   };
 
-  const { modality, physicalLocationKey } = parseModalidade(dados);
+  const { modality, physicalLocationId } = parseModalidade(dados);
 
   // Título padronizado: com tipo, o servidor monta e o corpo não manda título.
   const sessionType = dados.sessionType === undefined ? undefined : parseTipoDeSessao(dados.sessionType);
@@ -579,17 +590,19 @@ export function parseCreateInput(body: unknown): CreateMeetingInput {
   return {
     governanceBodyId,
     modality,
-    physicalLocationKey: physicalLocationKey ?? undefined,
+    physicalLocationId: physicalLocationId ?? undefined,
     organizer: parseOrganizerInput(dados.organizer),
     sessionType,
     title: sessionType ? "" : textoObrigatorio(dados.title, "title", 300),
-    description: textoOpcional(dados.description, "description", 5000),
+    // Texto rico saneado no servidor (rich-text.ts): HTML da lista fechada.
+    description: parseDescricao(dados.description) ?? undefined,
     startAt: startAt.toISOString(),
     endAt: endAt.toISOString(),
     timezone: fusoHorario(dados.timezone),
     meetingLink: urlHttpOpcional(dados.meetingLink, "meetingLink", 2000),
     recurrence: textoOpcional(dados.recurrence, "recurrence", 100),
     pendingRequirements: textoOpcional(dados.pendingRequirements, "pendingRequirements", 2000),
+    participantsIncludeGroup: lerBooleanoOpcional(dados.participantsIncludeGroup, "participantsIncludeGroup"),
     participants: lerLista(dados.participants, "participants", MAX_PARTICIPANTS).map((p, i) =>
       parseParticipantInput(p, `participants[${i}]`),
     ),
@@ -823,6 +836,8 @@ export async function createMeeting(
     await client.query("BEGIN");
     meetingId = await inserirReuniao(client, input, actor, { origin: "manual", annualAgendaId: null });
     await associarAAgendaAnualDoOrgaoEAno(client, meetingId, actor);
+    // Versão 1 (034): a fotografia da reunião como foi criada, na mesma transação.
+    await versionarReuniaoSeMudou(client, meetingId, actor, { criacao: true });
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {
@@ -840,21 +855,20 @@ export async function createMeeting(
 
 /**
  * Reunião criada no Calendário entra na Agenda Anual do MESMO órgão e ano
- * (única por órgão/ano, 029) — se ela existir e estiver EM ELABORAÇÃO. Enviada
- * ou aprovada não muda de conteúdo: a reunião fica fora e aparece na Agenda
- * como "do Calendário, ainda não associada".
+ * (única por órgão/ano, 029), se ela existir — qualquer que seja o status
+ * gravado: sem aprovação (10/2026), a Agenda está sempre aberta.
  *
  * Só grava `annual_agenda_id`: nenhum evento, convite ou chamada ao Graph.
- * Trava a agenda (mesma linha do envio para aprovação): a inclusão não entra
- * entre o snapshot e a mudança de status. A origem (`manual`) não importa.
+ * Trava a agenda (mesma ordem de locks das edições pela Agenda). A origem
+ * (`manual`) não importa.
  */
 export async function associarAAgendaAnualDoOrgaoEAno(
   client: PoolClient,
   meetingId: string,
   actor: MeetingActor,
 ): Promise<string | null> {
-  const { rows } = await client.query<{ id: string; title: string; status: string; meeting_title: string }>(
-    `SELECT a.id, a.title, a.status, m.title AS meeting_title
+  const { rows } = await client.query<{ id: string; title: string; meeting_title: string }>(
+    `SELECT a.id, a.title, m.title AS meeting_title
        FROM meetings m
        JOIN annual_agendas a
          ON a.governance_body_id = m.governance_body_id
@@ -864,7 +878,7 @@ export async function associarAAgendaAnualDoOrgaoEAno(
     [meetingId],
   );
   const agenda = rows[0];
-  if (!agenda || agenda.status !== "draft") return null;
+  if (!agenda) return null;
 
   await client.query("UPDATE meetings SET annual_agenda_id = $2 WHERE id = $1 AND annual_agenda_id IS NULL", [
     meetingId,
@@ -946,6 +960,10 @@ export async function inserirReuniao(
 
     const organizador = await resolverOrganizador(client, input.organizer, actor);
 
+    // Local: conferido no banco (existe e ATIVO) e COPIADO para a reuniao (038).
+    const local =
+      input.modality === "in_person" ? await resolverLocalParaReuniao(client, input.physicalLocationId) : null;
+
     const { rows: criada } = await client.query<{ id: string }>(
       /*
        * TRES CONCEITOS DISTINTOS nesta linha:
@@ -970,9 +988,9 @@ export async function inserirReuniao(
                start_at, end_at, timezone, meeting_link,
                online_meeting_provider,
                status, recurrence, pending_requirements,
-               modality, physical_location_key, origin, annual_agenda_id, session_type)
+               modality, physical_location_id, physical_location_snapshot, origin, annual_agenda_id, session_type)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                    $18, $19, $20, $21, $22)
+                    $18, $19, $20, $21, $22, $23)
          RETURNING id`,
       [
         input.governanceBodyId,
@@ -997,7 +1015,8 @@ export async function inserirReuniao(
         // Presencial continua com Teams (acima): o local e informacao a mais,
         // nunca substituto do link.
         input.modality,
-        input.modality === "in_person" ? input.physicalLocationKey ?? null : null,
+        local?.id ?? null,
+        local ? JSON.stringify(local) : null,
         origem.origin,
         origem.annualAgendaId,
         input.sessionType ?? null,
@@ -1030,7 +1049,11 @@ export async function inserirReuniao(
     // GRUPO DO ÓRGÃO: quem pertence ao grupo entra na reunião nova, depois dos
     // manuais (dedup por identidade/e-mail) e antes dos temas (que reconhecem
     // a pessoa). Mesma transação; o convite sai depois, uma vez, com todos.
-    await incluirGrupoDoOrgao(client, meetingId, input.governanceBodyId, actor, input.title);
+    if (input.participantsIncludeGroup) {
+      await registrarOmitidosDoGrupo(client, meetingId, input.governanceBodyId, actor, input.title);
+    } else {
+      await incluirGrupoDoOrgao(client, meetingId, input.governanceBodyId, actor, input.title);
+    }
 
     // `position` vem da ordem enviada, comecando em 1. O indice do array serve
     // para ordenar e nada mais: a identidade da pauta e o UUID gerado pelo banco.

@@ -8,7 +8,8 @@ export * from "./participation-groups-rules";
  * GRUPOS DE PARTICIPAÇÃO (Administração → Participantes).
  *
  *   Grupo do Órgão colegiado  `/participation-groups/governance-bodies` —
- *                             entra automaticamente nas reuniões NOVAS do órgão
+ *                             ponto de partida da lista das reuniões NOVAS do
+ *                             órgão (sem vínculo vivo com reuniões já criadas)
  *   Participantes padrão      os participantes do tema da Biblioteca
  *   do Tema                   (`/agenda-topics/:id/participants`) — entram
  *                             quando o tema é adicionado a uma reunião
@@ -21,13 +22,15 @@ interface ApiMembro {
   origin: "entra" | "external";
   displayName: string;
   email: string | null;
+  entraObjectId?: string | null;
 }
 
 const doApi = (m: ApiMembro): MembroDoGrupo => ({
   id: m.id,
   nome: m.displayName,
   email: m.email,
-  origem: m.origin === "entra" ? "cielo" : "externo"
+  origem: m.origin === "entra" ? "cielo" : "externo",
+  entraObjectId: m.entraObjectId ?? null
 });
 
 const json = (method: string, body?: unknown) => ({
@@ -47,23 +50,13 @@ export async function listGovernanceBodyGroupMembers(id: string, signal?: AbortS
 }
 
 /** Só a pessoa escolhida: o servidor confirma no diretório / no cadastro e resolve nome e e-mail. */
-/**
- * Entrar no grupo também inclui a pessoa nas reuniões ABERTAS já existentes do
- * órgão (exceto onde foi removida antes). Devolve os membros e essas contagens.
- */
-export async function addGovernanceBodyGroupMember(
-  id: string,
-  sel: ParticipanteSelecionado
-): Promise<{ membros: MembroDoGrupo[]; reunioesAtualizadas: number; reunioesComExcecao: number }> {
-  const r = await apiRequest<{ members: ApiMembro[]; meetingsUpdated: number; meetingsSkippedByException: number }>(
+/** Entrar no grupo vale para as PRÓXIMAS reuniões; reuniões já criadas não mudam. */
+export async function addGovernanceBodyGroupMember(id: string, sel: ParticipanteSelecionado): Promise<{ membros: MembroDoGrupo[] }> {
+  const r = await apiRequest<{ members: ApiMembro[] }>(
     `/participation-groups/governance-bodies/${id}/members`,
     json("POST", corpoDoMembroDoOrgao(sel))
   );
-  return {
-    membros: r.members.map(doApi),
-    reunioesAtualizadas: r.meetingsUpdated ?? 0,
-    reunioesComExcecao: r.meetingsSkippedByException ?? 0
-  };
+  return { membros: r.members.map(doApi) };
 }
 
 export async function removeGovernanceBodyGroupMember(id: string, membroId: string): Promise<MembroDoGrupo[]> {

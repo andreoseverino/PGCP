@@ -22,6 +22,8 @@ export interface MembroDoGrupo {
   nome: string;
   email: string | null;
   origem: OrigemDaPessoa;
+  /** `oid` da pessoa do diretório (para virar convidada da reunião). */
+  entraObjectId?: string | null;
 }
 
 /** Corpo FECHADO para o grupo do órgão: só a identidade escolhida. */
@@ -51,20 +53,14 @@ export function membroDoTema(p: TopicParticipant): MembroDoGrupo {
   };
 }
 
-/** Aviso depois de entrar no grupo do órgão (reuniões abertas existentes). */
-export function avisoDeInclusaoNoGrupo(nome: string, atualizadas: number, comExcecao: number, language: "en" | "pt"): string {
-  const pt = language === "pt";
-  const base = pt
-    ? atualizadas === 0
-      ? `${nome} adicionado(a) ao grupo. Nenhuma reunião aberta precisou ser atualizada.`
-      : `${nome} adicionado(a) ao grupo e incluído(a) em ${atualizadas} ${atualizadas === 1 ? "reunião aberta" : "reuniões abertas"}.`
-    : atualizadas === 0
-      ? `${nome} added to the group. No open meeting needed changes.`
-      : `${nome} added to the group and to ${atualizadas} open meeting(s).`;
-  if (comExcecao === 0) return base;
-  return pt
-    ? `${base} ${comExcecao} ${comExcecao === 1 ? "reunião continua" : "reuniões continuam"} sem a pessoa, porque ela foi removida antes.`
-    : `${base} ${comExcecao} meeting(s) stay without them (removed before).`;
+/**
+ * Aviso depois de entrar no grupo do órgão. Sem vínculo vivo: vale para as
+ * PRÓXIMAS reuniões; reuniões já criadas mudam só pela edição delas.
+ */
+export function avisoDeInclusaoNoGrupo(nome: string, language: "en" | "pt"): string {
+  return language === "pt"
+    ? `${nome} adicionado(a) ao grupo. Entra nas próximas reuniões do órgão; reuniões já criadas não mudam.`
+    : `${nome} added to the group. Applies to the body's next meetings; existing meetings don't change.`;
 }
 
 export function rotuloDaOrigem(origem: OrigemDaPessoa, language: "en" | "pt"): string {

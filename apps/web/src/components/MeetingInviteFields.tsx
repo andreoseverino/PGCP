@@ -1,15 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { Info, MapPin, MonitorSmartphone, Trash2, Users } from "lucide-react";
-import DirectoryUserPicker from "./DirectoryUserPicker";
 import type { DirectoryUser } from "../lib/directory";
 import { enderecoDoDiretorio } from "../lib/corporate-email";
 import { addParticipantOnce, papelPadraoDoParticipante } from "../lib/participants";
 import { describeMeetingError, listMeetingLocations } from "../lib/meetings";
 import { MODALITY_DISCLAIMER, type Modality, type NewMeetingForm } from "../lib/new-meeting";
 import type { PhysicalLocation } from "../types";
+import { locationLabel, opcoesDeLocal, rotuloDaOpcao } from "../lib/meeting-locations-rules";
 import { getInitials } from "../lib/user";
 import ParticipantPicker from "./ParticipantPicker";
 import { selecionadoComoConvidado } from "../lib/participant-search";
+import { jaNaLista, MSG_JA_PARTICIPA } from "../lib/group-participants";
 
 /**
  * Campos do CONVITE compartilhados pelo agendamento do Calendário e pela
@@ -18,6 +19,16 @@ import { selecionadoComoConvidado } from "../lib/participant-search";
  */
 
 export type InviteParticipant = NewMeetingForm["participants"][number];
+
+/**
+ * Participante na lista do convite. `participantId` = linha JÁ gravada em
+ * `meeting_participants` (edição da reunião); ausente = pessoa nova.
+ */
+export type ParticipanteDoConvite = InviteParticipant & {
+  participantId?: string;
+  /** Veio do grupo do órgão (só UX: selo "Do órgão"). Não é vínculo com o cadastro. */
+  doOrgao?: boolean;
+};
 
 const LABEL = "text-[10px] font-bold text-slate-500 uppercase tracking-wide";
 
@@ -31,41 +42,47 @@ export function ModalityDisclaimer({ language }: { language: "en" | "pt" }) {
   );
 }
 
-/** Rótulo do local, com endereço só quando configurado. */
-export function locationLabel(local: PhysicalLocation): string {
-  const cidade = [local.city, local.state].filter(Boolean).join("/");
-  const partes = [local.address, local.complement, cidade].filter(Boolean);
-  return partes.length > 0 ? `${local.name} — ${partes.join(", ")}` : local.name;
-}
-
 interface ModalityFieldsProps {
   language: "en" | "pt";
   modality: Modality;
-  physicalLocationKey: string;
-  /** `label` = nome (e endereço, se configurado) do local escolhido, para resumo. */
-  onChange: (modality: Modality, physicalLocationKey: string, label: string) => void;
+  /** Id do local cadastrado (Administração → Locais). */
+  physicalLocationId: string;
+  /**
+   * Local que a reunião JÁ tem (cópia gravada), na edição. Entra marcado na
+   * lista mesmo que tenha sido inativado depois, para não trocar sem querer.
+   */
+  currentLocation?: PhysicalLocation | null;
+  /** `label` = nome e endereço do local escolhido, para resumo. */
+  onChange: (modality: Modality, physicalLocationId: string, label: string) => void;
 }
 
-export function ModalityFields({ language, modality, physicalLocationKey, onChange }: ModalityFieldsProps) {
+export function ModalityFields({ language, modality, physicalLocationId, currentLocation, onChange }: ModalityFieldsProps) {
   const pt = language === "pt";
-  const [locais, setLocais] = useState<PhysicalLocation[]>([]);
+  const [ativos, setAtivos] = useState<PhysicalLocation[]>([]);
+  const [carregado, setCarregado] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
   useEffect(() => {
     const controlador = new AbortController();
     listMeetingLocations(controlador.signal)
-      .then(setLocais)
+      .then((lista) => {
+        setAtivos(lista);
+        setCarregado(true);
+      })
       .catch((e) => {
         if ((e as Error).name !== "AbortError") setErro(describeMeetingError(e, language));
       });
     return () => controlador.abort();
   }, [language]);
 
+  const opcoes = opcoesDeLocal(ativos, currentLocation);
+  const locais = opcoes.map((o) => o.local);
+
   const opcao = (valor: Modality, rotulo: string, Icone: typeof MapPin) => (
     <button
       type="button"
       onClick={() => {
-        const chave = valor === "online" ? "" : physicalLocationKey;
+        const chave = valor === "online" ? "" : physicalLocationId;
         const local = locais.find((l) => l.id === chave);
         onChange(valor, chave, local ? locationLabel(local) : "");
       }}
@@ -81,7 +98,7 @@ export function ModalityFields({ language, modality, physicalLocationKey, onChan
     </button>
   );
 
-  const selecionado = locais.find((l) => l.id === physicalLocationKey);
+  const selecionado = opcoes.find((o) => o.local.id === physicalLocationId);
 
   return (
     <div className="space-y-2">
@@ -94,12 +111,12 @@ export function ModalityFields({ language, modality, physicalLocationKey, onChan
       {modality === "in_person" && (
         <div className="flex flex-col gap-1 pt-1">
           <label htmlFor="physicalLocation" className={LABEL}>
-            {pt ? "Local físico" : "Physical location"} *
+            {pt ? "Local" : "Location"} *
           </label>
           <select
             id="physicalLocation"
             required
-            value={physicalLocationKey}
+            value={physicalLocationId}
             onChange={(e) => {
               const local = locais.find((l) => l.id === e.target.value);
               onChange("in_person", e.target.value, local ? locationLabel(local) : "");
@@ -107,21 +124,29 @@ export function ModalityFields({ language, modality, physicalLocationKey, onChan
             className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#00658d]"
           >
             <option value="">{pt ? "Selecione o local..." : "Select the location..."}</option>
-            {locais.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.name}
+            {opcoes.map(({ local, atual }) => (
+              <option key={local.id} value={local.id}>
+                {rotuloDaOpcao(local)}
+                {atual ? (pt ? " (local atual da reunião)" : " (current meeting location)") : ""}
               </option>
             ))}
           </select>
-          {selecionado && !selecionado.address && (
+          {selecionado && (
+            <p className="text-[10px] text-slate-500 font-semibold break-words">{locationLabel(selecionado.local)}</p>
+          )}
+          {selecionado?.atual && (
             <p className="text-[10px] text-slate-400 font-semibold">
               {pt
-                ? "Endereço oficial ainda não cadastrado: o convite levará apenas o nome da sede."
-                : "Official address not configured yet: the invite will include only the site name."}
+                ? "Endereço guardado quando o local foi escolhido. Este local não está mais disponível para novas escolhas."
+                : "Address saved when the location was chosen. This location is no longer available for new choices."}
             </p>
           )}
-          {selecionado?.address && (
-            <p className="text-[10px] text-slate-500 font-semibold">{locationLabel(selecionado)}</p>
+          {carregado && ativos.length === 0 && !selecionado && (
+            <p className="text-[10px] text-amber-700 font-semibold">
+              {pt
+                ? "Nenhum local ativo. Cadastre em Administração → Locais."
+                : "No active location. Register one in Administration → Locations."}
+            </p>
           )}
           {erro && <p className="text-[10px] text-red-500 font-semibold">{erro}</p>}
         </div>
@@ -130,70 +155,77 @@ export function ModalityFields({ language, modality, physicalLocationKey, onChan
   );
 }
 
-interface OrganizerAndParticipantsProps {
-  language: "en" | "pt";
-  organizer: DirectoryUser | null;
-  onOrganizerChange: (user: DirectoryUser | null) => void;
-  participants: InviteParticipant[];
-  onParticipantsChange: (list: InviteParticipant[]) => void;
-  /** Órgão da reunião/agenda para sugerir pessoas classificadas (027). */
-  sugestao?: { governanceBodyId?: string; rotuloOrgao?: string };
+/** Pessoa do diretório como convidada (organizador escolhido também é convidado). */
+export function convidadoDoDiretorio(user: DirectoryUser, language: "en" | "pt"): InviteParticipant {
+  return {
+    name: user.displayName ?? "",
+    role: papelPadraoDoParticipante(language),
+    confirmed: false,
+    entraObjectId: user.id,
+    email: enderecoDoDiretorio(user)
+  };
 }
 
 /**
- * Organizador (de quem é o calendário) e convidados, sempre do diretório.
- * O organizador entra na lista — mesma regra do agendamento anterior.
+ * Pergunta da TROCA DE ÓRGÃO (Nova reunião e Editar reunião). Nada muda na
+ * lista até a usuária escolher; o órgão já trocado continua trocado.
  */
-export function OrganizerAndParticipants({
-  language,
-  organizer,
-  onOrganizerChange,
-  participants,
-  onParticipantsChange,
-  sugestao
-}: OrganizerAndParticipantsProps) {
-  const pt = language === "pt";
-
-  const incluir = (user: DirectoryUser) =>
-    onParticipantsChange(
-      addParticipantOnce(participants, {
-        name: user.displayName ?? "",
-        role: papelPadraoDoParticipante(language),
-        confirmed: false,
-        entraObjectId: user.id,
-        email: enderecoDoDiretorio(user)
-      })
-    );
-
+export function ConfirmarTrocaDeOrgao({
+  mensagem,
+  rotuloAtualizar,
+  rotuloManter,
+  onAtualizar,
+  onManter
+}: {
+  mensagem: string;
+  rotuloAtualizar: string;
+  rotuloManter: string;
+  onAtualizar: () => void;
+  onManter: () => void;
+}) {
   return (
-    <div className="space-y-3">
-      <div className="flex flex-col gap-1">
-        <span className={LABEL}>{pt ? "Organizador" : "Organiser"}</span>
-        <DirectoryUserPicker
-          language={language}
-          selected={organizer}
-          onSelect={(u) => {
-            onOrganizerChange(u);
-            incluir(u);
-          }}
-          onClear={() => onOrganizerChange(null)}
-          placeholder={pt ? "Você, ou busque no diretório..." : "You, or search the directory..."}
-        />
+    <div role="alertdialog" aria-label={mensagem} className="p-3 rounded-xl bg-amber-50 border border-amber-200 space-y-2">
+      <p className="text-[11px] font-semibold text-amber-900 leading-relaxed">{mensagem}</p>
+      <div className="flex flex-wrap gap-2 justify-end">
+        <button type="button" onClick={onManter} className="px-3 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-amber-100 rounded-lg cursor-pointer">
+          {rotuloManter}
+        </button>
+        <button type="button" onClick={onAtualizar} className="px-3 py-1.5 text-[11px] font-bold bg-[#00658d] hover:bg-[#00aeef] text-white rounded-lg cursor-pointer">
+          {rotuloAtualizar}
+        </button>
       </div>
+    </div>
+  );
+}
 
+interface ParticipantsFieldProps {
+  language: "en" | "pt";
+  participants: ParticipanteDoConvite[];
+  onParticipantsChange: (list: ParticipanteDoConvite[]) => void;
+  /** Órgão da reunião/agenda para sugerir pessoas classificadas (027). */
+  sugestao?: { governanceBodyId?: string; rotuloOrgao?: string };
+  /** Texto de apoio abaixo do rótulo. */
+  hint?: string | null;
+}
+
+/**
+ * Participantes do convite (Entra ID + externos do PGCP): busca, sugestão,
+ * selo "Externo" e remoção. Usado no agendamento (Nova reunião, Agenda Anual)
+ * e na EDIÇÃO da reunião — uma tela só, mesma regra. A validação definitiva
+ * (duplicidade, responsável por tema, identidade) é do servidor.
+ */
+export function ParticipantsField({ language, participants, onParticipantsChange, sugestao, hint }: ParticipantsFieldProps) {
+  const pt = language === "pt";
+  const [duplicado, setDuplicado] = useState(false);
+  return (
       <div className="flex flex-col gap-1">
         <span className={`${LABEL} flex items-center gap-1`}>
           <Users className="w-3 h-3" />
           {pt ? "Participantes (convite)" : "Participants (invite)"}
         </span>
-        {/* Grupo do órgão (Administração → Participantes): incluído pelo servidor ao agendar. */}
-        <span className="text-[10px] text-slate-400 font-semibold">
-          {pt
-            ? "Quem faz parte do grupo do órgão colegiado entra automaticamente ao agendar."
-            : "Members of the governance body's group are added automatically when scheduling."}
-        </span>
-        {/* Participar: Entra ID + externos do PGCP. O organizador (acima)
-            continua só do diretório: é de quem é o calendário. */}
+        {hint && <span className="text-[10px] text-slate-400 font-semibold">{hint}</span>}
+        {/* Participar: Entra ID + externos do PGCP. O organizador
+            fica fora deste bloco: é de quem é o calendário. */}
         <ParticipantPicker
           language={language}
           showHint
@@ -203,17 +235,26 @@ export function OrganizerAndParticipants({
             entraIds: participants.map((p) => p.entraObjectId ?? "").filter(Boolean),
             emails: participants.map((p) => p.email ?? "")
           }}
-          onSelect={(sel) =>
-            onParticipantsChange(
-              addParticipantOnce(participants, selecionadoComoConvidado(sel, papelPadraoDoParticipante(language)))
-            )
-          }
+          onSelect={(sel) => {
+            const novo = selecionadoComoConvidado(sel, papelPadraoDoParticipante(language));
+            // Mesma pessoa (oid) ou mesmo e-mail (externo repetido): avisa, não duplica.
+            // O servidor recusa de novo ao salvar (409).
+            if (jaNaLista(participants, novo)) {
+              setDuplicado(true);
+              return;
+            }
+            setDuplicado(false);
+            onParticipantsChange(addParticipantOnce(participants, novo));
+          }}
         />
+        {duplicado && (
+          <p role="status" className="text-[10px] font-bold text-amber-700">{MSG_JA_PARTICIPA[language]}</p>
+        )}
         {participants.length > 0 && (
           <ul className="mt-1.5 space-y-1.5 max-h-44 overflow-y-auto pr-1">
             {participants.map((p) => (
               <li
-                key={p.entraObjectId ?? p.email ?? p.name}
+                key={p.participantId ?? p.entraObjectId ?? p.email ?? p.name}
                 className="flex items-center justify-between gap-2 bg-slate-50 border border-slate-100 rounded-xl px-3 py-1.5"
               >
                 <span className="flex items-center gap-2 min-w-0">
@@ -221,6 +262,14 @@ export function OrganizerAndParticipants({
                     {getInitials(p.name)}
                   </span>
                   <span className="text-[11px] font-bold text-slate-700 truncate">{p.name}</span>
+                  {p.doOrgao && (
+                    <span
+                      title={pt ? "Veio do grupo do órgão. Remover daqui não altera o cadastro do órgão." : "From the body's group. Removing here doesn't change the body."}
+                      className="text-[9px] font-bold text-[#00658d] bg-[#00658d]/10 px-1.5 rounded shrink-0"
+                    >
+                      {pt ? "Do órgão" : "From body"}
+                    </span>
+                  )}
                   {!p.entraObjectId && p.email && (
                     <span className="text-[9px] font-bold text-amber-700 bg-amber-50 px-1.5 rounded shrink-0">
                       {pt ? "Externo" : "External"}
@@ -234,7 +283,10 @@ export function OrganizerAndParticipants({
                 </span>
                 <button
                   type="button"
-                  onClick={() => onParticipantsChange(participants.filter((x) => x !== p))}
+                  onClick={() => {
+                    setDuplicado(false);
+                    onParticipantsChange(participants.filter((x) => x !== p));
+                  }}
                   className="p-1 text-rose-500 hover:bg-rose-50 rounded-lg cursor-pointer"
                   aria-label={pt ? "Remover participante" : "Remove participant"}
                 >
@@ -245,6 +297,5 @@ export function OrganizerAndParticipants({
           </ul>
         )}
       </div>
-    </div>
   );
 }

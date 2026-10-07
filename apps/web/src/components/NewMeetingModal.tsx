@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, CalendarPlus, CheckCircle, Clock, Info, Users, X } from "lucide-react";
+import { ArrowLeft, CalendarPlus, CheckCircle, Clock, Info, X } from "lucide-react";
 import type { GovernanceBody } from "../types";
 import type { DirectoryUser } from "../lib/directory";
 import { enderecoDoDiretorio } from "../lib/corporate-email";
@@ -10,12 +10,20 @@ import { buildNewMeetingPayload, validateNewMeeting, type Modality, type NewMeet
 import { previaDoTitulo, SESSION_TYPE_OPTIONS, type SessionType } from "../lib/meeting-title";
 import { ajustarTermino, opcoesDeHorario } from "../lib/time-options";
 import TimeSelect from "./TimeSelect";
+import RichTextEditor, { RichTextView } from "./RichTextEditor";
+import { montarDescricaoInicial } from "../lib/rich-text";
+import { listGovernanceBodyGroupMembers } from "../lib/participation-groups";
+import { acaoNaTrocaDeOrgao, convidadosDoGrupo, somarSemDuplicar } from "../lib/group-participants";
 import {
+  ConfirmarTrocaDeOrgao,
+  convidadoDoDiretorio,
   ModalityDisclaimer,
   ModalityFields,
-  OrganizerAndParticipants,
+  ParticipantsField,
   type InviteParticipant
 } from "./MeetingInviteFields";
+import DirectoryUserPicker from "./DirectoryUserPicker";
+import { addParticipantOnce } from "../lib/participants";
 
 /**
  * NOVA REUNIÃO — único ponto da interface que cria reunião individual.
@@ -61,10 +69,33 @@ export default function NewMeetingModal({
   const [endTime, setEndTime] = useState("11:00");
   const [governanceBodyId, setGovernanceBodyId] = useState(initialGovernanceBodyId);
   const [modality, setModality] = useState<Modality>("online");
-  const [physicalLocationKey, setPhysicalLocationKey] = useState("");
+  const [physicalLocationId, setPhysicalLocationId] = useState("");
   const [locationName, setLocationName] = useState("");
   const [organizer, setOrganizer] = useState<DirectoryUser | null>(null);
   const [participants, setParticipants] = useState<InviteParticipant[]>([]);
+  /*
+   * GRUPO DO ÓRGÃO como ponto de partida da lista (cópia, não vínculo):
+   *   `grupo`        último grupo aplicado (órgão + a lista que veio dele);
+   *   `trocaPendente` grupo do NOVO órgão esperando a usuária decidir.
+   * A lista só é recalculada numa troca EXPLÍCITA de órgão — nunca em
+   * re-render, revisão ou mudança de outro campo.
+   */
+  const [grupo, setGrupo] = useState<{ orgaoId: string; lista: InviteParticipant[] } | null>(null);
+  const [trocaPendente, setTrocaPendente] = useState<{ orgaoId: string; lista: InviteParticipant[] } | null>(null);
+  const [erroGrupo, setErroGrupo] = useState<string | null>(null);
+  const pedidoDoGrupo = useRef(0);
+  // Valores ATUAIS na volta da busca do grupo (a resposta chega depois do clique).
+  const participantesAtuais = useRef(participants);
+  participantesAtuais.current = participants;
+  const grupoAtual = useRef(grupo);
+  grupoAtual.current = grupo;
+  /*
+   * Descrição: começa no TEMPLATE com os dados da própria reunião e o
+   * acompanha enquanto a pessoa não editar o texto. Depois de editada, nunca
+   * é sobrescrita (`descricaoEditada`).
+   */
+  const [description, setDescription] = useState("");
+  const [descricaoEditada, setDescricaoEditada] = useState(false);
 
   const [etapa, setEtapa] = useState<"form" | "review">("form");
   const [erro, setErro] = useState<string | null>(null);
@@ -78,16 +109,60 @@ export default function NewMeetingModal({
     timezone: DEFAULT_TIMEZONE,
     governanceBodyId,
     modality,
-    physicalLocationKey,
+    physicalLocationId,
+    description,
     organizer: organizer
       ? { entraObjectId: organizer.id, displayName: organizer.displayName ?? "", email: enderecoDoDiretorio(organizer) }
       : undefined,
-    participants
+    participants,
+    // A lista mostrada JÁ contém o grupo do órgão escolhido (ajustado aqui):
+    // o servidor não recoloca ninguém. Sem o grupo carregado, o servidor inclui.
+    participantsIncludeGroup: grupo?.orgaoId === governanceBodyId && !trocaPendente
   };
+
+  /** Órgão escolhido: carrega o grupo dele e decide se aplica direto ou pergunta. */
+  const escolherOrgao = (novoId: string) => {
+    setGovernanceBodyId(novoId);
+    setTrocaPendente(null);
+    setErroGrupo(null);
+    const pedido = ++pedidoDoGrupo.current;
+    if (!novoId) return;
+    listGovernanceBodyGroupMembers(novoId)
+      .then((membros) => {
+        if (pedido !== pedidoDoGrupo.current) return; // resposta de uma escolha antiga
+        const lista = convidadosDoGrupo(membros, language);
+        // 1º órgão: soma ao que já está. Lista intocada: troca direto.
+        // Ajustada à mão: pergunta antes de substituir.
+        const acao = acaoNaTrocaDeOrgao(participantesAtuais.current, grupoAtual.current?.lista ?? null);
+        if (acao === "confirmar") {
+          setTrocaPendente({ orgaoId: novoId, lista });
+          return;
+        }
+        setParticipants(acao === "somar" ? somarSemDuplicar(participantesAtuais.current, lista) : lista);
+        setGrupo({ orgaoId: novoId, lista });
+      })
+      .catch(() => {
+        if (pedido !== pedidoDoGrupo.current) return;
+        setGrupo(null);
+        setErroGrupo(
+          pt
+            ? "Não foi possível carregar os participantes do órgão. Eles serão incluídos automaticamente ao agendar."
+            : "Could not load the body's participants. They will be added automatically when scheduling."
+        );
+      });
+  };
+
+  // Órgão já definido ao abrir (contexto global): carrega o grupo uma vez.
+  useEffect(() => {
+    if (initialGovernanceBodyId) escolherOrgao(initialGovernanceBodyId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const revisar = (e: React.FormEvent) => {
     e.preventDefault();
-    const problema = validateNewMeeting(form, language);
+    const problema = trocaPendente
+      ? pt ? "Decida se a lista de participantes deve ser atualizada para o novo órgão." : "Decide whether to update the participants for the new body."
+      : validateNewMeeting(form, language);
     setErro(problema);
     if (!problema) setEtapa("review");
   };
@@ -132,6 +207,14 @@ export default function NewMeetingModal({
   // Título padronizado: só prévia — quem grava é o servidor (030).
   const titulo = previaDoTitulo({ startTime, orgao, tipo: sessionType, modalidade: modality });
 
+  const template = montarDescricaoInicial(
+    { titulo: titulo ?? "", data: date, inicio: startTime, fim: endTime, orgao },
+    language
+  );
+  useEffect(() => {
+    if (!descricaoEditada) setDescription(template);
+  }, [template, descricaoEditada]);
+
   // Esc = Cancelar (mesmo padrão do modal de Tema). Durante o envio, não fecha.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -153,7 +236,7 @@ export default function NewMeetingModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="nova-reuniao-titulo"
-        className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-fade-in text-xs"
+        className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[94vh] flex flex-col overflow-hidden animate-fade-in text-xs"
       >
         <div className="flex items-start justify-between gap-3 px-6 py-4 border-b border-slate-100 shrink-0">
           <div className="min-w-0">
@@ -182,13 +265,26 @@ export default function NewMeetingModal({
           <form
             id="nova-reuniao"
             onSubmit={revisar}
-            className="flex-1 min-h-0 overflow-y-auto md:grid md:grid-cols-[minmax(0,1fr)_minmax(0,360px)]"
+            className="flex-1 min-h-0 overflow-y-auto px-6 py-5 grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-x-8 gap-y-4"
           >
-            {/* DADOS DA REUNIÃO — coluna esquerda */}
-            <section aria-labelledby="nova-reuniao-dados" className="px-6 py-5 space-y-4">
-              <h4 id="nova-reuniao-dados" className="text-xs font-extrabold text-slate-800">
-                {pt ? "Dados da reunião" : "Meeting details"}
-              </h4>
+            {/* DADOS DA REUNIÃO — coluna esquerda (mesmo layout da edição) */}
+            <section aria-label={pt ? "Dados da reunião" : "Meeting details"} data-coluna="dados" className="space-y-3 min-w-0">
+              <div className="flex flex-col gap-1">
+                <label htmlFor="nmType" className={LABEL}>{pt ? "Tipo" : "Type"} *</label>
+                <select id="nmType" required value={sessionType} onChange={(e) => setSessionType(e.target.value as SessionType | "")} className={`${INPUT} cursor-pointer`}>
+                  <option value="">{pt ? "Selecione..." : "Select..."}</option>
+                  {SESSION_TYPE_OPTIONS.map((o) => <option key={o.id} value={o.id}>{pt ? o.pt : o.en}</option>)}
+                </select>
+              </div>
+
+              {/* Título gerado pelos campos — não editável (padrão corporativo). */}
+              <div className="flex flex-col gap-1">
+                <span className={LABEL}>{pt ? "Título (gerado automaticamente)" : "Title (generated)"}</span>
+                <p id="nmTitlePreview" className="px-3 py-2 rounded-xl border border-dashed border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700 break-words min-h-[34px]">
+                  {titulo ?? (pt ? "Preencha início, órgão, formato e tipo." : "Fill in start, body, format and type.")}
+                </p>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="flex flex-col gap-1">
                   <label htmlFor="nmDate" className={LABEL}>{pt ? "Data" : "Date"} *</label>
@@ -221,7 +317,7 @@ export default function NewMeetingModal({
 
               <div className="flex flex-col gap-1">
                 <label htmlFor="nmBody" className={LABEL}>{pt ? "Órgão de governança / comitê" : "Governance body"} *</label>
-                <select id="nmBody" required value={governanceBodyId} onChange={(e) => setGovernanceBodyId(e.target.value)} className={`${INPUT} cursor-pointer`}>
+                <select id="nmBody" required value={governanceBodyId} onChange={(e) => escolherOrgao(e.target.value)} className={`${INPUT} cursor-pointer`}>
                   <option value="">{pt ? "Selecione o órgão..." : "Select the body..."}</option>
                   {governanceBodies.map((b) => (
                     <option key={b.id} value={b.id}>{b.name}</option>
@@ -229,55 +325,108 @@ export default function NewMeetingModal({
                 </select>
               </div>
 
+
               <ModalityFields
                 language={language}
                 modality={modality}
-                physicalLocationKey={physicalLocationKey}
+                physicalLocationId={physicalLocationId}
                 onChange={(m, local, rotulo) => {
                   setModality(m);
-                  setPhysicalLocationKey(local);
+                  setPhysicalLocationId(local);
                   setLocationName(rotulo);
                 }}
               />
 
+              {/* Descrição: vai no corpo do convite do Outlook/Teams. */}
               <div className="flex flex-col gap-1">
-                <label htmlFor="nmType" className={LABEL}>{pt ? "Tipo" : "Type"} *</label>
-                <select id="nmType" required value={sessionType} onChange={(e) => setSessionType(e.target.value as SessionType | "")} className={`${INPUT} cursor-pointer`}>
-                  <option value="">{pt ? "Selecione..." : "Select..."}</option>
-                  {SESSION_TYPE_OPTIONS.map((o) => <option key={o.id} value={o.id}>{pt ? o.pt : o.en}</option>)}
-                </select>
-              </div>
-
-              {/* Título gerado pelos campos — não editável (padrão corporativo). */}
-              <div className="flex flex-col gap-1">
-                <span className={LABEL}>{pt ? "Título (gerado automaticamente)" : "Title (generated)"}</span>
-                <p id="nmTitlePreview" className="px-3 py-2 rounded-xl border border-dashed border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700 break-words min-h-[34px]">
-                  {titulo ?? (pt ? "Preencha início, órgão, formato e tipo." : "Fill in start, body, format and type.")}
+                <div className="flex items-center justify-between gap-2">
+                  <span className={LABEL}>{pt ? "Descrição" : "Description"}</span>
+                  {descricaoEditada && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDescricaoEditada(false);
+                        setDescription(template);
+                      }}
+                      className="text-[10px] font-bold text-[#00658d] hover:underline cursor-pointer"
+                    >
+                      {pt ? "Restaurar modelo" : "Reset to template"}
+                    </button>
+                  )}
+                </div>
+                <RichTextEditor
+                  id="nmDescription"
+                  language={language}
+                  ariaLabel={pt ? "Descrição da reunião" : "Meeting description"}
+                  value={description}
+                  onChange={(html) => {
+                    setDescription(html);
+                    setDescricaoEditada(true);
+                  }}
+                  minHeightClass="min-h-[120px]"
+                />
+                <p className="text-[10px] text-slate-400 font-semibold">
+                  {descricaoEditada
+                    ? pt ? "Texto editado: não muda mais quando data ou horário mudarem." : "Edited: no longer follows date/time changes."
+                    : pt ? "Modelo com os dados da reunião; acompanha as mudanças até você editar." : "Template with the meeting data; follows changes until you edit it."}
                 </p>
               </div>
             </section>
 
-            {/* PESSOAS DA REUNIÃO — coluna direita */}
-            <aside
-              aria-labelledby="nova-reuniao-pessoas"
-              className="px-6 py-5 space-y-4 border-t md:border-t-0 md:border-l border-slate-100 bg-slate-50/60 flex flex-col"
-            >
-              <h4 id="nova-reuniao-pessoas" className="text-xs font-extrabold text-slate-800 flex items-center gap-1.5">
-                <Users className="w-3.5 h-3.5 text-[#00658d]" />
-                {pt ? "Pessoas da reunião" : "Meeting people"}
-              </h4>
-              <OrganizerAndParticipants
+            {/* ORGANIZADOR E PESSOAS — coluna direita */}
+            <section aria-label={pt ? "Organizador e participantes" : "Organiser and participants"} data-coluna="pessoas" className="space-y-3 min-w-0 flex flex-col">
+              {/* Organizador: de quem é o calendário. Escolhido também entra como convidado. */}
+              <div className="flex flex-col gap-1">
+                <span className={LABEL}>{pt ? "Organizador" : "Organiser"}</span>
+                <DirectoryUserPicker
+                  language={language}
+                  selected={organizer}
+                  onSelect={(u) => {
+                    setOrganizer(u);
+                    setParticipants((lista) => addParticipantOnce(lista, convidadoDoDiretorio(u, language)));
+                  }}
+                  onClear={() => setOrganizer(null)}
+                  placeholder={pt ? "Você, ou busque no diretório..." : "You, or search the directory..."}
+                />
+              </div>
+
+              {trocaPendente && (
+                <ConfirmarTrocaDeOrgao
+                  mensagem={
+                    pt
+                      ? "Ao trocar o órgão, a lista de participantes pode ser atualizada. A lista atual será substituída pelos participantes do novo órgão. Deseja continuar?"
+                      : "Changing the body can update the participant list. The current list will be replaced by the new body's participants. Continue?"
+                  }
+                  rotuloAtualizar={pt ? "Substituir lista" : "Replace list"}
+                  rotuloManter={pt ? "Manter lista atual" : "Keep current list"}
+                  onAtualizar={() => {
+                    setParticipants(trocaPendente.lista);
+                    setGrupo(trocaPendente);
+                    setTrocaPendente(null);
+                  }}
+                  onManter={() => {
+                    // Decisão explícita: a lista fica como está para este órgão.
+                    setGrupo(trocaPendente);
+                    setTrocaPendente(null);
+                  }}
+                />
+              )}
+              <ParticipantsField
                 language={language}
-                sugestao={governanceBodyId ? { governanceBodyId, rotuloOrgao: governanceBodies.find((b) => b.id === governanceBodyId)?.name } : undefined}
-                organizer={organizer}
-                onOrganizerChange={setOrganizer}
                 participants={participants}
                 onParticipantsChange={setParticipants}
+                sugestao={governanceBodyId ? { governanceBodyId, rotuloOrgao: governanceBodies.find((b) => b.id === governanceBodyId)?.name } : undefined}
+                hint={
+                  pt
+                    ? "Participantes vinculados ao órgão são adicionados automaticamente. Você pode ajustar esta lista para esta reunião sem alterar o cadastro do órgão."
+                    : "Participants linked to the body are added automatically. You can adjust this list for this meeting without changing the body."
+                }
               />
+              {erroGrupo && <p role="status" className="text-[10px] font-semibold text-amber-700">{erroGrupo}</p>}
               <div className="mt-auto pt-1">
                 <ModalityDisclaimer language={language} />
               </div>
-            </aside>
+            </section>
           </form>
         ) : (
           <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-3">
@@ -295,6 +444,8 @@ export default function NewMeetingModal({
               <dd className="text-slate-800">{organizer?.displayName ?? (pt ? "Você" : "You")}</dd>
               <dt className="text-slate-500 font-bold">{pt ? "Convidados" : "Invitees"}</dt>
               <dd className="text-slate-800">{participants.length > 0 ? participants.map((p) => p.name).join(", ") : pt ? "Nenhum" : "None"}</dd>
+              <dt className="text-slate-500 font-bold">{pt ? "Descrição" : "Description"}</dt>
+              <dd className="text-slate-800"><RichTextView html={description} vazio={pt ? "Sem descrição" : "No description"} className="text-[12px]" /></dd>
             </dl>
             <ModalityDisclaimer language={language} />
           </div>
