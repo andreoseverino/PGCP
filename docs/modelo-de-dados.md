@@ -1250,6 +1250,19 @@ versões (034); reunião com documento nem podia ser excluída.
 - **Sem vínculo vivo:** entrar/sair do grupo na Administração não altera
   reunião existente.
 
+### 5.24 Revisão 039 — Recorrência do tema
+
+- `agenda_topics.recurrence` (PADRÃO da Biblioteca) e `meeting_agenda_items.recurrence`
+  (valor NESTA reunião, herdado do padrão ao vincular; ajustável) — mesmo desenho do
+  Tema circular. Valores: `weekly` | `biweekly` | `monthly` | `quarterly`; NULL = não se repete.
+- **Efeito:** ao CRIAR reunião nova, entra automaticamente, como tema SEM pauta, todo tema
+  da Biblioteca cuja última ocorrência em reunião do MESMO órgão (não cancelada, não
+  postergada, anterior) tem recorrência e cuja data + intervalo já chegou (dia no fuso da
+  reunião). Copia ficha, duração, responsável e participantes padrão (exceção 031
+  respeitada). Reuniões existentes não mudam. Trilha consolidada "Temas recorrentes
+  incluídos automaticamente (n)". Desligar a recorrência na última ocorrência encerra.
+- Campo nos formulários de tema: Agenda Anual, Pipeline (edição) e Biblioteca.
+
 ## 6. Relacionamentos e cardinalidades
 
 | De | Para | Card. | Obrig. | Ao excluir o pai |

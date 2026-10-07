@@ -159,6 +159,8 @@ export interface AgendaItem {
    * informa; não dispara comportamento. Ausente em item local ainda não gravado.
    */
   isCircularTheme?: boolean;
+  /** Recorrência do tema NESTA reunião (039). `null`/ausente = não se repete. */
+  recurrence?: "weekly" | "biweekly" | "monthly" | "quarterly" | null;
   /**
    * Ficha cadastral NESTA reunião (snapshot, migration 019). Snapshot de
    * `agenda_topics.*` no vínculo; depois independente. Os `*Id` guardam a
@@ -241,6 +243,8 @@ export interface StandaloneAgenda {
    * depois os valores são independentes. Ausente em registro ainda não gravado.
    */
   isCircularTheme?: boolean;
+  /** PADRÃO de recorrência (039), copiado para o tema ao vincular a uma reunião. */
+  recurrence?: "weekly" | "biweekly" | "monthly" | "quarterly" | null;
 
   /** Em quantas reuniões a pauta está. Vem da FK, nunca de casar título. */
   linkedMeetingsCount?: number;

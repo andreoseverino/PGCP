@@ -18,6 +18,7 @@ import {
   type ParticipantInput
 } from "./create.js";
 import { resolverLocalParaReuniao } from "../meeting-locations/service.js";
+import { parseRecorrenciaDoTema, type RecorrenciaDoTema } from "./topic-recurrence.js";
 import {
   aplicarListaDeParticipantes,
   exigirQueNaoParticipa,
@@ -690,14 +691,16 @@ export async function addAgendaItem(
                responsible_entra_tenant_id, responsible_entra_object_id,
                is_circular_theme,
                agenda_topic_type_id, agenda_topic_nature_id, description, generates_action_item,
-               meeting_agenda_id)
+               meeting_agenda_id, recurrence)
             VALUES ($1, $9, $2, $3, $4, $5, 'pending', $6, $7, $8,
                COALESCE($10::boolean, (SELECT is_circular_theme FROM agenda_topics WHERE id = $9), false),
                COALESCE($11::uuid,    (SELECT agenda_topic_type_id   FROM agenda_topics WHERE id = $9)),
                COALESCE($12::uuid,    (SELECT agenda_topic_nature_id FROM agenda_topics WHERE id = $9)),
                COALESCE($13::text,    (SELECT description            FROM agenda_topics WHERE id = $9)),
                COALESCE($14::boolean, (SELECT generates_action_item  FROM agenda_topics WHERE id = $9), false),
-               $15)
+               $15,
+               CASE WHEN $16::boolean THEN $17::text
+                    ELSE (SELECT recurrence FROM agenda_topics WHERE id = $9) END)
          RETURNING id`,
       [
         meetingId,
@@ -718,6 +721,9 @@ export async function addAgendaItem(
         input.description ?? null,
         input.generatesActionItem ?? null,
         input.agendaId ?? null,
+        // Recorrência (039): informada manda (inclusive null); ausente herda do tema.
+        input.recurrence !== undefined,
+        input.recurrence ?? null,
       ],
     );
 
@@ -787,6 +793,8 @@ export interface AgendaItemPatch {
   executionStatus?: ExecutionStatus;
   /** Tema circular NESTA reuniao. So boolean; nunca toca a Biblioteca. */
   isCircularTheme?: boolean;
+  /** Recorrência NESTA reunião (039). `null` = não se repete; nunca toca a Biblioteca. */
+  recurrence?: RecorrenciaDoTema | null;
   /** Ficha cadastral (019). `null` limpa; nunca toca a Biblioteca. */
   agendaTopicTypeId?: string | null;
   agendaTopicNatureId?: string | null;
@@ -811,7 +819,7 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
   const permitidos = new Set([
     "title", "durationMinutes", "scheduledStartTime",
     "responsibleLabel", "responsibleEntraObjectId", "executionStatus",
-    "isCircularTheme",
+    "isCircularTheme", "recurrence",
     "agendaTopicTypeId", "agendaTopicNatureId", "description", "generatesActionItem",
     "agendaId",
   ]);
@@ -892,6 +900,8 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
     }
     saida.isCircularTheme = dados.isCircularTheme;
   }
+
+  if ("recurrence" in dados) saida.recurrence = parseRecorrenciaDoTema(dados.recurrence);
 
   // Ficha cadastral (019). `null` limpa. UUID validado por forma; a existência é
   // garantida pela FK (23503 -> 400 no traduzirErro).
@@ -988,6 +998,7 @@ export async function updateAgendaItem(
     if (input.scheduledStartTime !== undefined) bind("scheduled_start_time", input.scheduledStartTime);
     if (input.executionStatus !== undefined) bind("execution_status", input.executionStatus);
     if (input.isCircularTheme !== undefined) bind("is_circular_theme", input.isCircularTheme);
+    if (input.recurrence !== undefined) bind("recurrence", input.recurrence);
     // Ficha (019). UPDATE parcial na PRÓPRIA pauta — nunca toca a Biblioteca.
     if (input.agendaTopicTypeId !== undefined) bind("agenda_topic_type_id", input.agendaTopicTypeId);
     if (input.agendaTopicNatureId !== undefined) bind("agenda_topic_nature_id", input.agendaTopicNatureId);

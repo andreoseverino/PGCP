@@ -1,4 +1,5 @@
 import { apiRequest, apiRequestBlob } from "./api";
+import type { RecorrenciaDoTema } from "./topic-recurrence";
 import type { CreateParticipantPayload } from "./meeting-adapters";
 
 /**
@@ -70,6 +71,8 @@ export interface AnnualAgendaMeeting {
     typeId: string | null;
     natureId: string | null;
     isCircularTheme: boolean;
+    /** Recorrência (039); `null` = não se repete. */
+    recurrence?: RecorrenciaDoTema | null;
     description: string | null;
     inicio: string;
     fim: string | null;
@@ -207,6 +210,7 @@ export const updateAnnualTema = (
     agendaTopicTypeId?: string | null;
     agendaTopicNatureId?: string | null;
     isCircularTheme?: boolean;
+    recurrence?: RecorrenciaDoTema | null;
     description?: string | null;
   }
 ) => apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agenda-items/${itemId}`, json("PATCH", payload));
@@ -223,6 +227,7 @@ export interface NovoTemaPayload {
   agendaTopicTypeId?: string;
   agendaTopicNatureId?: string;
   isCircularTheme: boolean;
+  recurrence: RecorrenciaDoTema | null;
   description?: string;
   agendaId?: string;
   participants: CreateParticipantPayload[];

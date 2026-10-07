@@ -142,3 +142,9 @@ test("edição: formato na coluna esquerda (antes da descrição); organizador f
   assert.ok(iModalidade > 0 && iModalidade < iDescricao && iDescricao < iOrganizador && iOrganizador < iParticipantes);
   assert.match(modal, /id="editOrganizer"[\s\S]{0,200}readOnly/, "organizador continua só leitura");
 });
+
+test("modal de edição não mostra recorrência; o valor gravado não é enviado nem alterado", () => {
+  const modal = readFileSync(new URL("../components/EditMeetingModal.tsx", import.meta.url), "utf8");
+  assert.ok(!/editRecurrence|alterar\("recurrence"/.test(modal));
+  assert.equal("recurrence" in montarPatchDaEdicao(reuniao, formularioDaReuniao(reuniao)), false);
+});

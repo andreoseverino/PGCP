@@ -303,6 +303,7 @@ Detalhe coluna a coluna: [`modelo-de-dados.md`](modelo-de-dados.md).
 | **035** `governance_body_external_chair` | Presidente da Mesa externo (`external_participants`) | Entra **ou** externo; presidir não dá acesso ao PGCP |
 | **036** `meeting_cancellation` | excluir reunião = cancelamento lógico | nada apagado; versões sem cascata; runtime sem `DELETE` em `meetings` |
 | **037** `document_favorites` | Favoritos da Biblioteca (preferência pessoal) | não altera documento nem dá acesso; favoritar confere visibilidade |
+| **039** `topic_recurrence` | Recorrência do tema (inclusão automática em reunião NOVA do mesmo órgão) | só colunas novas NULL |
 | **038** `meeting_locations_and_participant_company` | Locais cadastrados (cópia congelada na reunião); telefone opcional e empresa em Participantes | sedes antigas importadas **inativas** e sem endereço — cadastrar os endereços reais em Administração → Locais antes de agendar presencial; `MEETING_LOCATIONS_ADDRESSES` deixa de ser lida |
 
 Nova mudança de schema = **nova migration**. Nunca editar uma já aplicada.
@@ -953,7 +954,7 @@ Exchange
 
 Banco
 [ ] PostgreSQL gerenciado, TLS obrigatório
-[ ] aplicar migrations 001–038
+[ ] aplicar migrations 001–039
 [ ] cadastrar os locais reais (Administração → Locais) e completar/ativar as sedes importadas
 [ ] usuário de aplicação com privilégio mínimo
 

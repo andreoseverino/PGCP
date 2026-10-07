@@ -90,6 +90,7 @@ import {
   type AgendaItemPatchPayload
 } from "../lib/meetings";
 import { locationLabel } from "../lib/meeting-locations-rules";
+import { AJUDA_RECORRENCIA, OPCOES_DE_RECORRENCIA, recorrenciaParaApi } from "../lib/topic-recurrence";
 import EditMeetingModal from "./EditMeetingModal";
 import { RichTextView } from "./RichTextEditor";
 import ParticipantPicker from "./ParticipantPicker";
@@ -219,6 +220,8 @@ export default function MeetingDetailView({
   const [editRespUser, setEditRespUser] = useState<DirectoryUser | null>(null);
   // Tema circular NESTA reunião. Editável Não↔Sim; nunca toca a Biblioteca.
   const [editCircular, setEditCircular] = useState(false);
+  // Recorrência do tema NESTA reunião (039). "" = não se repete.
+  const [editRecorrencia, setEditRecorrencia] = useState("");
   // Ficha (019): edição da PRÓPRIA pauta da reunião; nunca toca a Biblioteca.
   const [editTypeId, setEditTypeId] = useState("");
   const [editNatureId, setEditNatureId] = useState("");
@@ -1205,6 +1208,7 @@ export default function MeetingDetailView({
     setEditRespOid(item.authorEntraObjectId);
     setEditRespUser(null);
     setEditCircular(item.isCircularTheme === true);
+    setEditRecorrencia(item.recurrence ?? "");
     // Ficha: pré-seleciona o snapshot atual; sem valor, cai no primeiro cadastro.
     setEditTypeId(item.agendaTopicTypeId || pautaTypes[0]?.id || "");
     setEditNatureId(item.agendaTopicNatureId || pautaNatures[0]?.id || "");
@@ -1231,6 +1235,7 @@ export default function MeetingDetailView({
         durationMinutes: parseDurationMinutes(editDuration),
         // Booleano estrito. Grava o estado do seletor sempre — permite Sim→Não.
         isCircularTheme: editCircular,
+        recurrence: recorrenciaParaApi(editRecorrencia),
         // Ficha (019): grava na PRÓPRIA pauta. `null` limpa; nunca toca a Biblioteca.
         agendaTopicTypeId: editTypeId || null,
         agendaTopicNatureId: editNatureId || null,
@@ -4309,6 +4314,22 @@ export default function MeetingDetailView({
                 >
                   <option value="nao">{language === "pt" ? "Não" : "No"}</option>
                   <option value="sim">{language === "pt" ? "Sim" : "Yes"}</option>
+                </select>
+              </div>
+
+              {/* Recorrência (039): define a inclusão automática em reuniões NOVAS do órgão. */}
+              <div className="flex flex-col gap-1">
+                <label htmlFor="editTemaRecorrencia" className="text-[10px] font-extrabold text-slate-500 uppercase">
+                  {language === "pt" ? "Recorrência" : "Recurrence"}
+                </label>
+                <select
+                  id="editTemaRecorrencia"
+                  value={editRecorrencia}
+                  onChange={(e) => setEditRecorrencia(e.target.value)}
+                  title={AJUDA_RECORRENCIA[language]}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+                >
+                  {OPCOES_DE_RECORRENCIA.map((o) => <option key={o.value} value={o.value}>{o[language]}</option>)}
                 </select>
               </div>
 

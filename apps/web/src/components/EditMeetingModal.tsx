@@ -237,7 +237,8 @@ export default function EditMeetingModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* Recorrência saiu do modal (recurso não implementado); o valor gravado não muda. */}
+          <div className="grid grid-cols-1 gap-3">
             <div className="flex flex-col gap-1">
               <label htmlFor="editGovernanceBody" className={ROTULO}>{en ? "Governance body" : "Órgão de Governança"}</label>
               <select
@@ -252,25 +253,6 @@ export default function EditMeetingModal({
                   .map((body) => (
                     <option key={body.id} value={body.id}>{body.name}</option>
                   ))}
-              </select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <label htmlFor="editRecurrence" className={ROTULO}>{en ? "Recurrence" : "Recorrência"}</label>
-              <select
-                id="editRecurrence"
-                value={form.recurrence}
-                onChange={(e) => alterar("recurrence", e.target.value)}
-                className={`${CAMPO} cursor-pointer`}
-              >
-                <option value="Single">{en ? "Does not repeat" : "Não se repete (Única)"}</option>
-                <option value="Semanal">{en ? "Weekly" : "Semanal"}</option>
-                <option value="Quinzenal">{en ? "Biweekly" : "Quinzenal"}</option>
-                <option value="Mensal">{en ? "Monthly" : "Mensal"}</option>
-                <option value="Trimestral">{en ? "Quarterly" : "Trimestral"}</option>
-                {/* Valor legado fora da lista: mantido para não trocar em silêncio. */}
-                {!["Single", "Semanal", "Quinzenal", "Mensal", "Trimestral"].includes(form.recurrence) && (
-                  <option value={form.recurrence}>{form.recurrence}</option>
-                )}
               </select>
             </div>
           </div>

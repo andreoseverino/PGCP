@@ -247,6 +247,8 @@ export interface MeetingAgendaItem {
   presenterLabel: string | null;
   /** Tema circular NESTA reuniao — propriedade da pauta da reuniao. */
   isCircularTheme: boolean;
+  /** Recorrência NESTA reunião (039); `null` = não se repete. */
+  recurrence: "weekly" | "biweekly" | "monthly" | "quarterly" | null;
   /**
    * Ficha cadastral NESTA reuniao (snapshot, 019). Tipo e Natureza vêm com
    * `{id, name}` para a tela pré-selecionar e o PDF exibir. `null` quando a
@@ -357,6 +359,7 @@ interface AgendaItemRow {
   responsible_entra_object_id: string | null;
   presenter_label: string | null;
   is_circular_theme: boolean;
+  recurrence: "weekly" | "biweekly" | "monthly" | "quarterly" | null;
   agenda_topic_type_id: string | null;
   type_name: string | null;
   agenda_topic_nature_id: string | null;
@@ -455,6 +458,7 @@ function toAgendaItem(row: AgendaItemRow): MeetingAgendaItem {
       : null,
     presenterLabel: row.presenter_label,
     isCircularTheme: row.is_circular_theme,
+    recurrence: row.recurrence,
     type: row.agenda_topic_type_id && row.type_name ? { id: row.agenda_topic_type_id, name: row.type_name } : null,
     nature:
       row.agenda_topic_nature_id && row.nature_name
@@ -676,6 +680,7 @@ async function listAgendaItems(meetingId: string, db: Executor = pool): Promise<
             ai.responsible_entra_object_id,
             ai.presenter_label,
             ai.is_circular_theme,
+            ai.recurrence,
             ai.agenda_topic_type_id,   tt.name AS type_name,
             ai.agenda_topic_nature_id, tn.name AS nature_name,
             ai.description,

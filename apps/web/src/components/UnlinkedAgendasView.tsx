@@ -37,6 +37,7 @@ import DirectoryUserPicker from "./DirectoryUserPicker";
 import DurationHoursMinutesSelect from "./DurationHoursMinutesSelect";
 import { directoryEmail, type DirectoryUser } from "../lib/directory";
 import { formatMinutesAsTime, parseDurationMinutes } from "../lib/agenda-time";
+import { AJUDA_RECORRENCIA, OPCOES_DE_RECORRENCIA, recorrenciaParaApi } from "../lib/topic-recurrence";
 import {
   abrirEdicaoTema,
   abrirNovoTema,
@@ -124,6 +125,8 @@ export default function UnlinkedAgendasView({
    * reunião, o backend copia este valor para a pauta da reunião (snapshot).
    */
   const [isCircular, setIsCircular] = useState(false);
+  // PADRÃO de recorrência do tema (039). "" = não se repete.
+  const [recorrencia, setRecorrencia] = useState("");
 
   // Search query
   const [searchQuery, setSearchQuery] = useState("");
@@ -225,6 +228,7 @@ export default function UnlinkedAgendasView({
       typeId: pautaTypeId || undefined,
       natureId: pautaNatureId || undefined,
       isCircularTheme: isCircular,
+      recurrence: recorrenciaParaApi(recorrencia),
       participants: participantesComResponsavel
     };
 
@@ -249,6 +253,7 @@ export default function UnlinkedAgendasView({
     setPautaTypeId(pautaTypes[0]?.id || "");
     setPautaNatureId(pautaNatures[0]?.id || "");
     setIsCircular(false);
+    setRecorrencia("");
     setSelectedParticipantToAdd("");
   };
 
@@ -278,6 +283,7 @@ export default function UnlinkedAgendasView({
       setPautaTypeId(agenda.pautaTypeId || pautaTypes[0]?.id || "");
       setPautaNatureId(agenda.pautaNatureId || pautaNatures[0]?.id || "");
       setIsCircular(agenda.isCircularTheme === true);
+      setRecorrencia(agenda.recurrence ?? "");
 
       setDuration(agenda.duration);
       setModal(abrirEdicaoTema(agenda.id));
@@ -706,6 +712,22 @@ export default function UnlinkedAgendasView({
                 >
                   <option value="nao">{language === "en" ? "No" : "Não"}</option>
                   <option value="sim">{language === "en" ? "Yes" : "Sim"}</option>
+                </select>
+              </div>
+
+              {/* Recorrência (039) — PADRÃO da Biblioteca; copiado ao vincular a uma reunião. */}
+              <div className="flex flex-col gap-1">
+                <label htmlFor="agendaRecorrenciaInput" className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
+                  {language === "en" ? "Recurrence" : "Recorrência"}
+                </label>
+                <select
+                  id="agendaRecorrenciaInput"
+                  value={recorrencia}
+                  onChange={(e) => setRecorrencia(e.target.value)}
+                  title={AJUDA_RECORRENCIA[language]}
+                  className="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] transition-all duration-200"
+                >
+                  {OPCOES_DE_RECORRENCIA.map((o) => <option key={o.value} value={o.value}>{o[language]}</option>)}
                 </select>
               </div>
 

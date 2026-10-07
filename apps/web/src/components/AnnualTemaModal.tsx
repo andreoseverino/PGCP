@@ -10,6 +10,7 @@ import { formatMinutesAsTime } from "../lib/agenda-time";
 import type { TaxonomyItem } from "../lib/agenda-topic-adapters";
 import type { CreateParticipantPayload } from "../lib/meeting-adapters";
 import { nomeDoSelecionado, selecionadoParaPayload, type ParticipanteSelecionado } from "../lib/participant-search";
+import { AJUDA_RECORRENCIA, OPCOES_DE_RECORRENCIA, recorrenciaParaApi, type RecorrenciaDoTema } from "../lib/topic-recurrence";
 
 /**
  * CADASTRO COMPLETO DE TEMA da Agenda Anual ("+ Novo tema" e "Editar").
@@ -33,6 +34,8 @@ export interface DadosDoTemaCompleto {
   agendaTopicTypeId: string | null;
   agendaTopicNatureId: string | null;
   isCircularTheme: boolean;
+  /** Recorrência (039). `null` = não se repete. */
+  recurrence: RecorrenciaDoTema | null;
   description: string | null;
   agendaId?: string;
   /** Só no "Novo tema": vinculados na mesma transação da criação. */
@@ -47,6 +50,7 @@ export interface TemaEmEdicao {
   typeId: string | null;
   natureId: string | null;
   isCircularTheme: boolean;
+  recurrence?: RecorrenciaDoTema | null;
   description: string | null;
   agendaId: string | null;
   participants: Array<{ id: string; name: string }>;
@@ -102,6 +106,7 @@ export default function AnnualTemaModal({
   const [tipoId, setTipoId] = useState(inicial?.typeId ?? tipos[0]?.id ?? "");
   const [naturezaId, setNaturezaId] = useState(inicial?.natureId ?? naturezas[0]?.id ?? "");
   const [circular, setCircular] = useState(inicial?.isCircularTheme ?? false);
+  const [recorrencia, setRecorrencia] = useState<string>(inicial?.recurrence ?? "");
   const [minutos, setMinutos] = useState<number>(inicial?.durationMinutes ?? 30);
   const [descricao, setDescricao] = useState(inicial?.description ?? "");
   const [pautaId, setPautaId] = useState(inicial?.agendaId ?? pautas[0]?.id ?? "");
@@ -129,6 +134,7 @@ export default function AnnualTemaModal({
       agendaTopicTypeId: tipoId || null,
       agendaTopicNatureId: naturezaId || null,
       isCircularTheme: circular,
+      recurrence: recorrenciaParaApi(recorrencia),
       description: descricao.trim() || null,
       ...(pautas.length > 1 && pautaId ? { agendaId: pautaId } : {}),
       participants: novos.map(selecionadoParaPayload)
@@ -216,6 +222,18 @@ export default function AnnualTemaModal({
                 </select>
               </div>
               <div className="flex flex-col gap-1">
+                <label htmlFor="annualTemaRecorrencia" className={LABEL}>{pt ? "Recorrência" : "Recurrence"}</label>
+                <select
+                  id="annualTemaRecorrencia"
+                  value={recorrencia}
+                  onChange={(e) => setRecorrencia(e.target.value)}
+                  title={AJUDA_RECORRENCIA[language]}
+                  className={`${CAMPO} cursor-pointer`}
+                >
+                  {OPCOES_DE_RECORRENCIA.map((o) => <option key={o.value} value={o.value}>{o[language]}</option>)}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1 sm:col-span-2">
                 <label className={LABEL}>{pt ? "Tempo estimado (duração)" : "Estimated duration"} *</label>
                 <DurationHoursMinutesSelect
                   language={language}

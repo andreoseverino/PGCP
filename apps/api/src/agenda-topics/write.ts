@@ -3,6 +3,7 @@ import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 import { recordAuditIn } from "../audit/service.js";
 import type { MeetingActor } from "../meetings/create.js";
+import { parseRecorrenciaDoTema, type RecorrenciaDoTema } from "../meetings/topic-recurrence.js";
 import { assertValidId, findAgendaTopic, type AgendaTopicDetail } from "./service.js";
 
 /**
@@ -221,6 +222,8 @@ export interface AgendaTopicInput {
   governanceBodyId?: string | null;
   /** PADRÃO de tema circular. Copiado para a pauta ao vincular a uma reunião. */
   isCircularTheme?: boolean;
+  /** PADRÃO de recorrência (039). `null` = não se repete. */
+  recurrence?: RecorrenciaDoTema | null;
   participants?: TopicParticipantInput[];
 }
 
@@ -235,6 +238,7 @@ const CAMPOS_PERMITIDOS = new Set([
   "agendaTopicNatureId",
   "governanceBodyId",
   "isCircularTheme",
+  "recurrence",
   "participants",
 ]);
 
@@ -288,6 +292,8 @@ export function parseAgendaTopicInput(body: unknown, parcial = false): AgendaTop
     }
     saida.isCircularTheme = dados.isCircularTheme;
   }
+
+  if ("recurrence" in dados) saida.recurrence = parseRecorrenciaDoTema(dados.recurrence);
 
   if ("responsibleLabel" in dados) {
     saida.responsibleLabel = texto(dados.responsibleLabel, "responsibleLabel", 200) ?? null;
@@ -394,8 +400,8 @@ export async function inserirTemaNaBiblioteca(
             (title, description, estimated_duration_minutes, generates_action_item,
              responsible_label, responsible_entra_tenant_id, responsible_entra_object_id,
              agenda_topic_type_id, agenda_topic_nature_id, governance_body_id,
-             is_circular_theme)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             is_circular_theme, recurrence)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
     [
       input.title,
@@ -409,6 +415,7 @@ export async function inserirTemaNaBiblioteca(
       input.agendaTopicNatureId ?? null,
       input.governanceBodyId ?? null,
       input.isCircularTheme ?? false,
+      input.recurrence ?? null,
     ],
   );
 
@@ -448,6 +455,7 @@ const COLUNA_DE: Record<string, string> = {
   agendaTopicNatureId: "agenda_topic_nature_id",
   governanceBodyId: "governance_body_id",
   isCircularTheme: "is_circular_theme",
+  recurrence: "recurrence",
 };
 
 export async function updateAgendaTopic(
