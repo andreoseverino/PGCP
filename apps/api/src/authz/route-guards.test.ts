@@ -14,6 +14,7 @@ import { meRouter } from "../me/routes.js";
 import { meetingsRouter } from "../meetings/routes.js";
 import { annualAgendasRouter } from "../annual-agendas/routes.js";
 import { externalParticipantsRouter } from "../external-participants/routes.js";
+import { meetingLocationsRouter } from "../meeting-locations/routes.js";
 import { directoryPeopleRouter } from "../directory-people/routes.js";
 import { participationGroupsRouter } from "../participants/groups-routes.js";
 import { documentsRouter } from "../documents/routes.js";
@@ -98,6 +99,7 @@ const ROUTERS: Array<[string, unknown]> = [
   ["meetings", meetingsRouter],
   ["annual-agendas", annualAgendasRouter],
   ["external-participants", externalParticipantsRouter],
+  ["meeting-locations", meetingLocationsRouter],
   ["directory-people", directoryPeopleRouter],
   ["participation-groups", participationGroupsRouter],
   ["documents", documentsRouter],

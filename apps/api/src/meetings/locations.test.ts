@@ -1,50 +1,56 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   descreverLocalFisico,
-  encontrarLocalFisico,
-  lerEnderecosConfigurados,
-  listarLocaisFisicos,
-  localFisicoExiste,
+  enderecoDoLocal,
+  formatarCep,
+  lerLocalDaReuniao,
+  type LocalFisico,
 } from "./locations.js";
 
-test("catálogo tem Sede Matriz e Sede Leopoldo, sem endereço quando não configurado", () => {
-  const locais = listarLocaisFisicos(undefined);
-  assert.deepEqual(
-    locais.map((l) => [l.id, l.name]),
-    [
-      ["sede-matriz", "Sede Matriz"],
-      ["sede-leopoldo", "Sede Leopoldo"],
-    ],
+const COMPLETO: LocalFisico = {
+  id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  name: "Sede Centro",
+  street: "Av. Paulista",
+  number: "1000",
+  complement: "10º andar",
+  neighborhood: "Bela Vista",
+  city: "São Paulo",
+  state: "SP",
+  postalCode: "01310100",
+};
+
+test("cópia do local: endereço completo em uma linha, CEP formatado", () => {
+  assert.equal(
+    descreverLocalFisico(COMPLETO),
+    "Sede Centro — Av. Paulista, 1000, 10º andar — Bela Vista, São Paulo/SP, CEP 01310-100",
   );
-  for (const local of locais) {
-    assert.equal(local.address, null, "endereço não pode ser inventado");
-    assert.equal(local.city, null);
-  }
+  assert.equal(formatarCep("01310100"), "01310-100");
+  assert.equal(formatarCep(null), null);
 });
 
-test("endereço vem somente da configuração", () => {
-  const local = encontrarLocalFisico(
-    "sede-leopoldo",
-    JSON.stringify({ "sede-leopoldo": { address: "Av. Configurada, 1", city: "X", state: "Y" } }),
-  );
-  assert.equal(local?.address, "Av. Configurada, 1");
-  assert.equal(descreverLocalFisico(local!), "Sede Leopoldo — Av. Configurada, 1, X/Y");
+test("só o que existe: opcionais ausentes não viram texto, local sem endereço leva só o nome", () => {
+  const minimo = { ...COMPLETO, complement: null, neighborhood: null };
+  assert.equal(enderecoDoLocal(minimo), "Av. Paulista, 1000 — São Paulo/SP, CEP 01310-100");
+  const importado = lerLocalDaReuniao({ id: COMPLETO.id, name: "Sede Matriz" })!;
+  assert.equal(descreverLocalFisico(importado), "Sede Matriz");
+  assert.equal(enderecoDoLocal(importado), null);
 });
 
-test("configuração inválida é ignorada sem derrubar a criação", () => {
-  assert.equal(lerEnderecosConfigurados("{nao-e-json").size, 0);
-  assert.equal(lerEnderecosConfigurados("[1,2]").size, 0);
-  // chave fora do catálogo não cria local novo
-  assert.equal(lerEnderecosConfigurados(JSON.stringify({ outra: { address: "x" } })).size, 0);
-  // tipo errado e caractere de controle viram null
-  const m = lerEnderecosConfigurados(JSON.stringify({ "sede-matriz": { address: 42, city: "a\u0000b" } }));
-  assert.equal(m.get("sede-matriz")?.address, null);
-  assert.equal(m.get("sede-matriz")?.city, null);
+test("leitura defensiva da cópia gravada (jsonb)", () => {
+  assert.equal(lerLocalDaReuniao(null), null);
+  assert.equal(lerLocalDaReuniao("Sede"), null);
+  assert.equal(lerLocalDaReuniao([]), null);
+  assert.equal(lerLocalDaReuniao({ name: "Sem id" }), null);
+  const lido = lerLocalDaReuniao({ ...COMPLETO, street: 42, extra: "<script>" })!;
+  assert.equal(lido.street, null, "tipo errado vira null");
+  assert.ok(!("extra" in lido), "campos fora do formato não passam");
 });
 
-test("chave desconhecida não é local válido", () => {
-  assert.equal(localFisicoExiste("sede-matriz"), true);
-  assert.equal(localFisicoExiste("Rua Qualquer, 123"), false);
-  assert.equal(encontrarLocalFisico("inexistente"), null);
+test("catálogo fixo e variável de ambiente da 025 deixaram de existir", () => {
+  const fonte = readFileSync(new URL("./locations.ts", import.meta.url), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "");
+  assert.ok(!/sede-matriz|sede-leopoldo|process\.env/.test(fonte));
 });

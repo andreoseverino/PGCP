@@ -35,8 +35,9 @@ import type { ConfirmacaoRemocao } from "../lib/participant-removal";
 /**
  * Administração → Participantes, em dois blocos para quem não é técnico:
  *
- *   Pessoas externas          convidados de fora da Cielo: nome, e-mail,
- *                             telefone. Recebem convites; não acessam o PGCP.
+ *   Pessoas externas          convidados de fora da Cielo: nome e e-mail
+ *                             (telefone e empresa opcionais). Recebem
+ *                             convites; não acessam o PGCP.
  *   Grupos de participação    quem normalmente participa de cada Órgão
  *                             colegiado (entra automaticamente nas reuniões
  *                             NOVAS do órgão) e os participantes padrão de cada
@@ -58,7 +59,7 @@ interface ParticipantsPanelProps {
 const LABEL = "text-[10px] font-bold text-slate-500 uppercase tracking-wide";
 const INPUT =
   "w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#00658d]";
-const VAZIO: ExternalParticipantPayload = { fullName: "", email: "", phone: "" };
+const VAZIO: ExternalParticipantPayload = { fullName: "", email: "", phone: "", company: "" };
 
 const aba = (ativa: boolean) =>
   `px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
@@ -117,7 +118,7 @@ function PessoasExternas({ language }: { language: "en" | "pt" }) {
 
   const termo = busca.trim().toLowerCase();
   const visiveis = useMemo(
-    () => (termo ? pessoas.filter((p) => p.fullName.toLowerCase().includes(termo) || p.email.toLowerCase().includes(termo)) : pessoas),
+    () => (termo ? pessoas.filter((p) => p.fullName.toLowerCase().includes(termo) || p.email.toLowerCase().includes(termo) || (p.company ?? "").toLowerCase().includes(termo)) : pessoas),
     [pessoas, termo]
   );
 
@@ -202,7 +203,7 @@ function PessoasExternas({ language }: { language: "en" | "pt" }) {
             </h4>
             <button type="button" onClick={() => setForm(null)} aria-label={pt ? "Fechar" : "Close"} className="p-1 text-slate-400 hover:text-slate-700 cursor-pointer"><X className="w-4 h-4" /></button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
             <div className="flex flex-col gap-1">
               <label htmlFor="epNome" className={LABEL}>{pt ? "Nome completo" : "Full name"} *</label>
               <input id="epNome" required maxLength={200} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} className={INPUT} />
@@ -212,8 +213,12 @@ function PessoasExternas({ language }: { language: "en" | "pt" }) {
               <input id="epEmail" type="email" required maxLength={254} value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className={INPUT} />
             </div>
             <div className="flex flex-col gap-1">
-              <label htmlFor="epTel" className={LABEL}>{pt ? "Telefone" : "Phone"} *</label>
-              <input id="epTel" type="tel" required maxLength={30} value={form.phone} placeholder="+55 (11) 91234-5678" onChange={(e) => setForm({ ...form, phone: e.target.value })} className={INPUT} />
+              <label htmlFor="epTel" className={LABEL}>{pt ? "Telefone (opcional)" : "Phone (optional)"}</label>
+              <input id="epTel" type="tel" maxLength={30} value={form.phone} placeholder="+55 (11) 91234-5678" onChange={(e) => setForm({ ...form, phone: e.target.value })} className={INPUT} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="epEmpresa" className={LABEL}>{pt ? "Empresa (opcional)" : "Company (optional)"}</label>
+              <input id="epEmpresa" maxLength={200} value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} className={INPUT} />
             </div>
           </div>
           <div className="flex justify-end">
@@ -225,28 +230,30 @@ function PessoasExternas({ language }: { language: "en" | "pt" }) {
       )}
 
       <div className="bg-white border border-slate-200 rounded-2xl overflow-x-auto">
-        <table className="w-full min-w-[560px] text-left text-xs">
+        <table className="w-full min-w-[680px] text-left text-xs">
           <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
             <tr>
               <th className="py-3 px-4">{pt ? "Nome" : "Name"}</th>
               <th className="py-3 px-2">E-mail</th>
+              <th className="py-3 px-2">{pt ? "Empresa" : "Company"}</th>
               <th className="py-3 px-2">{pt ? "Telefone" : "Phone"}</th>
               <th className="py-3 px-4 text-right">{pt ? "Ações" : "Actions"}</th>
             </tr>
           </thead>
           <tbody>
             {visiveis.length === 0 && (
-              <tr><td colSpan={4} className="py-6 text-center text-slate-400 font-semibold">{pt ? "Nenhuma pessoa externa cadastrada." : "No external people."}</td></tr>
+              <tr><td colSpan={5} className="py-6 text-center text-slate-400 font-semibold">{pt ? "Nenhuma pessoa externa cadastrada." : "No external people."}</td></tr>
             )}
             {visiveis.map((p) => (
               <tr key={p.id} className="border-t border-slate-100">
                 <td className="py-3 px-4 font-bold text-slate-800">{p.fullName}</td>
                 <td className="py-3 px-2 text-slate-600">{p.email}</td>
-                <td className="py-3 px-2 text-slate-600">{p.phone}</td>
+                <td className="py-3 px-2 text-slate-600">{p.company || "—"}</td>
+                <td className="py-3 px-2 text-slate-600">{p.phone || "—"}</td>
                 <td className="py-3 px-4 text-right whitespace-nowrap">
                   <button type="button" title={pt ? "Editar" : "Edit"} aria-label={pt ? `Editar ${p.fullName}` : `Edit ${p.fullName}`}
                     className="p-1.5 text-slate-500 hover:bg-slate-100 rounded-lg cursor-pointer"
-                    onClick={() => { setEditandoId(p.id); setForm({ fullName: p.fullName, email: p.email, phone: p.phone }); setErro(null); setAviso(null); }}>
+                    onClick={() => { setEditandoId(p.id); setForm({ fullName: p.fullName, email: p.email, phone: p.phone ?? "", company: p.company ?? "" }); setErro(null); setAviso(null); }}>
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
                   <button type="button" title={pt ? "Remover" : "Remove"} aria-label={pt ? `Remover ${p.fullName}` : `Remove ${p.fullName}`}
@@ -366,7 +373,7 @@ function GruposDeParticipacao({
       if (tipo === "temas") return (await addAgendaTopicParticipant(id, corpoDoParticipantePadrao(sel))).participants.map(membroDoTema);
       const r = await addGovernanceBodyGroupMember(id, sel);
       const nome = sel.origem === "entra" ? sel.user.displayName ?? "" : sel.participante.fullName;
-      setAviso(avisoDeInclusaoNoGrupo(nome, r.reunioesAtualizadas, r.reunioesComExcecao, language));
+      setAviso(avisoDeInclusaoNoGrupo(nome, language));
       return r.membros;
     });
   };

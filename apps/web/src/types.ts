@@ -33,15 +33,22 @@ export interface GovernanceBody {
   /** Presidente da Mesa cadastrado no órgão. `null` = ninguém cadastrado ainda. */
   chairEntraObjectId: string | null;
   chairName: string | null;
+  /**
+   * Presidente da Mesa EXTERNO (cadastro de participantes externos, sem conta
+   * no PGCP e sem Entra). Exclusivo com `chairEntraObjectId`. Não dá acesso.
+   */
+  chairExternalParticipantId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
-/** Presidente da Mesa escolhido no diretório, ao criar/editar um órgão. */
-export interface GovernanceBodyChairInput {
-  entraObjectId: string;
-  displayName: string;
-}
+/**
+ * Presidente da Mesa ao criar/editar um órgão: pessoa do diretório OU
+ * participante externo (o servidor resolve o nome pelo cadastro).
+ */
+export type GovernanceBodyChairInput =
+  | { entraObjectId: string; displayName: string }
+  | { externalParticipantId: string };
 
 export interface Participant {
   /**
@@ -176,13 +183,21 @@ export interface AgendaItem {
 }
 
 /** Local físico do catálogo. Endereço `null` enquanto não configurado. */
+/**
+ * Local de reunião presencial. Na reunião é a CÓPIA gravada na escolha (038):
+ * nome e endereço daquele momento, não o cadastro atual.
+ */
 export interface PhysicalLocation {
   id: string;
   name: string;
-  address: string | null;
+  street: string | null;
+  number: string | null;
   complement: string | null;
+  neighborhood: string | null;
   city: string | null;
   state: string | null;
+  /** CEP só com dígitos. */
+  postalCode: string | null;
 }
 
 /**
@@ -311,6 +326,9 @@ export interface Meeting {
   minutesStatus?: "draft" | "under_review" | "approved" | "closed" | null;
   /** Tipo (030). Preenchido = título padronizado; `null` = legado. */
   sessionType?: "ordinary" | "extraordinary" | null;
+  /** Cancelada/excluída logicamente (036): somente leitura, fora dos fluxos ativos. */
+  cancelledAt?: string | null;
+  calendarEventCancelledAt?: string | null;
   missingRequirementText?: string;
   recurrence?: string;
   /**

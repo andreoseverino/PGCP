@@ -16,6 +16,7 @@ const externo = (id: string, fullName: string, email: string): ExternalParticipa
   origin: "pgcp",
   fullName,
   email,
+  company: null,
   phone: "11 3333 4444",
   governanceBodies: [],
   topics: [],

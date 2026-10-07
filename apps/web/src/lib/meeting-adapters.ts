@@ -66,6 +66,10 @@ export interface ApiMeetingSummary {
   /** Tipo (030); `null` = título livre (legado). */
   sessionType?: "ordinary" | "extraordinary" | null;
   status: ApiMeetingStatus;
+  /** Cancelada/excluída logicamente (036). `null`/ausente = ativa. */
+  cancelledAt?: string | null;
+  /** Evento do Outlook/Teams cancelado; `null` com reunião cancelada e evento = pendente. */
+  calendarEventCancelledAt?: string | null;
   /** Ciclo da PAUTA. Eixo separado de `status` e do estado do convite. */
   agendaValidation: AgendaValidation;
   recurrence: string | null;
@@ -375,6 +379,8 @@ export function meetingFromApi(api: ApiMeetingSummary | ApiMeetingDetail): Meeti
     calendarSyncStatus: api.calendarSyncStatus ?? null,
     minutesStatus: api.minutesStatus ?? null,
     sessionType: api.sessionType ?? null,
+    cancelledAt: api.cancelledAt ?? null,
+    calendarEventCancelledAt: api.calendarEventCancelledAt ?? null,
     participants: detalhe ? detalhe.participants.map(participantFromApi) : undefined,
     // Passa adiante como veio: o estado da sincronização é do servidor, e
     // convertê-lo aqui abriria espaço para a tela "melhorar" um `failed`.
@@ -456,8 +462,8 @@ export interface CreateMeetingPayload {
   pendingRequirements?: string;
   /** Modalidade (025). Ausente = online. */
   modality?: "online" | "in_person";
-  /** Chave do catálogo de locais. Só no presencial. */
-  physicalLocationKey?: string;
+  /** Id do local cadastrado (Administração → Locais). Só no presencial. */
+  physicalLocationId?: string;
   /*
    * SEM `onlineMeetingProvider`. Toda reunião do PGCP é um evento do Outlook
    * com reunião do Teams, e quem afirma isso é o servidor — não o navegador.
@@ -465,6 +471,8 @@ export interface CreateMeetingPayload {
    */
   participants: CreateParticipantPayload[];
   agendaItems: CreateAgendaItemPayload[];
+  /** A lista já contém o grupo do órgão, ajustado na tela (Nova reunião). */
+  participantsIncludeGroup?: boolean;
 }
 
 /** Texto vazio não vira campo: `undefined` diz "não informado", "" não diz nada. */

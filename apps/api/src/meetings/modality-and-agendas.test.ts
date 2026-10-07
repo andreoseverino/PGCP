@@ -31,26 +31,31 @@ test("criação sem pautas nem temas é válida", () => {
 test("criação online: sem local físico obrigatório", () => {
   const input = parseCreateInput(corpo({ modality: "online" }));
   assert.equal(input.modality, "online");
-  assert.equal(input.physicalLocationKey, undefined);
+  assert.equal(input.physicalLocationId, undefined);
 });
 
 test("criação presencial exige local físico", () => {
   assert.throws(() => parseCreateInput(corpo({ modality: "in_person" })), HttpError);
-  const input = parseCreateInput(corpo({ modality: "in_person", physicalLocationKey: "sede-matriz" }));
+  const input = parseCreateInput(corpo({ modality: "in_person", physicalLocationId: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA" }));
   assert.equal(input.modality, "in_person");
-  assert.equal(input.physicalLocationKey, "sede-matriz");
+  assert.equal(input.physicalLocationId, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
 });
 
-test("local físico só do catálogo — endereço livre é recusado", () => {
-  assert.throws(
-    () => parseCreateInput(corpo({ modality: "in_person", physicalLocationKey: "Rua Inventada, 1" })),
-    HttpError,
-  );
+test("local só por id do cadastro — endereço livre, chave antiga ou id inválido são recusados", () => {
+  for (const extra of [
+    { physicalLocationId: "Rua Inventada, 1" },
+    { physicalLocationId: "sede-matriz" },
+    { physicalLocationId: 42 },
+    { physicalLocationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' OR 1=1" },
+    { physicalLocationKey: "sede-matriz" },
+  ]) {
+    assert.throws(() => parseCreateInput(corpo({ modality: "in_person", ...extra })), HttpError, JSON.stringify(extra));
+  }
 });
 
 test("online com local físico é recusado (não descartado em silêncio)", () => {
   assert.throws(
-    () => parseCreateInput(corpo({ modality: "online", physicalLocationKey: "sede-matriz" })),
+    () => parseCreateInput(corpo({ modality: "online", physicalLocationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" })),
     HttpError,
   );
 });
@@ -71,26 +76,28 @@ test("origem da reunião não vem do corpo (mass assignment)", () => {
 // --- PATCH de modalidade ------------------------------------------------------
 
 test("PATCH aceita modalidade/local e recusa local fora do catálogo", () => {
-  assert.deepEqual(parseUpdateInput({ modality: "in_person", physicalLocationKey: "sede-leopoldo" }), {
+  assert.deepEqual(parseUpdateInput({ modality: "in_person", physicalLocationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }), {
     modality: "in_person",
-    physicalLocationKey: "sede-leopoldo",
+    physicalLocationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   });
-  assert.throws(() => parseUpdateInput({ physicalLocationKey: "qualquer" }), HttpError);
+  assert.throws(() => parseUpdateInput({ physicalLocationId: "qualquer" }), HttpError);
+  assert.throws(() => parseUpdateInput({ physicalLocationKey: "sede-matriz" }), HttpError);
+  assert.throws(() => parseUpdateInput({ physicalLocationSnapshot: { name: "Forjado" } }), HttpError, "cópia nunca vem do cliente");
   assert.throws(() => parseUpdateInput({ modality: "hybrid" }), HttpError);
 });
 
 test("PATCH: trocar para online limpa o local; presencial sem local é recusado", () => {
   assert.deepEqual(
-    resolverModalidadeDoPatch({ modality: "in_person", physicalLocationKey: "sede-matriz" }, { modality: "online" }),
-    { modality: "online", physicalLocationKey: null },
+    resolverModalidadeDoPatch({ modality: "in_person", physicalLocationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }, { modality: "online" }),
+    { modality: "online", physicalLocationId: null },
   );
   assert.throws(
-    () => resolverModalidadeDoPatch({ modality: "online", physicalLocationKey: null }, { modality: "in_person" }),
+    () => resolverModalidadeDoPatch({ modality: "online", physicalLocationId: null }, { modality: "in_person" }),
     HttpError,
   );
   assert.deepEqual(
-    resolverModalidadeDoPatch({ modality: "in_person", physicalLocationKey: "sede-matriz" }, { physicalLocationKey: "sede-leopoldo" }),
-    { modality: "in_person", physicalLocationKey: "sede-leopoldo" },
+    resolverModalidadeDoPatch({ modality: "in_person", physicalLocationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }, { physicalLocationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    { modality: "in_person", physicalLocationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
   );
 });
 

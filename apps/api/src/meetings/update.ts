@@ -17,7 +17,15 @@ import {
   type Modalidade,
   type ParticipantInput
 } from "./create.js";
-import { localFisicoExiste } from "./locations.js";
+import { resolverLocalParaReuniao } from "../meeting-locations/service.js";
+import {
+  aplicarListaDeParticipantes,
+  exigirQueNaoParticipa,
+  parseListaDeParticipantes,
+  type ListaDeParticipantes,
+} from "./participants-sync.js";
+import { parseDescricao } from "./rich-text.js";
+import { travarReuniaoParaVersao, versionarReuniaoSeMudou } from "./versions.js";
 import { exigirPautaDaReuniao } from "./agendas.js";
 import { montarTituloDaReuniao, parseTipoDeSessao, type TipoDeSessao } from "./title.js";
 import { findMeeting, type MeetingDetail } from "./service.js";
@@ -89,6 +97,26 @@ async function emTransacao<T>(
   }
 }
 
+/**
+ * `emTransacao` + VERSÃO da reunião (034) no fim da MESMA transação: a foto vê
+ * o que a mutação gravou, e falha em qualquer ponto desfaz as duas coisas.
+ * Sem mudança real de conteúdo, nenhuma versão nasce.
+ */
+function emTransacaoVersionada<T>(
+  meetingId: string,
+  actor: MeetingActor,
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  return emTransacao(async (client) => {
+    // Reunião travada PRIMEIRO: toda mutação versionada segue a mesma ordem
+    // de locks (reunião -> filhos), e a versão final não disputa número.
+    await travarReuniaoParaVersao(client, meetingId);
+    const resultado = await fn(client);
+    await versionarReuniaoSeMudou(client, meetingId, actor);
+    return resultado;
+  });
+}
+
 function traduzirErro(error: unknown): unknown {
   if (error instanceof HttpError) return error;
   const code = (error as { code?: string } | null)?.code;
@@ -155,11 +183,18 @@ export interface UpdateMeetingInput {
    */
   onlineMeetingProvider?: "teamsForBusiness";
   /**
-   * Modalidade e local (025). A coerencia final (presencial exige local,
+   * Modalidade e local (025/038). A coerencia final (presencial exige local,
    * online nao tem) depende do estado atual e e conferida em `updateMeeting`.
+   * O local e o id do cadastro; a copia (nome/endereco) e montada no servidor.
    */
   modality?: Modalidade;
-  physicalLocationKey?: string | null;
+  physicalLocationId?: string | null;
+  /**
+   * LISTA COMPLETA de participantes desejada (edição da reunião). Ausente =
+   * participantes intocados. Aplicada na mesma transação: uma versão e uma
+   * sincronização do convite para a edição inteira.
+   */
+  participants?: ListaDeParticipantes;
 }
 
 /**
@@ -184,7 +219,10 @@ export function parseUpdateInput(body: unknown): UpdateMeetingInput {
     "onlineMeetingProvider",
     // Modalidade e local fisico (025). Trocar e editar a reuniao: o evento
     // existente e atualizado (PATCH), nunca recriado.
-    "modality", "physicalLocationKey",
+    "modality", "physicalLocationId",
+    // Lista completa de participantes (edição no modal). Mesmas regras da aba
+    // Participantes do Pipeline; ver participants-sync.ts.
+    "participants",
   ]);
 
   for (const chave of Object.keys(dados)) {
@@ -213,8 +251,11 @@ export function parseUpdateInput(body: unknown): UpdateMeetingInput {
   if (titulo !== undefined) saida.title = titulo as string;
   if ("sessionType" in dados) saida.sessionType = parseTipoDeSessao(dados.sessionType);
 
+  // Descrição: texto rico saneado pelo servidor (rich-text.ts), nunca gravado como veio.
+  const descricao = parseDescricao(dados.description);
+  if (descricao !== undefined) saida.description = descricao;
+
   for (const [chave, max] of [
-    ["description", 5000],
     ["recurrence", 100], ["pendingRequirements", 2000],
   ] as const) {
     const valor = texto(chave, max);
@@ -287,13 +328,16 @@ export function parseUpdateInput(body: unknown): UpdateMeetingInput {
     saida.modality = dados.modality as Modalidade;
   }
 
-  if ("physicalLocationKey" in dados) {
-    const valor = texto("physicalLocationKey", 64);
-    if (valor && !localFisicoExiste(valor)) {
-      throw new HttpError(400, "O local físico informado não existe no catálogo de locais.");
+  if ("physicalLocationId" in dados) {
+    const valor = texto("physicalLocationId", 36);
+    if (valor && !UUID_LOCAL.test(valor)) {
+      throw new HttpError(400, "O campo 'physicalLocationId' deve ser um UUID.");
     }
-    saida.physicalLocationKey = valor ?? null;
+    // Existencia e status (ativo) sao conferidos no banco, em `updateMeeting`.
+    saida.physicalLocationId = valor ? valor.toLowerCase() : null;
   }
+
+  if ("participants" in dados) saida.participants = parseListaDeParticipantes(dados.participants);
 
   if (Object.keys(saida).length === 0) {
     throw new HttpError(400, "Nenhum campo alterável foi informado.");
@@ -302,31 +346,33 @@ export function parseUpdateInput(body: unknown): UpdateMeetingInput {
   return saida;
 }
 
+const UUID_LOCAL = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Coerencia final de modalidade/local depois do PATCH, a partir do estado
- * atual. Mesma regra do CHECK da 025, com mensagem util em vez de violacao
+ * atual. Mesma regra do CHECK da 038, com mensagem util em vez de violacao
  * crua. Trocar para online limpa o local (o PATCH pode omiti-lo).
  */
 export function resolverModalidadeDoPatch(
-  atual: { modality: Modalidade; physicalLocationKey: string | null },
-  input: Pick<UpdateMeetingInput, "modality" | "physicalLocationKey">,
-): { modality: Modalidade; physicalLocationKey: string | null } {
+  atual: { modality: Modalidade; physicalLocationId: string | null },
+  input: Pick<UpdateMeetingInput, "modality" | "physicalLocationId">,
+): { modality: Modalidade; physicalLocationId: string | null } {
   const modality = input.modality ?? atual.modality;
   if (modality === "online") {
-    if (input.physicalLocationKey) {
-      throw new HttpError(400, "Reunião online não tem local físico: remova 'physicalLocationKey'.");
+    if (input.physicalLocationId) {
+      throw new HttpError(400, "Reunião online não tem local físico: remova 'physicalLocationId'.");
     }
-    return { modality, physicalLocationKey: null };
+    return { modality, physicalLocationId: null };
   }
-  const physicalLocationKey =
-    input.physicalLocationKey !== undefined ? input.physicalLocationKey : atual.physicalLocationKey;
-  if (!physicalLocationKey) {
-    throw new HttpError(400, "Reunião presencial exige o local físico ('physicalLocationKey').");
+  const physicalLocationId =
+    input.physicalLocationId !== undefined ? input.physicalLocationId : atual.physicalLocationId;
+  if (!physicalLocationId) {
+    throw new HttpError(400, "Reunião presencial exige o local ('physicalLocationId').");
   }
-  return { modality, physicalLocationKey };
+  return { modality, physicalLocationId };
 }
 
-const COLUNA_DE: Record<keyof UpdateMeetingInput, string> = {
+const COLUNA_DE: Record<Exclude<keyof UpdateMeetingInput, "participants">, string> = {
   title: "title",
   sessionType: "session_type",
   description: "description",
@@ -340,7 +386,8 @@ const COLUNA_DE: Record<keyof UpdateMeetingInput, string> = {
   status: "status",
   onlineMeetingProvider: "online_meeting_provider",
   modality: "modality",
-  physicalLocationKey: "physical_location_key",
+  // Gravado a parte, junto com a copia (`physical_location_snapshot`).
+  physicalLocationId: "physical_location_id",
 };
 
 export async function updateMeeting(
@@ -350,17 +397,21 @@ export async function updateMeeting(
 ): Promise<MeetingDetail> {
   assertUuid(meetingId, "Identificador");
 
-  await emTransacao(async (client) => {
+  // Participantes não são coluna: aplicados à parte, na MESMA transação/versão.
+  const { participants: listaDeParticipantes, ...campos } = input;
+  input = campos;
+
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     const atual = await client.query<{
       start_at: Date;
       end_at: Date;
       modality: Modalidade;
-      physical_location_key: string | null;
+      physical_location_id: string | null;
       governance_body_id: string;
       annual_agenda_id: string | null;
       session_type: TipoDeSessao | null;
     }>(
-      `SELECT start_at, end_at, modality, physical_location_key, governance_body_id, annual_agenda_id, session_type
+      `SELECT start_at, end_at, modality, physical_location_id, governance_body_id, annual_agenda_id, session_type
          FROM meetings WHERE id = $1 FOR UPDATE`,
       [meetingId],
     );
@@ -392,19 +443,32 @@ export async function updateMeeting(
       throw new HttpError(400, "O horário de término deve ser depois do horário de início.");
     }
 
-    // Modalidade/local: normaliza o par final e grava os dois juntos.
-    if (input.modality !== undefined || input.physicalLocationKey !== undefined) {
+    /*
+     * Modalidade/local: normaliza o par final. O local so muda quando a
+     * ESCOLHA muda — manter o mesmo id preserva a copia gravada (endereco
+     * historico), mesmo que o cadastro tenha sido editado ou inativado depois.
+     * Local NOVO precisa existir e estar ativo; a copia e montada aqui.
+     */
+    let localNovo: { id: string | null; copia: string | null } | null = null;
+    if (input.modality !== undefined || input.physicalLocationId !== undefined) {
       const final = resolverModalidadeDoPatch(
         {
           modality: atual.rows[0]!.modality,
-          physicalLocationKey: atual.rows[0]!.physical_location_key,
+          physicalLocationId: atual.rows[0]!.physical_location_id,
         },
         input,
       );
-      input = { ...input, ...final };
+      const { physicalLocationId: _escolhido, ...resto } = input;
+      input = { ...resto, modality: final.modality };
+      if (final.physicalLocationId !== atual.rows[0]!.physical_location_id) {
+        const local = final.physicalLocationId
+          ? await resolverLocalParaReuniao(client, final.physicalLocationId)
+          : null;
+        localNovo = { id: local?.id ?? null, copia: local ? JSON.stringify(local) : null };
+      }
     }
 
-    // Iniciar exige pautas aprovadas e convite enviado. Sob o lock acima.
+    // Iniciar exige convite enviado (aprovação das pautas não é mais exigida). Sob o lock acima.
     if (input.status === "in_progress") {
       await exigirProntaParaIniciar(client, meetingId);
     }
@@ -420,18 +484,42 @@ export async function updateMeeting(
     const valores: unknown[] = [meetingId];
     for (const [chave, valor] of Object.entries(input)) {
       valores.push(valor);
-      atribuicoes.push(`${COLUNA_DE[chave as keyof UpdateMeetingInput]} = $${valores.length}`);
+      atribuicoes.push(`${COLUNA_DE[chave as keyof typeof COLUNA_DE]} = $${valores.length}`);
+    }
+    if (localNovo) {
+      valores.push(localNovo.id, localNovo.copia);
+      atribuicoes.push(
+        `physical_location_id = $${valores.length - 1}`,
+        `physical_location_snapshot = $${valores.length}::jsonb`,
+      );
     }
 
-    let { rows } = await client.query<{ title: string }>(
-      `UPDATE meetings SET ${atribuicoes.join(", ")} WHERE id = $1 RETURNING title`,
-      valores,
-    );
+    // Só participantes no corpo: nenhuma coluna da reunião muda.
+    const temCampos = atribuicoes.length > 0;
+    let { rows } = temCampos
+      ? await client.query<{ title: string }>(
+          `UPDATE meetings SET ${atribuicoes.join(", ")} WHERE id = $1 RETURNING title`,
+          valores,
+        )
+      : await client.query<{ title: string }>("SELECT title FROM meetings WHERE id = $1", [meetingId]);
+
+    /*
+     * PARTICIPANTES (lista completa): mesmas peças da aba Participantes do
+     * Pipeline, dentro DESTA transação. Cada inclusão/remoção tem a sua linha
+     * de auditoria e marca o convite como desatualizado; a versão (034) e a
+     * sincronização do Outlook acontecem UMA vez, no fim da edição. Lista
+     * igual à atual = nada muda (sem trilha, sem versão, sem convite).
+     */
+    if (listaDeParticipantes) {
+      await aplicarListaDeParticipantes(client, meetingId, listaDeParticipantes, actor, rows[0]!.title);
+    }
+    if (!temCampos) return;
 
     // Recompõe o título padronizado com os valores FINAIS (hora, fuso, órgão,
     // formato, tipo). A versão aprovada da Agenda Anual não muda: está no
     // snapshot. Título novo desatualiza o convite como qualquer outro campo.
     const camposAlterados = Object.keys(input);
+    if (localNovo) camposAlterados.push("physicalLocationId");
     const recomposto = await recomporTituloPadronizado(client, meetingId);
     if (recomposto && recomposto !== rows[0]!.title) {
       ({ rows } = await client.query<{ title: string }>(
@@ -468,7 +556,8 @@ export async function updateMeeting(
     });
   });
 
-  return findMeeting(meetingId);
+  // Dentro de uma transação ambiente, lê pelo mesmo cliente (vê o que acabou de gravar).
+  return findMeeting(meetingId, transacaoAmbiente() ?? pool);
 }
 
 /** Título padronizado com os valores gravados; `null` = reunião sem tipo (legado). */
@@ -507,7 +596,7 @@ export async function addParticipant(
 ): Promise<MeetingDetail> {
   assertUuid(meetingId, "Identificador");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     const titulo = await exigirReuniao(client, meetingId);
 
     // Mesma validação e mesma reconciliação do POST da reunião — importadas,
@@ -515,24 +604,15 @@ export async function addParticipant(
     const [preparado] = await prepararParticipantes(client, [input], actor.entraTenantId);
 
     // Já está na reunião? O índice parcial pegaria, mas 409 com texto é melhor
-    // resposta do que uma violação traduzida.
-    const { rows: existentes } = await client.query<{ id: string }>(
-      `SELECT id FROM meeting_participants
-        WHERE meeting_id = $1
-          AND ( ($2::uuid IS NOT NULL AND user_id = $2)
-             OR ($3::uuid IS NOT NULL AND entra_object_id = $3) )`,
-      [meetingId, preparado!.userId, preparado!.entraObjectId],
-    );
-    if (existentes.length > 0) {
-      throw new HttpError(409, "Esta pessoa já é participante da reunião.");
-    }
+    // resposta do que uma violação traduzida. Mesma checagem da edição em lista.
+    await exigirQueNaoParticipa(client, meetingId, preparado!);
 
     // INSERT + calendário desatualizado + auditoria: fonte única, reutilizada
     // pelo fluxo de participante-por-pauta.
     await inserirMeetingParticipant(client, meetingId, preparado!, actor, titulo);
   });
 
-  return findMeeting(meetingId);
+  return findMeeting(meetingId, transacaoAmbiente() ?? pool);
 }
 
 export async function removeParticipant(
@@ -543,7 +623,7 @@ export async function removeParticipant(
   assertUuid(meetingId, "Identificador");
   assertUuid(participantId, "Identificador do participante");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     const titulo = await exigirReuniao(client, meetingId);
 
     // DELETE + calendário desatualizado + auditoria: fonte única, reutilizada
@@ -552,7 +632,7 @@ export async function removeParticipant(
     if (rowCount === 0) throw new HttpError(404, "Participante não encontrado nesta reunião.");
   });
 
-  return findMeeting(meetingId);
+  return findMeeting(meetingId, transacaoAmbiente() ?? pool);
 }
 
 // -----------------------------------------------------------------------------
@@ -566,7 +646,7 @@ export async function addAgendaItem(
 ): Promise<MeetingDetail> {
   assertUuid(meetingId, "Identificador");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     // Travada: a pauta pode acrescentar o responsavel a lista de participantes.
     const titulo = await exigirReuniaoTravada(client, meetingId);
 
@@ -887,7 +967,7 @@ export async function updateAgendaItem(
   assertUuid(meetingId, "Identificador");
   assertUuid(agendaItemId, "Identificador da pauta");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     // Travada: trocar o responsavel pode acrescenta-lo aos participantes.
     const titulo = await exigirReuniaoTravada(client, meetingId);
 
@@ -1001,7 +1081,7 @@ export async function removeAgendaItem(
   assertUuid(meetingId, "Identificador");
   assertUuid(agendaItemId, "Identificador da pauta");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     const titulo = await exigirReuniao(client, meetingId);
 
     // Documento de governança não some junto com o tema (sem exclusão de
@@ -1071,7 +1151,7 @@ export async function addAgendaItemParticipant(
   assertUuid(meetingId, "Identificador");
   assertUuid(agendaItemId, "Identificador da pauta");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     // Lock da reunião: serializa o find-or-create do participante.
     const titulo = await exigirReuniaoTravada(client, meetingId);
 
@@ -1117,7 +1197,7 @@ export async function removeAgendaItemParticipant(
   assertUuid(agendaItemId, "Identificador da pauta");
   assertUuid(meetingParticipantId, "Identificador do participante");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     const titulo = await exigirReuniao(client, meetingId);
     await exigirPautaNaReuniao(client, meetingId, agendaItemId);
 
@@ -1223,7 +1303,7 @@ export async function reorderAgendaItems(
 ): Promise<MeetingDetail> {
   assertUuid(meetingId, "Identificador");
 
-  await emTransacao(async (client) => {
+  await emTransacaoVersionada(meetingId, actor, async (client) => {
     const titulo = await exigirReuniao(client, meetingId);
 
     const { rows: atuais } = await client.query<{ id: string }>(

@@ -48,13 +48,22 @@ export async function createMeeting(payload: CreateMeetingPayload): Promise<ApiM
   });
 }
 
+/** Resultado de excluir (= cancelar) a reunião. */
+export interface ResultadoDoCancelamento {
+  meetingId: string;
+  cancelledAt: string;
+  /** `pending` = o Graph falhou; excluir de novo reenvia o cancelamento. */
+  calendarCancellation: "cancelled" | "not_required" | "pending";
+  warning?: string;
+}
+
 /**
- * Apaga a reunião. Cascata inteira (participantes, pautas vinculadas,
- * Anotações, Ata) acontece no servidor; a Biblioteca e os FUPs sobrevivem.
- * 204 sem corpo — não há reunião para devolver.
+ * Exclui a reunião = CANCELAMENTO LÓGICO (036). Nada é apagado: versões,
+ * documentos, Ata e trilha ficam como histórico; o evento do Outlook/Teams é
+ * cancelado (convidados recebem o cancelamento). Repetir é idempotente.
  */
-export const deleteMeeting = (id: string): Promise<void> =>
-  apiRequest<void>(`/meetings/${id}`, { auth: true, method: "DELETE" });
+export const deleteMeeting = (id: string): Promise<ResultadoDoCancelamento> =>
+  apiRequest<ResultadoDoCancelamento>(`/meetings/${id}`, { auth: true, method: "DELETE" });
 
 /**
  * Mensagem para a usuária, a partir do status HTTP.
@@ -126,7 +135,13 @@ export interface UpdateMeetingPayload {
   status?: "scheduled" | "in_progress" | "done";
   /** Modalidade/local (025). Trocar atualiza o MESMO evento no Outlook. */
   modality?: "online" | "in_person";
-  physicalLocationKey?: string | null;
+  physicalLocationId?: string | null;
+  /**
+   * LISTA COMPLETA de participantes (edição no modal). Existente = `{ id }`;
+   * nova pessoa = mesmo corpo da inclusão avulsa. Quem sumir da lista sai da
+   * reunião. Tudo numa edição só: uma versão, uma atualização do convite.
+   */
+  participants?: Array<{ id: string } | CreateParticipantPayload>;
 }
 
 const mutar = (path: string, method: string, body?: unknown) =>
@@ -164,7 +179,7 @@ export const renameAgenda = (meetingId: string, agendaId: string, title: string)
 export const removeAgenda = (meetingId: string, agendaId: string) =>
   mutar(`/meetings/${meetingId}/agendas/${agendaId}`, "DELETE");
 
-/** Catálogo de locais físicos. Endereço só quando configurado no servidor. */
+/** Locais ATIVOS do cadastro (Administração → Locais) para o agendamento. */
 export async function listMeetingLocations(signal?: AbortSignal): Promise<PhysicalLocation[]> {
   const { locations } = await apiRequest<{ locations: PhysicalLocation[] }>("/meetings/locations", {
     auth: true,

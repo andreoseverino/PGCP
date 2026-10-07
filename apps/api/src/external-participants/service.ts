@@ -37,7 +37,10 @@ export interface ExternalParticipant {
   origin: "pgcp";
   fullName: string;
   email: string;
-  phone: string;
+  /** Opcional desde a 038. */
+  phone: string | null;
+  /** Empresa/organizacao (opcional, 038). */
+  company: string | null;
   /** Classificacao (027): orgaos colegiados e temas da Biblioteca. So sugestao. */
   governanceBodies: VinculosLidos["governanceBodies"];
   topics: VinculosLidos["topics"];
@@ -48,7 +51,8 @@ export interface ExternalParticipant {
 export interface ExternalParticipantInput {
   fullName: string;
   email: string;
-  phone: string;
+  phone: string | null;
+  company: string | null;
   /**
    * Órgãos/temas (027; substitui o `governanceBodyId` único da 026). `null` =
    * não informados: a gravação NÃO mexe nos vínculos (os grupos de participação
@@ -61,7 +65,7 @@ export interface ExternalParticipantInput {
 // Validacao
 // ---------------------------------------------------------------------------
 
-const CAMPOS = ["fullName", "email", "phone", "governanceBodyIds", "topicIds"] as const;
+const CAMPOS = ["fullName", "email", "phone", "company", "governanceBodyIds", "topicIds"] as const;
 
 /**
  * Endereco pragmatico (mesmo criterio do aprovador de pautas): forma de
@@ -87,11 +91,16 @@ export function parseEmail(valor: unknown): string {
  * Telefone como TEXTO: digitos, `+`, `(`, `)`, `-` e espacos. Sem regra
  * internacional rigida; exige ao menos 8 digitos (numero com DDD cabe folgado)
  * e preserva DDI/DDD como digitados, so normalizando espacos repetidos.
+ *
+ * OPCIONAL desde a 038: ausente, `null` ou vazio = sem telefone (`null`).
+ * Informado, continua validado.
  */
-export function parsePhone(valor: unknown): string {
-  if (typeof valor !== "string" || valor.trim().length === 0) {
-    throw new HttpError(400, "Informe o telefone do participante.");
+export function parsePhone(valor: unknown): string | null {
+  if (valor === undefined || valor === null) return null;
+  if (typeof valor !== "string") {
+    throw new HttpError(400, "Telefone inválido.");
   }
+  if (valor.trim().length === 0) return null;
   const telefone = valor.trim().replace(/\s+/g, " ");
   if (!/^[0-9+() -]{6,30}$/.test(telefone)) {
     throw new HttpError(400, "Telefone aceita apenas dígitos, espaços e os caracteres + ( ) -, com até 30 caracteres.");
@@ -100,6 +109,18 @@ export function parsePhone(valor: unknown): string {
     throw new HttpError(400, "Telefone deve ter ao menos 8 dígitos.");
   }
   return telefone;
+}
+
+/** Empresa (opcional): texto de uma linha, ate 200 caracteres; vazio = `null`. */
+export function parseCompany(valor: unknown): string | null {
+  if (valor === undefined || valor === null) return null;
+  if (typeof valor !== "string") throw new HttpError(400, "Empresa inválida.");
+  const empresa = valor.trim().replace(/\s+/g, " ");
+  if (empresa.length === 0) return null;
+  if (empresa.length > 200) throw new HttpError(400, "A empresa deve ter até 200 caracteres.");
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001F\u007F]/.test(empresa)) throw new HttpError(400, "Empresa inválida.");
+  return empresa;
 }
 
 /** Corpo de criar/editar. Allowlist fechada; identidade e origem nunca vem do cliente. */
@@ -126,6 +147,7 @@ export function parseExternalParticipantInput(body: unknown): ExternalParticipan
     fullName,
     email: parseEmail(dados.email),
     phone: parsePhone(dados.phone),
+    company: parseCompany(dados.company),
     classificacoes:
       dados.governanceBodyIds === undefined && dados.topicIds === undefined ? null : parseClassificacoes(dados),
   };
@@ -202,13 +224,14 @@ interface Row {
   id: string;
   full_name: string;
   email: string;
-  phone: string;
+  phone: string | null;
+  company: string | null;
   created_at: Date;
   updated_at: Date;
 }
 
 const SELECT = `
-  SELECT ep.id, ep.full_name, ep.email, ep.phone,
+  SELECT ep.id, ep.full_name, ep.email, ep.phone, ep.company,
          ep.created_at, ep.updated_at
     FROM external_participants ep
 `;
@@ -220,6 +243,7 @@ function toParticipant(row: Row, vinculos: VinculosLidos | undefined): ExternalP
     fullName: row.full_name,
     email: row.email,
     phone: row.phone,
+    company: row.company,
     governanceBodies: vinculos?.governanceBodies ?? [],
     topics: vinculos?.topics ?? [],
     createdAt: row.created_at.toISOString(),
@@ -231,7 +255,7 @@ export async function listExternalParticipants(query?: string): Promise<External
   const termo = typeof query === "string" ? query.trim().slice(0, 100) : "";
   const { rows } = termo
     ? await pool.query<Row>(
-        `${SELECT} WHERE ep.full_name ILIKE $1 OR ep.email ILIKE $1 ORDER BY ep.full_name, ep.id LIMIT 500`,
+        `${SELECT} WHERE ep.full_name ILIKE $1 OR ep.email ILIKE $1 OR ep.company ILIKE $1 ORDER BY ep.full_name, ep.id LIMIT 500`,
         // Curingas do usuario sao escapados: a busca e por substring literal.
         [`%${termo.replace(/[\\%_]/g, (c) => `\\${c}`)}%`],
       )
@@ -294,9 +318,9 @@ export async function createExternalParticipant(
     await exigirSemDuplicidade(client, input, checker, null);
 
     const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO external_participants (full_name, email, phone, created_by_user_id)
-            VALUES ($1, $2, $3, $4) RETURNING id`,
-      [input.fullName, input.email, input.phone, ator.userId],
+      `INSERT INTO external_participants (full_name, email, phone, company, created_by_user_id)
+            VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [input.fullName, input.email, input.phone, input.company, ator.userId],
     );
     // `governance_body_id` (026) depreciada: orgaos vivem em participant_governance_bodies.
     if (input.classificacoes) {
@@ -340,9 +364,9 @@ export async function updateExternalParticipant(
 
     await client.query(
       `UPDATE external_participants
-          SET full_name = $2, email = $3, phone = $4, updated_by_user_id = $5
+          SET full_name = $2, email = $3, phone = $4, company = $5, updated_by_user_id = $6
         WHERE id = $1`,
-      [id, input.fullName, input.email, input.phone, ator.userId],
+      [id, input.fullName, input.email, input.phone, input.company, ator.userId],
     );
     // Remover vinculo nunca apaga a pessoa; a trilha abaixo consolida o ato.
     if (input.classificacoes) await gravarClassificacoes(client, { tipo: "external", id }, input.classificacoes);
@@ -368,6 +392,17 @@ export async function updateExternalParticipant(
 export async function deleteExternalParticipant(id: string, ator: Ator): Promise<void> {
   assertId(id);
   await emTransacao(async (client) => {
+    // Preside a Mesa de algum órgão (035, FK RESTRICT)? Recusa com motivo legível.
+    const { rows: mesas } = await client.query<{ name: string }>(
+      "SELECT name FROM governance_bodies WHERE chair_external_participant_id = $1 ORDER BY name LIMIT 3",
+      [id],
+    );
+    if (mesas.length > 0) {
+      throw new HttpError(
+        409,
+        `Esta pessoa é Presidente da Mesa de: ${mesas.map((m) => m.name).join(", ")}. Troque o presidente do órgão antes de remover o cadastro.`,
+      );
+    }
     const { rows } = await client.query<{ full_name: string }>(
       "DELETE FROM external_participants WHERE id = $1 RETURNING full_name",
       [id],

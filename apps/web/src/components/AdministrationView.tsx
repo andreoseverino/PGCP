@@ -20,7 +20,9 @@ import {
 import { GovernanceBody, GovernanceBodyChairInput } from "../types";
 import DirectoryUserPicker from "./DirectoryUserPicker";
 import ParticipantsPanel from "./ParticipantsPanel";
+import LocationsPanel from "./LocationsPanel";
 import type { DirectoryUser } from "../lib/directory";
+import { listExternalParticipants, type ExternalParticipant } from "../lib/external-participants";
 
 interface AdministrationViewProps {
   language: "en" | "pt";
@@ -73,7 +75,7 @@ export default function AdministrationView({
    * Aba inicial depende de quem entrou: a Assessoria não tem a aba de usuários,
    * e abrir numa aba inexistente deixaria a tela vazia.
    */
-  const [activeTab, setActiveTab] = useState<"organs" | "pautaTypes" | "pautaNatures" | "participants">("organs");
+  const [activeTab, setActiveTab] = useState<"organs" | "pautaTypes" | "pautaNatures" | "participants" | "locations">("organs");
 
   // Simple list string items state
   const [newStringItem, setNewStringItem] = useState("");
@@ -91,6 +93,21 @@ export default function AdministrationView({
    * reidratar responsável de pauta em `MeetingDetailView`.
    */
   const [newGovernanceBodyChair, setNewGovernanceBodyChair] = useState<DirectoryUser | null>(null);
+  /**
+   * Origem do Presidente da Mesa: diretório (Entra) ou participante EXTERNO do
+   * cadastro do PGCP (035). Externo não ganha acesso ao PGCP por presidir.
+   */
+  const [origemDoPresidente, setOrigemDoPresidente] = useState<"diretorio" | "externo">("diretorio");
+  const [presidenteExternoId, setPresidenteExternoId] = useState("");
+  const [externos, setExternos] = useState<ExternalParticipant[] | null>(null);
+  useEffect(() => {
+    if (origemDoPresidente !== "externo" || externos !== null) return;
+    const c = new AbortController();
+    listExternalParticipants(undefined, c.signal)
+      .then(setExternos)
+      .catch(() => setExternos([]));
+    return () => c.abort();
+  }, [origemDoPresidente, externos]);
   const [bodySubmitting, setBodySubmitting] = useState(false);
   const [bodyActionError, setBodyActionError] = useState<string | null>(null);
   const [togglingBodyId, setTogglingBodyId] = useState<string | null>(null);
@@ -123,9 +140,14 @@ export default function AdministrationView({
 
     // Reenvia sempre o estado ATUAL do formulário — mesmo princípio de `name`
     // e `icon` aqui: nunca um PATCH parcial que dependa do que já existia.
-    const chair = newGovernanceBodyChair
-      ? { entraObjectId: newGovernanceBodyChair.id, displayName: newGovernanceBodyChair.displayName ?? "" }
-      : null;
+    const chair: GovernanceBodyChairInput | null =
+      origemDoPresidente === "externo"
+        ? presidenteExternoId
+          ? { externalParticipantId: presidenteExternoId }
+          : null
+        : newGovernanceBodyChair
+          ? { entraObjectId: newGovernanceBodyChair.id, displayName: newGovernanceBodyChair.displayName ?? "" }
+          : null;
 
     setBodySubmitting(true);
     setBodyActionError(null);
@@ -138,6 +160,8 @@ export default function AdministrationView({
       setNewStringItem("");
       setEditingBodyId(null);
       setNewGovernanceBodyChair(null);
+      setPresidenteExternoId("");
+      setOrigemDoPresidente("diretorio");
     } catch (error) {
       setBodyActionError(error instanceof Error ? error.message : "Não foi possível salvar o órgão.");
     } finally {
@@ -148,6 +172,8 @@ export default function AdministrationView({
   const handleEditGovernanceBody = (body: GovernanceBody) => {
     setEditingBodyId(body.id);
     setNewStringItem(body.name);
+    setOrigemDoPresidente(body.chairExternalParticipantId ? "externo" : "diretorio");
+    setPresidenteExternoId(body.chairExternalParticipantId ?? "");
     setNewGovernanceBodyChair(
       body.chairEntraObjectId
         ? {
@@ -169,6 +195,8 @@ export default function AdministrationView({
     setEditingBodyId(null);
     setNewStringItem("");
     setNewGovernanceBodyChair(null);
+    setPresidenteExternoId("");
+    setOrigemDoPresidente("diretorio");
     setBodyActionError(null);
   };
 
@@ -315,9 +343,23 @@ export default function AdministrationView({
         >
           {language === "en" ? "Participants" : "Participantes"}
         </button>
+
+        {/* Locais: endereços reutilizáveis das reuniões presenciais (038). */}
+        <button
+          onClick={() => { setActiveTab("locations"); setSearchQuery(""); resetGovernanceBodyForm(); }}
+          className={`px-4 py-2.5 rounded-t-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+            activeTab === "locations"
+              ? "bg-[#00658d]/5 text-[#00658d] border-b-2 border-b-[#00658d]"
+              : "text-slate-450 hover:bg-slate-50 border-b-2 border-b-transparent"
+          }`}
+        >
+          {language === "en" ? "Locations" : "Locais"}
+        </button>
       </div>
 
-      {activeTab === "participants" ? (
+      {activeTab === "locations" ? (
+        <LocationsPanel language={language} />
+      ) : activeTab === "participants" ? (
         <ParticipantsPanel language={language} libraryTopics={libraryTopics} onLibraryChanged={onLibraryChanged} />
       ) : (
       /* TWO-COLUMN GRID */
@@ -366,17 +408,45 @@ export default function AdministrationView({
                   <label className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wide">
                     {language === "en" ? "Chair" : "Presidente da Mesa"}
                   </label>
-                  <DirectoryUserPicker
-                    language={language}
-                    selected={newGovernanceBodyChair}
-                    onSelect={setNewGovernanceBodyChair}
-                    onClear={() => setNewGovernanceBodyChair(null)}
-                    placeholder={language === "en" ? "Search in directory..." : "Buscar no diretório..."}
-                  />
+                  <div role="radiogroup" aria-label={language === "en" ? "Chair source" : "Origem do presidente"} className="flex gap-3 text-[11px] font-semibold text-slate-600">
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                      <input type="radio" name="origemPresidente" checked={origemDoPresidente === "diretorio"} onChange={() => setOrigemDoPresidente("diretorio")} />
+                      {language === "en" ? "Directory" : "Diretório corporativo"}
+                    </label>
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                      <input type="radio" name="origemPresidente" checked={origemDoPresidente === "externo"} onChange={() => setOrigemDoPresidente("externo")} />
+                      {language === "en" ? "External participant" : "Participante externo"}
+                    </label>
+                  </div>
+                  {origemDoPresidente === "diretorio" ? (
+                    <DirectoryUserPicker
+                      language={language}
+                      selected={newGovernanceBodyChair}
+                      onSelect={setNewGovernanceBodyChair}
+                      onClear={() => setNewGovernanceBodyChair(null)}
+                      placeholder={language === "en" ? "Search in directory..." : "Buscar no diretório..."}
+                    />
+                  ) : (
+                    <select
+                      aria-label={language === "en" ? "External chair" : "Presidente externo"}
+                      value={presidenteExternoId}
+                      onChange={(e) => setPresidenteExternoId(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d] cursor-pointer"
+                    >
+                      <option value="">
+                        {externos === null
+                          ? language === "en" ? "Loading..." : "Carregando..."
+                          : language === "en" ? "No chair" : "Sem presidente"}
+                      </option>
+                      {(externos ?? []).map((p) => (
+                        <option key={p.id} value={p.id}>{p.fullName} — {p.email}</option>
+                      ))}
+                    </select>
+                  )}
                   <p className="text-[10px] text-slate-400 font-semibold normal-case tracking-normal">
                     {language === "en"
-                      ? "Feeds the MESA section of this organ's meeting minutes."
-                      : "Alimenta a seção MESA da Ata das reuniões deste órgão."}
+                      ? "Feeds the MESA section of this organ's meeting minutes. An external chair does not get access to PGCP."
+                      : "Alimenta a seção MESA da Ata das reuniões deste órgão. Presidente externo não ganha acesso ao PGCP."}
                   </p>
                 </div>
               )}
@@ -486,7 +556,7 @@ export default function AdministrationView({
                             </div>
                             <p className="text-[10.5px] font-semibold text-slate-400 mt-0.5">
                               {body.chairName
-                                ? `${language === "en" ? "Chair" : "Presidente"}: ${body.chairName}`
+                                ? `${language === "en" ? "Chair" : "Presidente"}: ${body.chairName}${body.chairExternalParticipantId ? (language === "en" ? " (external)" : " (externo)") : ""}`
                                 : (language === "en" ? "No chair registered" : "Sem presidente cadastrado")}
                             </p>
                           </td>

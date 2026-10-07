@@ -1,11 +1,14 @@
+import "../env.js";
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import pool from "../database.js";
 import { HttpError } from "../http-error.js";
 import { readFileSync } from "node:fs";
 import {
   exigirForaDoDiretorio,
   MSG_EMAIL_CORPORATIVO,
   MSG_VALIDACAO_INDISPONIVEL,
+  parseCompany,
   parseExternalParticipantInput,
   parsePhone,
 } from "./service.js";
@@ -28,6 +31,7 @@ test("criação válida; nome normalizado; sem órgãos/temas no corpo = víncul
     fullName: "Maria Souza",
     email: "maria@parceiro.com.br",
     phone: "+55 (11) 91234-5678",
+    company: null,
     // Editar só o cadastro (tela de Pessoas externas) NÃO apaga os grupos da pessoa.
     classificacoes: null,
   });
@@ -45,8 +49,8 @@ test("múltiplos órgãos e múltiplos temas; duplicados no corpo viram um só",
   assert.deepEqual(input.classificacoes, { governanceBodyIds: [G1, G2], topicIds: [T1] });
 });
 
-test("nome, e-mail e telefone são obrigatórios", () => {
-  for (const campo of ["fullName", "email", "phone"] as const) {
+test("nome e e-mail são obrigatórios", () => {
+  for (const campo of ["fullName", "email"] as const) {
     assert.throws(() => parseExternalParticipantInput({ ...valido, [campo]: "" }), HttpError, campo);
     const sem = { ...valido } as Record<string, unknown>;
     delete sem[campo];
@@ -142,4 +146,82 @@ test("API administrativa trabalha só com registros locais: não busca nem lista
 test("participante externo não recebe acesso: nada grava em users nem concede papel", () => {
   const servico = codigo("./service.ts");
   assert.ok(!/INSERT INTO users|UPDATE users|appRoles|app_role/i.test(servico));
+});
+
+// --- 038: telefone opcional, empresa opcional ---------------------------------
+
+test("só nome + e-mail basta; telefone vazio/ausente/null vira null", () => {
+  const { phone: _sem, ...semTelefone } = valido;
+  assert.equal(parseExternalParticipantInput(semTelefone).phone, null);
+  assert.equal(parseExternalParticipantInput({ ...valido, phone: "" }).phone, null);
+  assert.equal(parseExternalParticipantInput({ ...valido, phone: "   " }).phone, null);
+  assert.equal(parseExternalParticipantInput({ ...valido, phone: null }).phone, null);
+});
+
+test("telefone informado continua validado", () => {
+  for (const phone of ["abc", "1234", "1".repeat(31), 11912345678, ["+55"]]) {
+    assert.throws(() => parseExternalParticipantInput({ ...valido, phone }), HttpError, String(phone));
+  }
+});
+
+test("empresa opcional: normalizada, limitada, sem caractere de controle", () => {
+  assert.equal(parseExternalParticipantInput({ ...valido, company: "  Parceiro   S.A. " }).company, "Parceiro S.A.");
+  assert.equal(parseCompany(""), null);
+  assert.equal(parseCompany(undefined), null);
+  assert.equal(parseCompany(null), null);
+  assert.throws(() => parseCompany("x".repeat(201)), HttpError);
+  assert.throws(() => parseCompany("A\u0000B"), HttpError);
+  assert.throws(() => parseCompany({ $ne: "" }), HttpError);
+  // HTML fica como TEXTO; a tela renderiza escapado.
+  assert.equal(parseCompany("<b>X</b>"), "<b>X</b>");
+});
+
+test("empresa é gravada, lida e buscável; telefone nunca é exigido no SQL", () => {
+  const fonte = readFileSync(new URL("./service.ts", import.meta.url), "utf8");
+  assert.match(fonte, /INSERT INTO external_participants \(full_name, email, phone, company, created_by_user_id\)/);
+  assert.match(fonte, /SET full_name = \$2, email = \$3, phone = \$4, company = \$5/);
+  assert.match(fonte, /ep\.company ILIKE \$1/);
+});
+
+let semBanco: string | false = false;
+try {
+  const { rows } = await pool.query(
+    "SELECT 1 FROM information_schema.columns WHERE table_name = 'external_participants' AND column_name = 'company'",
+  );
+  if (rows.length === 0) semBanco = "migration 038 não aplicada";
+} catch (error) {
+  semBanco = `PostgreSQL indisponível (${(error as Error).message})`;
+}
+after(() => pool.end());
+
+test("integração: banco aceita sem telefone, grava empresa e ainda recusa telefone inválido", { skip: semBanco }, async () => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const { rows: u } = await client.query<{ id: string }>("SELECT id FROM users LIMIT 1");
+    const { rows } = await client.query<{ phone: string | null; company: string | null }>(
+      `INSERT INTO external_participants (full_name, email, phone, company, created_by_user_id)
+            VALUES ('Externa Sem Telefone', 'sem.telefone.038@parceiro.example', NULL, 'Parceiro S.A.', $1)
+         RETURNING phone, company`,
+      [u[0]!.id],
+    );
+    assert.deepEqual(rows[0], { phone: null, company: "Parceiro S.A." });
+    await client.query("SAVEPOINT s");
+    await assert.rejects(
+      client.query(
+        `INSERT INTO external_participants (full_name, email, phone, created_by_user_id)
+              VALUES ('Externa Ruim', 'ruim.038@parceiro.example', 'abc', $1)`,
+        [u[0]!.id],
+      ),
+      /external_participants_phone_check/,
+    );
+    await client.query("ROLLBACK TO SAVEPOINT s");
+    await assert.rejects(
+      client.query("UPDATE external_participants SET company = '' WHERE email = 'sem.telefone.038@parceiro.example'"),
+      /external_participants_company_check/,
+    );
+  } finally {
+    await client.query("ROLLBACK").catch(() => {});
+    client.release();
+  }
 });
