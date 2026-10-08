@@ -79,6 +79,11 @@ export interface AgendaTopicSummary {
   ownerUserId: string | null;
   /** PADRÃO de tema circular. Copiado para a pauta ao vincular a uma reunião. */
   isCircularTheme: boolean;
+  /** TEMA FUTURO (042): ainda sem reunião; vira regular ao entrar numa. */
+  isFuture: boolean;
+  /** "AAAA-MM" previsto; `null` em tema regular. */
+  expectedMonth: string | null;
+  expectedGovernanceBody: NamedRef | null;
   source: TopicSource | null;
   /** DERIVADO: nasceu de um Postergar. Equivale a `source !== null`. */
   isAutomaticCopy: boolean;
@@ -109,6 +114,10 @@ interface TopicRow {
   responsible_entra_object_id: string | null;
   owner_user_id: string | null;
   is_circular_theme: boolean;
+  is_future: boolean;
+  expected_month: string | null;
+  expected_body_id: string | null;
+  expected_body_name: string | null;
   source_meeting_id: string | null;
   source_agenda_item_id: string | null;
   type_id: string | null;
@@ -147,6 +156,10 @@ function toSummary(row: TopicRow): AgendaTopicSummary {
     governanceBody: row.body_id && row.body_name ? { id: row.body_id, name: row.body_name } : null,
     ownerUserId: row.owner_user_id,
     isCircularTheme: row.is_circular_theme,
+    isFuture: row.is_future,
+    expectedMonth: row.expected_month,
+    expectedGovernanceBody:
+      row.expected_body_id && row.expected_body_name ? { id: row.expected_body_id, name: row.expected_body_name } : null,
     source,
     isAutomaticCopy: source !== null,
     linkedMeetingsCount: row.linked_meetings_count,
@@ -167,12 +180,15 @@ const SUMMARY_SELECT = `
          t.responsible_entra_object_id,
          t.owner_user_id,
          t.is_circular_theme,
+         t.is_future,
+         to_char(t.expected_month, 'YYYY-MM') AS expected_month,
+         egb.id  AS expected_body_id, egb.name AS expected_body_name,
          t.source_meeting_id,
          t.source_agenda_item_id,
          tt.id   AS type_id,   tt.name AS type_name,
          tn.id   AS nature_id, tn.name AS nature_name,
          gb.id   AS body_id,   gb.name AS body_name,
-         (SELECT count(*) FROM meeting_agenda_items ai WHERE ai.agenda_topic_id = t.id)::int      AS linked_meetings_count,
+         (SELECT count(DISTINCT ai.meeting_id) FROM meeting_agenda_items ai WHERE ai.agenda_topic_id = t.id)::int AS linked_meetings_count,
          (SELECT count(*) FROM agenda_topic_participants p WHERE p.agenda_topic_id = t.id)::int   AS participants_count,
          t.created_at,
          t.updated_at
@@ -180,6 +196,7 @@ const SUMMARY_SELECT = `
     LEFT JOIN agenda_topic_types    tt ON tt.id = t.agenda_topic_type_id
     LEFT JOIN agenda_topic_natures  tn ON tn.id = t.agenda_topic_nature_id
     LEFT JOIN governance_bodies     gb ON gb.id = t.governance_body_id
+    LEFT JOIN governance_bodies     egb ON egb.id = t.expected_governance_body_id
 `;
 
 export interface ListTopicsFilters {

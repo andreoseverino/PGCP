@@ -260,6 +260,28 @@ export interface TemaDaBibliotecaResumo {
   natureza?: string | null;
   responsavel?: string | null;
   participantes?: number;
+  /** TEMA FUTURO (042): mês/ano ("AAAA-MM") e comitê previstos. */
+  isFuture?: boolean;
+  expectedMonth?: string | null;
+  expectedGovernanceBodyId?: string | null;
+  expectedGovernanceBodyName?: string | null;
+}
+
+/**
+ * Seções do seletor: temas FUTUROS no topo (os previstos para o comitê desta
+ * reunião primeiro, depois por mês previsto) e, abaixo, os REGULARES na ordem
+ * recebida. Todos selecionáveis: entrar numa reunião torna o tema regular
+ * (trigger da 042).
+ */
+export function secoesDaBiblioteca<T extends TemaDaBibliotecaResumo>(
+  temas: readonly T[],
+  governanceBodyId: string | null | undefined
+): { futuros: T[]; regulares: T[] } {
+  const deste = (t: T) => (governanceBodyId && t.expectedGovernanceBodyId === governanceBodyId ? 0 : 1);
+  const futuros = temas
+    .filter((t) => t.isFuture === true)
+    .sort((a, b) => deste(a) - deste(b) || (a.expectedMonth ?? "").localeCompare(b.expectedMonth ?? ""));
+  return { futuros, regulares: temas.filter((t) => t.isFuture !== true) };
 }
 
 /** Busca simples por nome (sem acento/caixa), local — a lista já está carregada. */

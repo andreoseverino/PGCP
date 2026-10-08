@@ -1,6 +1,6 @@
 import { apiRequest, apiRequestBlob } from "./api";
 import { downloadMeetingMinutesPdf } from "./meeting-minutes";
-import { downloadAnnualAgendaDocument } from "./annual-agendas";
+import { downloadAnnualAgendaDocument, downloadAnnualAgendaPdf } from "./annual-agendas";
 import {
   consultaDosFiltros,
   idDoAnexo,
@@ -60,11 +60,16 @@ export async function getStorageSummary(governanceBodyId: string, signal?: Abort
  * `/documents/:id/download` (a API lê do armazenamento; nenhuma URL do S3 nem
  * chave de objeto chega ao navegador); Ata e Agenda Anual pela rota de origem.
  */
-export function downloadDocument(d: Pick<DocumentoDoPgcp, "id" | "type" | "meeting" | "annualAgenda">) {
+export function downloadDocument(d: Pick<DocumentoDoPgcp, "id" | "type" | "meeting" | "annualAgenda" | "meetingVersion">) {
   const anexo = idDoAnexo(d);
   if (anexo) return apiRequestBlob(`/documents/${encodeURIComponent(anexo)}/download`, { auth: true });
   if (d.type === "ata" && d.meeting) return downloadMeetingMinutesPdf(d.meeting.id);
   if (d.type === "agenda_anual" && d.annualAgenda) return downloadAnnualAgendaDocument(d.annualAgenda.id);
+  if (d.type === "agenda_previa" && d.annualAgenda) return downloadAnnualAgendaPdf(d.annualAgenda.id);
+  if (d.type === "versao_reuniao" && d.meeting && d.meetingVersion) {
+    return apiRequestBlob(`/meetings/${d.meeting.id}/versions/${d.meetingVersion.id}/pdf`, { auth: true });
+  }
+  if (d.type === "pautas" && d.meeting) return apiRequestBlob(`/meetings/${d.meeting.id}/agenda/pdf`, { auth: true });
   throw new Error("Documento sem origem conhecida.");
 }
 

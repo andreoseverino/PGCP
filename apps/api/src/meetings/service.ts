@@ -115,6 +115,12 @@ export interface MeetingSummary {
    */
   releasedToPipeline: true;
   /**
+   * A reunião está na VERSÃO APROVADA da sua Agenda Anual (snapshot gravado na
+   * aprovação, 041). O Pipeline lista só estas: reunião ligada à agenda depois
+   * da aprovação, ou de agenda ainda em elaboração, não entra.
+   */
+  approvedInAnnualAgenda: boolean;
+  /**
    * Estado do convite (`meeting_calendar_integrations.sync_status`), tambem no
    * resumo para o Pipeline nao precisar abrir cada reuniao. `null` = sem
    * integracao preparada.
@@ -300,6 +306,7 @@ interface MeetingRow {
   origin: "manual" | "annual_agenda";
   annual_agenda_id: string | null;
   annual_agenda_status: "draft" | "pending_approval" | "approved" | null;
+  approved_in_annual_agenda: boolean;
   calendar_sync_status: CalendarSyncStatus | null;
   minutes_status: MinutesStatusResumo | null;
   session_type: "ordinary" | "extraordinary" | null;
@@ -393,6 +400,7 @@ function toSummary(row: MeetingRow): MeetingSummary {
     annualAgendaId: row.annual_agenda_id,
     annualAgendaStatus: row.annual_agenda_status,
     releasedToPipeline: true,
+    approvedInAnnualAgenda: row.approved_in_annual_agenda === true,
     calendarSyncStatus: row.calendar_sync_status,
     minutesStatus: row.minutes_status,
     sessionType: row.session_type,
@@ -492,6 +500,11 @@ const SUMMARY_SELECT = `
          m.origin,
          m.annual_agenda_id,
          (SELECT aa.status FROM annual_agendas aa WHERE aa.id = m.annual_agenda_id) AS annual_agenda_status,
+         EXISTS (SELECT 1 FROM annual_agenda_versions v
+                  WHERE v.annual_agenda_id = m.annual_agenda_id
+                    AND v.approved_at IS NOT NULL
+                    AND v.snapshot -> 'reunioes' @> jsonb_build_array(jsonb_build_object('meetingId', m.id::text))
+                ) AS approved_in_annual_agenda,
          (SELECT ci.sync_status FROM meeting_calendar_integrations ci
            WHERE ci.meeting_id = m.id AND ci.provider = 'outlook') AS calendar_sync_status,
          (SELECT mm.status FROM meeting_minutes mm WHERE mm.meeting_id = m.id) AS minutes_status,

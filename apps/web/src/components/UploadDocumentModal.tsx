@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Paperclip, Upload, X } from "lucide-react";
+import { Paperclip, Upload } from "lucide-react";
+import ModalShell, { BOTAO_CANCELAR, BOTAO_PRINCIPAL } from "./ModalShell";
 import { ACCEPT_DO_INPUT, problemaNoArquivo, tamanhoLegivel, uploadMeetingDocument } from "../lib/documents";
 
 /**
@@ -84,19 +85,30 @@ export default function UploadDocumentModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="tituloUpload">
-      <div className="absolute inset-0 bg-slate-900/40" onClick={() => !enviando && onClose()} />
-      <div className="relative w-full max-w-md bg-white rounded-2xl shadow-xl p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 id="tituloUpload" className="text-sm font-extrabold text-slate-800 flex items-center gap-2">
-            <Paperclip className="w-4 h-4 text-[#00658d]" />
-            {pt ? "Adicionar documento" : "Add document"}
-          </h3>
-          <button type="button" onClick={onClose} disabled={enviando} aria-label={pt ? "Fechar" : "Close"} className="p-1 text-slate-500 cursor-pointer disabled:opacity-40">
-            <X className="w-4 h-4" />
+    <ModalShell
+      language={language}
+      icone={Paperclip}
+      titulo={pt ? "Adicionar documento" : "Add document"}
+      ocupado={enviando}
+      onClose={onClose}
+      rodape={
+        <>
+          <button type="button" onClick={onClose} disabled={enviando} className={BOTAO_CANCELAR}>
+            {pt ? "Cancelar" : "Cancel"}
           </button>
-        </div>
-
+          <button
+            type="button"
+            onClick={() => void enviar()}
+            disabled={!arquivo || enviando || Boolean(problemaNoArquivo(arquivo, language))}
+            className={BOTAO_PRINCIPAL}
+          >
+            <Upload className="w-3.5 h-3.5" />
+            {enviando ? (pt ? "Enviando..." : "Uploading...") : pt ? "Enviar" : "Upload"}
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-4">
         <div className="space-y-1">
           <label htmlFor="uploadArquivo" className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">{pt ? "Arquivo" : "File"}</label>
           <input
@@ -161,22 +173,7 @@ export default function UploadDocumentModal({
         </div>
 
         {erro && <p role="alert" className="text-[11px] font-semibold text-red-600">{erro}</p>}
-
-        <div className="flex justify-end gap-2">
-          <button type="button" onClick={onClose} disabled={enviando} className="px-4 py-2 text-xs font-bold text-slate-600 rounded-xl hover:bg-slate-100 cursor-pointer disabled:opacity-40">
-            {pt ? "Cancelar" : "Cancel"}
-          </button>
-          <button
-            type="button"
-            onClick={() => void enviar()}
-            disabled={!arquivo || enviando || Boolean(problemaNoArquivo(arquivo, language))}
-            className="px-4 py-2 text-xs font-bold text-white bg-[#00658d] hover:bg-[#00aeef] rounded-xl inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            {enviando ? (pt ? "Enviando..." : "Uploading...") : pt ? "Enviar" : "Upload"}
-          </button>
-        </div>
       </div>
-    </div>
+    </ModalShell>
   );
 }

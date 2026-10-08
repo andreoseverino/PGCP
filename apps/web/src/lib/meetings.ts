@@ -156,6 +156,13 @@ const mutar = (path: string, method: string, body?: unknown) =>
 export const updateMeeting = (id: string, payload: UpdateMeetingPayload) =>
   mutar(`/meetings/${id}`, "PATCH", payload);
 
+/**
+ * TROCA O ORGANIZADOR: o servidor cancela o evento na caixa antiga (se houver)
+ * e reenvia o convite pela caixa do novo organizador.
+ */
+export const changeMeetingOrganizer = (id: string, organizer: { entraObjectId: string; displayName: string; email?: string }) =>
+  mutar(`/meetings/${id}/organizer`, "PUT", { organizer });
+
 export const addParticipant = (meetingId: string, payload: CreateParticipantPayload) =>
   mutar(`/meetings/${meetingId}/participants`, "POST", payload);
 

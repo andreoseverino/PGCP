@@ -195,3 +195,28 @@ test("criação sem generatesActionItem usa o default false", () => {
   const fonte = readFileSync(new URL("./write.ts", import.meta.url), "utf8");
   assert.match(fonte, /input\.generatesActionItem \?\? false,/);
 });
+
+test("tema futuro: mês (AAAA-MM) e comitê previstos andam juntos; regular limpa os dois", () => {
+  const COMITE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const futuro = parseAgendaTopicInput({ title: "Plano 2027", isFuture: true, expectedMonth: "2027-03", expectedGovernanceBodyId: COMITE });
+  assert.equal(futuro.isFuture, true);
+  assert.equal(futuro.expectedMonth, "2027-03-01");
+  assert.equal(futuro.expectedGovernanceBodyId, COMITE);
+  // Regular: mês/comitê enviados são descartados (CHECK da 042 exige vazio).
+  const regular = parseAgendaTopicInput({ title: "x", isFuture: false, expectedMonth: "2027-03", expectedGovernanceBodyId: COMITE });
+  assert.equal(regular.expectedMonth, null);
+  assert.equal(regular.expectedGovernanceBodyId, null);
+  for (const corpo of [
+    { title: "x", isFuture: true },
+    { title: "x", isFuture: true, expectedMonth: "2027-03" },
+    { title: "x", isFuture: true, expectedMonth: "2027-13", expectedGovernanceBodyId: COMITE },
+    { title: "x", isFuture: true, expectedMonth: "03/2027", expectedGovernanceBodyId: COMITE },
+    { title: "x", isFuture: "sim" },
+    { title: "x", expectedMonth: "2027-03" },
+  ]) {
+    assert.throws(() => parseAgendaTopicInput(corpo), HttpError, JSON.stringify(corpo));
+  }
+  const mig = readFileSync(new URL("../../migrations/042_future_topics.sql", import.meta.url), "utf8");
+  assert.match(mig, /AFTER INSERT OR UPDATE OF agenda_topic_id ON meeting_agenda_items/);
+  assert.match(mig, /SET is_future = false, expected_month = NULL, expected_governance_body_id = NULL/);
+});

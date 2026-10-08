@@ -122,10 +122,12 @@ test("participantes: adicionar, remover e editar descrição vão JUNTOS num PAT
   assert.deepEqual(montarPatchDaEdicao(comParticipantes, { ...f, participants: [f.participants![1]!] }).participants, [{ id: "p2" }]);
 });
 
-test("modal de edição usa o MESMO componente de participantes do agendamento; organizador segue fixo", () => {
+test("modal de edição usa o MESMO componente de participantes do agendamento; organizador trocável pelo diretório", () => {
   const modal = readFileSync(new URL("../components/EditMeetingModal.tsx", import.meta.url), "utf8");
   assert.match(modal, /<ParticipantsField/);
-  assert.ok(!/DirectoryUserPicker|onOrganizerChange/.test(modal), "organizador não é editável");
+  // Trocar organizador (10/2026): escolhido no diretório; vai pela rota própria, depois do PATCH.
+  assert.match(modal, /<DirectoryUserPicker/);
+  assert.match(modal, /await changeMeetingOrganizer\(meeting\.id,/);
   const campos = readFileSync(new URL("../components/MeetingInviteFields.tsx", import.meta.url), "utf8");
   assert.equal((campos.match(/<ParticipantPicker/g) ?? []).length, 1, "um só bloco de participantes");
   assert.match(campos, /export function ParticipantsField\(/);
@@ -140,7 +142,7 @@ test("edição: formato na coluna esquerda (antes da descrição); organizador f
   const iOrganizador = modal.indexOf('id="editOrganizer"');
   const iParticipantes = modal.indexOf("<ParticipantsField");
   assert.ok(iModalidade > 0 && iModalidade < iDescricao && iDescricao < iOrganizador && iOrganizador < iParticipantes);
-  assert.match(modal, /id="editOrganizer"[\s\S]{0,200}readOnly/, "organizador continua só leitura");
+  assert.ok(!/id="editOrganizer"[\s\S]{0,200}readOnly/.test(modal), "organizador não é mais só leitura");
 });
 
 test("modal de edição não mostra recorrência; o valor gravado não é enviado nem alterado", () => {

@@ -663,7 +663,7 @@ interface OrganizadorResolvido {
  *
  * Nenhum usuario e criado aqui: provisionar e ato de login.
  */
-async function resolverOrganizador(
+export async function resolverOrganizador(
   client: PoolClient,
   informado: OrganizerInput | undefined,
   actor: MeetingActor,

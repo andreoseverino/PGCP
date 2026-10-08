@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { CalendarDays, CalendarPlus, ChevronLeft, ChevronRight, Download, MapPin, MonitorSmartphone, Pencil } from "lucide-react";
+import { CalendarDays, CalendarPlus, ChevronLeft, ChevronRight, MapPin, MonitorSmartphone, Pencil } from "lucide-react";
 import type { Meeting } from "../types";
-import CalendarExportModal from "./CalendarExportModal";
 import { filtrarPorOrgao } from "../lib/governance-filter";
 import { DEFAULT_TIMEZONE, instantToLocal } from "../lib/meetings";
 import { originLabel } from "../lib/pipeline";
@@ -39,8 +38,6 @@ interface CalendarViewProps {
   onMeetingClick: (meeting: Meeting) => void;
   /** Abre o modal de edição (só com `canSchedule`; o servidor exige `PGCP.Assessoria`). */
   onEditMeeting?: (meeting: Meeting) => void;
-  /** Nome do órgão do contexto global (para o resumo da exportação). */
-  nomeDoOrgaoContexto?: string | null;
 }
 
 const SEMANA_PT = ["D", "S", "T", "Q", "Q", "S", "S"];
@@ -61,14 +58,12 @@ export default function CalendarView({
   canSchedule,
   onNewMeeting,
   onMeetingClick,
-  onEditMeeting,
-  nomeDoOrgaoContexto = null
+  onEditMeeting
 }: CalendarViewProps) {
   const pt = language === "pt";
   const hoje = instantToLocal(new Date().toISOString(), DEFAULT_TIMEZONE).date;
   const [ano, setAno] = useState(() => Number(hoje.slice(0, 4)));
   const [destacado, setDestacado] = useState<string | null>(null);
-  const [exportando, setExportando] = useState(false);
   const orgao = orgaoContexto;
   // Trocar o contexto limpa o dia selecionado (pode não ter reunião no novo órgão).
   useEffect(() => setDestacado(null), [orgaoContexto]);
@@ -172,15 +167,6 @@ export default function CalendarView({
               {pt ? "Nova reunião" : "New meeting"}
             </button>
           )}
-          {/* Exportar é LEITURA: mesma política do Calendário (servidor decide o conteúdo). */}
-          <button
-            type="button"
-            onClick={() => setExportando(true)}
-            className="w-full px-4 py-2 border border-[#00658d]/30 text-[#00658d] hover:bg-sky-50 rounded-xl text-xs font-bold inline-flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <Download className="w-4 h-4" />
-            {pt ? "Exportar (PDF ou Excel)" : "Export (PDF or Excel)"}
-          </button>
 
           <div className="border-b border-slate-100 pb-2">
             <h3 className="text-sm font-extrabold text-slate-800">{pt ? `Reuniões de ${ano}` : `Meetings in ${ano}`}</h3>
@@ -241,15 +227,6 @@ export default function CalendarView({
           )}
         </aside>
       </div>
-      {exportando && (
-        <CalendarExportModal
-          language={language}
-          governanceBodyId={orgaoContexto}
-          nomeDoOrgao={orgaoContexto ? nomeDoOrgaoContexto : null}
-          ano={ano}
-          onClose={() => setExportando(false)}
-        />
-      )}
     </div>
   );
 }

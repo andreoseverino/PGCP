@@ -73,13 +73,34 @@ test("associação: mesmo órgão, mesmo ano, fora de outra agenda — origem n�
   assert.match(motivoParaNaoAssociar(agenda, { governanceBodyId: "exec", anoLocal: 2027, annualAgendaId: "outra" })!, /outra Agenda/);
 });
 
-test("sem aprovação: nenhuma mutação da Agenda Anual depende do status gravado", () => {
+test("aprovação direta: grava a versão já aprovada (sem e-mail) e trava toda mutação pela Agenda", async () => {
+  const { exigirEditavel } = await import("./service.js");
+  assert.doesNotThrow(() => exigirEditavel("draft"));
+  assert.throws(
+    () => exigirEditavel("approved"),
+    (e: unknown) => e instanceof HttpError && e.status === 409 && /continua disponível no Pipeline/.test(e.message),
+  );
   const fonte = readFileSync(new URL("./service.ts", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  assert.ok(!/exigirEmElaboracao|pending_approval'|SET status = 'approved'|annual_agenda_versions \(/.test(fonte));
-  assert.ok(!/solicitarAprovacao|registrarAprovacao|retirarDaAprovacao|reunioesCongeladasParaCalendario/.test(fonte));
-  assert.match(fonte, /editable: true,/);
-  // O histórico continua legível: documento da versão antiga sai do snapshot.
-  assert.match(fonte, /export async function gerarDocumentoDaVersao/);
+  // Sem e-mail e sem "aguardando aprovação"; o Calendário segue ao vivo.
+  assert.ok(!/solicitarAprovacao|enviarEmail|SET status = 'pending_approval'|reunioesCongeladasParaCalendario/.test(fonte));
+  const aprovar = fonte.slice(fonte.indexOf("export async function aprovarAgendaAnual"), fonte.indexOf("export async function gerarDocumentoDaVersao"));
+  const passos = ["await emTransacao(", "travarAgenda(client, id)", "carregarConteudo(client, id)", "INSERT INTO annual_agenda_versions", "SET status = 'approved'"];
+  const posicoes = passos.map((t) => aprovar.indexOf(t));
+  assert.ok(posicoes.every((p) => p >= 0), "todos os passos");
+  assert.deepEqual([...posicoes].sort((a, b) => a - b), posicoes, "foto e gravação na mesma transação travada");
+  assert.match(aprovar, /VALUES \(\$1, \$2, \$3::jsonb, NULL, \$4, now\(\), \$4\)/, "sem destinatário; aprovada já no INSERT");
+  // Toda mutação pela Agenda revalida o status com a agenda travada.
+  for (const fn of ["updateAnnualAgenda", "deleteAnnualAgenda", "addAnnualAgendaItem", "updateAnnualAgendaItem",
+    "deleteAnnualAgendaItem", "associarReuniao", "desassociarReuniao", "editarConteudoPelaAgenda", "reserveAnnualAgenda"]) {
+    const i = fonte.indexOf(`export async function ${fn}(`);
+    const corpo = fonte.slice(i, fonte.indexOf("\n}\n", i));
+    assert.match(corpo, /const agenda = await travarAgenda\(client, id\);\s*exigirEditavel\(agenda\.status\);/, fn);
+  }
+  // Aprovada: a tela mostra a foto aprovada, não o Pipeline ao vivo.
+  assert.match(fonte, /editable: resumo\.status !== "approved",/);
+  assert.match(fonte, /meetings: reunioesCongeladas \?\? reunioes\.map/);
+  const mig = readFileSync(new URL("../../migrations/041_annual_agenda_direct_approval.sql", import.meta.url), "utf8");
+  assert.match(mig, /ALTER TABLE annual_agenda_versions ALTER COLUMN sent_to DROP NOT NULL;/);
 });
 
 test("tema pela Agenda Anual: só renomear e mover entre pautas (mass assignment recusado)", () => {
@@ -113,6 +134,11 @@ test("PDF: múltiplas pautas viram grupos (sem 'Pauta:'); ordem do snapshot; num
     /^Versão 2 — aprovada em 02\/10\/2026,? 09:00 \(registrada por Ana Secretaria\); enviada em 01\/10\/2026,? 09:00 a a@b\.c\.$/,
   );
   assert.match(rotuloDoDocumento({ tipo: "versao", numero: 1, enviadaEm: "2026-10-01T12:00:00Z", enviadaA: "a@b.c", aprovadaEm: null }), /aguardando aprovação\.$/);
+  // Aprovação direta (sem e-mail): o carimbo não fala em envio.
+  assert.match(
+    rotuloDoDocumento({ tipo: "versao", numero: 1, enviadaEm: "2026-10-08T12:00:00Z", enviadaA: null, aprovadaEm: "2026-10-08T12:00:00Z", aprovadaPor: "Ana Secretaria" }),
+    /^Versão 1 — aprovada em 08\/10\/2026,? 09:00 \(registrada por Ana Secretaria\)\.$/,
+  );
   assert.equal(tipoDoDocumento({ tipo: "previa" }), "AGENDA ANUAL — PRÉVIA");
   assert.equal(tipoDoDocumento({ tipo: "versao", numero: 1, enviadaEm: "x", enviadaA: "y", aprovadaEm: "2026-10-02T12:00:00Z" }), "AGENDA ANUAL — APROVADA");
   assert.ok(!/PRÉVIA/.test(rotuloDoDocumento({ tipo: "versao", numero: 1, enviadaEm: "2026-10-01T12:00:00Z", enviadaA: "a@b.c", aprovadaEm: "2026-10-02T12:00:00Z" })));

@@ -1,37 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import {
-  aplicarFiltrosDaLista,
-  CHAVE_DO_MODO,
-  FILTROS_DA_LISTA_VAZIOS,
-  lembrarModoDoPipeline,
-  modoInicialDoPipeline,
-  pendenciasDaReuniao
-} from "./pipeline-list";
+import { pendenciasDaReuniao } from "./pipeline-list";
 import { meetingFromApi, type ApiMeetingSummary } from "./meeting-adapters";
-
-function armazenamento(inicial: Record<string, string> = {}) {
-  const dados = new Map(Object.entries(inicial));
-  return {
-    dados,
-    getItem: (k: string) => dados.get(k) ?? null,
-    setItem: (k: string, v: string) => void dados.set(k, v)
-  };
-}
-
-test("Pipeline: Lista é o padrão; a última escolha fica salva; storage quebrado cai na Lista", () => {
-  assert.equal(modoInicialDoPipeline(armazenamento()), "list");
-  assert.equal(modoInicialDoPipeline(null), "list");
-  assert.equal(modoInicialDoPipeline(armazenamento({ [CHAVE_DO_MODO]: "board" })), "board");
-  assert.equal(modoInicialDoPipeline(armazenamento({ [CHAVE_DO_MODO]: "lixo" })), "list");
-  const s = armazenamento();
-  lembrarModoDoPipeline("board", s);
-  assert.equal(s.dados.get(CHAVE_DO_MODO), "board");
-  const quebrado = { getItem: () => { throw new Error("bloqueado"); }, setItem: () => { throw new Error("bloqueado"); } };
-  assert.equal(modoInicialDoPipeline(quebrado), "list");
-  assert.doesNotThrow(() => lembrarModoDoPipeline("list", quebrado));
-});
 
 const resumo = (extra: Partial<ApiMeetingSummary> = {}): ApiMeetingSummary => ({
   id: "m1", title: "Comitê", description: null,
@@ -61,36 +32,24 @@ test("Pipeline (lista): só alerta o que o servidor permite determinar", () => {
   assert.deepEqual(pendenciasDaReuniao(fechada), []);
 });
 
-test("Pipeline (lista): período, com pendências e convite com falha", () => {
-  const a = { ...meetingFromApi(resumo({ id: "a", startAt: "2026-10-05T12:00:00Z" })) };
-  const b = { ...meetingFromApi(resumo({ id: "b", startAt: "2026-10-20T12:00:00Z", calendarSyncStatus: "failed" })) };
-  const c = { ...meetingFromApi(resumo({ id: "c", startAt: "2026-11-02T12:00:00Z", agendaItemsWithoutDuration: 1 })) };
-  const ids = (f: Partial<typeof FILTROS_DA_LISTA_VAZIOS>) => aplicarFiltrosDaLista([a, b, c], { ...FILTROS_DA_LISTA_VAZIOS, ...f }).map((m) => m.id);
-  assert.deepEqual(ids({}), ["a", "b", "c"]);
-  assert.deepEqual(ids({ de: "2026-10-10", ate: "2026-10-31" }), ["b"]);
-  assert.deepEqual(ids({ comPendencias: true }), ["b", "c"]);
-  assert.deepEqual(ids({ conviteComFalha: true }), ["b"]);
-});
-
 const codigo = (arq: string) =>
   readFileSync(new URL(arq, import.meta.url), "utf8")
     .replace(/\{\/\*[\s\S]*?\*\/\}/g, "")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^[ \t]*\/\/.*$/gm, "");
 
-test("Pipeline (tela): Lista padrão e primeira; Quadro mantido; colunas operacionais", () => {
+test("Pipeline (tela): visual da Agenda Anual; clique abre o detalhe; pendências e excluir no cartão", () => {
   const p = codigo("../components/PipelineView.tsx");
-  assert.match(p, /useState<ModoDoPipeline>\(\(\) => modoInicialDoPipeline\(\)\)/);
-  assert.match(p, /lembrarModoDoPipeline\(novo\)/);
-  assert.ok(p.indexOf('["list", List') < p.indexOf('["board", Columns3'), "Lista antes de Quadro");
-  assert.match(p, /groupByStage\(filtradas\)/, "Quadro continua");
-  const l = codigo("../components/MeetingsView.tsx");
-  const colunas = ["t.colDate", "t.colMeeting", '"Órgão"', "t.colStatus", '"Temas"', "t.colExpected", '"Pendências"', '"Documentos"', "t.colActions"];
-  const thead = l.slice(l.indexOf("<thead>"), l.indexOf("</thead>"));
-  const pos = colunas.map((c) => thead.indexOf(c));
-  assert.ok(pos.every((x, i) => x > 0 && (i === 0 || x > pos[i - 1]!)), `ordem das colunas: ${pos}`);
-  assert.match(l, /pendenciasDaReuniao\(meet, language\)/);
-  assert.match(l, /meet\.documentsCount \?\? 0/);
-  for (const f of ['"Com pendências"', '"Convite com falha"', 'aria-label={language === "en" ? "From" : "De"}']) assert.ok(l.includes(f), f);
-  assert.ok(!/getAgendaProgress/.test(l), "sem % local (não é dado do servidor)");
+  assert.match(p, /grid-cols-1 lg:grid-cols-\[260px_minmax\(0,1fr\)\]/, "ano + órgãos à esquerda");
+  assert.match(p, /onClick=\{\(\) => onOpenMeeting\(m\)\}/);
+  // Só reuniões da versão APROVADA da Agenda Anual (calculado no servidor).
+  assert.match(p, /m\.approvedInAnnualAgenda === true/);
+  assert.match(p, /pendenciasDaReuniao\(m, language\)/);
+  assert.match(p, /\{canSchedule && \([\s\S]*?e\.stopPropagation\(\);\s*onDeleteMeeting\(m\.id\)/, "excluir não abre o detalhe");
+  assert.ok(!/Pipeline2|"Teste"/.test(p));
+  const app = codigo("../App.tsx");
+  assert.match(app, /case "pipeline":\s*return \(\s*<PipelineView/);
+  assert.match(app, /onDeleteMeeting=\{handleDeleteMeeting\}/);
+  assert.ok(!/pipeline2|Pipeline2|MeetingsView/.test(app));
+  assert.ok(!/pipeline2/.test(codigo("../components/Sidebar.tsx")));
 });

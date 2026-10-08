@@ -5,10 +5,11 @@ import DirectoryUserPicker from "./DirectoryUserPicker";
 import DurationHoursMinutesSelect from "./DurationHoursMinutesSelect";
 import ParticipantPicker from "./ParticipantPicker";
 import ComiteSelector from "./ComiteSelector";
+import TemaFuturoFields from "./TemaFuturoFields";
 import type { DirectoryUser } from "../lib/directory";
 import { directoryEmail } from "../lib/directory";
 import { formatMinutesAsTime } from "../lib/agenda-time";
-import type { TaxonomyItem } from "../lib/agenda-topic-adapters";
+import { problemaDoTemaFuturo, TEMA_FUTURO_VAZIO, type TaxonomyItem, type TemaFuturo } from "../lib/agenda-topic-adapters";
 import type { CreateParticipantPayload } from "../lib/meeting-adapters";
 import { nomeDoSelecionado, selecionadoParaPayload, type ParticipanteSelecionado } from "../lib/participant-search";
 import type { ComiteVinculo } from "../lib/committee-link";
@@ -41,6 +42,11 @@ export interface DadosDoTemaCompleto {
   agendaId?: string;
   /** Só no "Novo tema": vinculados na mesma transação da criação. */
   participants: CreateParticipantPayload[];
+  /**
+   * Só no "Novo tema": TEMA FUTURO (042). Marcado = NÃO entra nesta reunião;
+   * vai só para a Biblioteca (aba Temas Futuros) com mês/comitê previstos.
+   */
+  futuro?: TemaFuturo;
 }
 
 export interface TemaEmEdicao {
@@ -112,6 +118,8 @@ export default function AnnualTemaModal({
   const [pautaId, setPautaId] = useState(inicial?.agendaId ?? pautas[0]?.id ?? "");
   // Novo tema: participantes escolhidos aqui e gravados junto com o tema.
   const [novos, setNovos] = useState<ParticipanteSelecionado[]>([]);
+  const [futuro, setFuturo] = useState<TemaFuturo>(TEMA_FUTURO_VAZIO);
+  const [erroFuturo, setErroFuturo] = useState<string | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -126,6 +134,9 @@ export default function AnnualTemaModal({
   const salvar = (e: React.FormEvent) => {
     e.preventDefault();
     if (!valido) return;
+    const problema = problemaDoTemaFuturo(futuro, language);
+    setErroFuturo(problema);
+    if (problema) return;
     onSave({
       title: titulo.trim(),
       durationMinutes: minutos,
@@ -134,10 +145,11 @@ export default function AnnualTemaModal({
       agendaTopicTypeId: tipoId || null,
       agendaTopicNatureId: naturezaId || null,
       isCircularTheme: circular,
-      comites,
+      comites: futuro.ativo ? [] : comites,
       description: descricao.trim() || null,
       ...(pautas.length > 1 && pautaId ? { agendaId: pautaId } : {}),
-      participants: novos.map(selecionadoParaPayload)
+      participants: novos.map(selecionadoParaPayload),
+      ...(modo === "novo" && futuro.ativo ? { futuro } : {})
     });
   };
 
@@ -167,9 +179,9 @@ export default function AnnualTemaModal({
         <form
           id="annual-tema-form"
           onSubmit={salvar}
-          className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden md:grid md:grid-cols-[minmax(0,1fr)_minmax(0,320px)] md:grid-rows-[minmax(0,1fr)] font-semibold text-xs text-slate-750"
+          className="scroll-visivel flex-1 min-h-0 overflow-y-auto md:overflow-hidden md:grid md:grid-cols-[minmax(0,1fr)_minmax(0,320px)] md:grid-rows-[minmax(0,1fr)] font-semibold text-xs text-slate-750"
         >
-          <div className="px-6 py-5 space-y-3.5 md:overflow-y-auto md:min-h-0">
+          <div className="scroll-visivel px-6 py-5 space-y-3.5 md:overflow-y-auto md:min-h-0">
             <div className="flex flex-col gap-1">
               <label htmlFor="annualTemaNome" className={LABEL}>{pt ? "Nome do tema" : "Topic name"} *</label>
               <input id="annualTemaNome" autoFocus required maxLength={300} value={titulo} onChange={(e) => setTitulo(e.target.value)} className={CAMPO}
@@ -220,7 +232,23 @@ export default function AnnualTemaModal({
               </div>
             </div>
 
-            <ComiteSelector language={language} homeGovernanceBodyId={orgao.id} value={comites} onChange={setComites} />
+            {modo === "novo" && (
+              <TemaFuturoFields
+                language={language}
+                value={futuro}
+                onChange={setFuturo}
+                aviso={
+                  pt
+                    ? "Não entra nesta reunião: vai só para a Biblioteca (Temas Futuros) até ser incluído numa reunião."
+                    : "Not added to this meeting: goes to the Library (Future topics) until added to a meeting."
+                }
+              />
+            )}
+
+            {/* Comitê replica o tema em reuniões: não se aplica a tema futuro. */}
+            {!futuro.ativo && (
+              <ComiteSelector language={language} homeGovernanceBodyId={orgao.id} value={comites} onChange={setComites} />
+            )}
 
             <div className="flex flex-col gap-1">
               <label className={LABEL}>{pt ? "Tempo estimado (duração)" : "Estimated duration"} *</label>
@@ -247,6 +275,9 @@ export default function AnnualTemaModal({
                 </select>
               </div>
             )}
+            {erroFuturo && (
+              <p role="alert" className="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">{erroFuturo}</p>
+            )}
             <p className="text-[10px] text-slate-400 font-medium">
               {pt
                 ? modo === "novo"
@@ -259,7 +290,7 @@ export default function AnnualTemaModal({
           </div>
 
           {/* PARTICIPANTES DO TEMA — coluna direita (md+). */}
-          <aside aria-labelledby="annual-tema-participantes" className="px-6 py-5 border-t md:border-t-0 md:border-l border-slate-100 bg-slate-50/60 flex flex-col gap-3 md:overflow-y-auto md:min-h-0">
+          <aside aria-labelledby="annual-tema-participantes" className="px-6 py-5 border-t md:border-t-0 md:border-l border-slate-100 bg-slate-50/60 flex flex-col gap-3 md:overflow-y-auto md:min-h-0 scroll-visivel">
             <div>
               <h4 id="annual-tema-participantes" className="text-xs font-extrabold text-slate-800 flex items-center justify-between gap-2">
                 <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5 text-[#00658d]" />{pt ? "Participantes do tema" : "Topic participants"}</span>

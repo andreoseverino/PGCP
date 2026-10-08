@@ -61,6 +61,8 @@ export interface ApiMeetingSummary {
   annualAgendaStatus?: "draft" | "pending_approval" | "approved" | null;
   /** Decidido no servidor (Agenda Anual aprovada ou reunião avulsa). */
   releasedToPipeline?: boolean;
+  /** Na versão APROVADA da Agenda Anual (o Pipeline lista só estas). */
+  approvedInAnnualAgenda?: boolean;
   calendarSyncStatus: "pending" | "synced" | "failed" | "stale" | null;
   /** `meeting_minutes.status`; `null` = Ata não iniciada. Ausente em APIs antigas. */
   minutesStatus?: "draft" | "under_review" | "approved" | "closed" | null;
@@ -377,6 +379,7 @@ export function meetingFromApi(api: ApiMeetingSummary | ApiMeetingDetail): Meeti
     annualAgendaStatus: api.annualAgendaStatus ?? null,
     // Ausente (API antiga) = liberada: nunca esconder reunião por falta de campo.
     releasedToPipeline: api.releasedToPipeline !== false,
+    approvedInAnnualAgenda: api.approvedInAnnualAgenda === true,
     calendarSyncStatus: api.calendarSyncStatus ?? null,
     minutesStatus: api.minutesStatus ?? null,
     sessionType: api.sessionType ?? null,

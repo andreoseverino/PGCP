@@ -68,7 +68,8 @@ export type DocumentoDaAgendaNoPdf =
       tipo: "versao";
       numero: number;
       enviadaEm: string;
-      enviadaA: string;
+      /** `null` = aprovada diretamente no PGCP (sem envio por e-mail). */
+      enviadaA: string | null;
       aprovadaEm: string | null;
       /** Quem registrou a aprovação no PGCP (se houver). */
       aprovadaPor?: string | null;
@@ -240,10 +241,12 @@ export function rotuloDoDocumento(documento: DocumentoDaAgendaNoPdf | undefined)
   if (!documento || documento.tipo === "previa") {
     return "PRÉVIA — Este documento reflete o estado atual da Agenda Anual na data de emissão.";
   }
-  const envio = `enviada em ${dataHora(documento.enviadaEm)} a ${documento.enviadaA}`;
-  if (!documento.aprovadaEm) return `Versão ${documento.numero} — ${envio}; aguardando aprovação.`;
+  const envio = documento.enviadaA ? `enviada em ${dataHora(documento.enviadaEm)} a ${documento.enviadaA}` : null;
+  if (!documento.aprovadaEm) {
+    return `Versão ${documento.numero} — ${envio ?? `gravada em ${dataHora(documento.enviadaEm)}`}; aguardando aprovação.`;
+  }
   const por = limpo(documento.aprovadaPor) ? ` (registrada por ${limpo(documento.aprovadaPor)})` : "";
-  return `Versão ${documento.numero} — aprovada em ${dataHora(documento.aprovadaEm)}${por}; ${envio}.`;
+  return `Versão ${documento.numero} — aprovada em ${dataHora(documento.aprovadaEm)}${por}${envio ? `; ${envio}` : ""}.`;
 }
 
 // =============================================================================

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { HttpError } from "../http-error.js";
 import {
@@ -99,13 +100,18 @@ test("reservar de novo não duplica: só datas sem reunião viram reunião", () 
   assert.deepEqual(itensAReservar(itens.map((i) => ({ ...i, meetingId: i.meetingId ?? "novo" }))), []);
 });
 
-test("aprovação removida: envio, registro e retirada respondem 410 (com papel exigido)", async () => {
+test("aprovação direta: /approval aprova (papel exigido); envio e retirada respondem 410", async () => {
   const { annualAgendasRouter } = await import("./routes.js");
   const { requirePgcpAssessoria } = await import("../authz/app-roles.js");
   const pilha = (annualAgendasRouter as unknown as {
     stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: Function }> } }>;
   }).stack;
-  for (const caminho of ["/:id/approval-request", "/:id/approval", "/:id/withdraw"]) {
+  const aprovar = pilha.find((c) => c.route?.path === "/:id/approval" && c.route.methods.post)?.route;
+  assert.ok(aprovar, "/:id/approval");
+  assert.ok(aprovar.stack.some((s) => s.handle === requirePgcpAssessoria), "/:id/approval: papel");
+  const rotas = readFileSync(new URL("./routes.ts", import.meta.url), "utf8");
+  assert.match(rotas, /"\/:id\/approval", requirePgcpAssessoria, mutacao\("aprovar Agenda Anual"[\s\S]*?aprovarAgendaAnual\(/);
+  for (const caminho of ["/:id/approval-request", "/:id/withdraw"]) {
     const rota = pilha.find((c) => c.route?.path === caminho && c.route.methods.post)?.route;
     assert.ok(rota, caminho);
     assert.ok(rota.stack.some((s) => s.handle === requirePgcpAssessoria), `${caminho}: papel`);

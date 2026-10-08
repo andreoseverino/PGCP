@@ -29,8 +29,14 @@ import { chaveDoObjeto, descricaoOpcional, validarArquivo } from "./file-rules.j
  * já pode ler. Órgão do contexto global é filtro, não autorização.
  */
 
-export type TipoDeDocumento = "anexo" | "ata" | "agenda_anual";
-const TIPOS: readonly TipoDeDocumento[] = ["anexo", "ata", "agenda_anual"];
+/*
+ * Tipos (10/2026): além de anexo, Ata e versão da Agenda Anual, entram os
+ * PDFs que o PGCP já gera — cada VERSÃO DA REUNIÃO (034), as PAUTAS APROVADAS
+ * e a VERSÃO ATUAL (prévia) da Agenda Anual. Pastas: Órgão → Ano → Mês → Dia →
+ * Reunião; e Órgão → Ano → Agenda Anual (versão atual + versão aprovada).
+ */
+export type TipoDeDocumento = "anexo" | "ata" | "agenda_anual" | "versao_reuniao" | "pautas" | "agenda_previa";
+const TIPOS: readonly TipoDeDocumento[] = ["anexo", "ata", "agenda_anual", "versao_reuniao", "pautas", "agenda_previa"];
 const ORIGENS = ["user", "pgcp"] as const;
 type Origem = (typeof ORIGENS)[number];
 const ORDENS = ["recentes", "antigos", "nome", "nome_desc"] as const;
@@ -76,6 +82,8 @@ export interface FiltrosDeDocumentos {
   year?: number;
   /** Mês (1–12) da REUNIÃO no fuso dela — pastas da árvore. Exclui Agenda Anual. */
   month?: number;
+  /** Dia (1–31) da REUNIÃO no fuso dela — pasta de dia da árvore. */
+  day?: number;
   /** Quem enviou (anexo) / emitiu (Agenda) / editou por último (Ata). */
   authorUserId?: string;
   type?: TipoDeDocumento;
@@ -116,6 +124,8 @@ export interface DocumentoDoPgcp {
   /** Tema DA REUNIÃO a que o anexo pertence. */
   topic: { id: string; title: string } | null;
   annualAgenda: { id: string; year: number; version: number } | null;
+  /** Versão da reunião (034) — só no tipo `versao_reuniao` (download pelo PDF da versão). */
+  meetingVersion: { id: string; number: number } | null;
   author: { id: string; name: string } | null;
   documentAt: string;
   /** Formato derivado da extensão (ver `formatoDaExtensao`). */
@@ -128,7 +138,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIA = /^\d{4}-\d{2}-\d{2}$/;
 const PERMITIDOS = [
   "q", "governanceBodyId", "meetingId", "agendaItemId", "topicId", "annualAgendaId", "authorUserId",
-  "type", "source", "dateFrom", "dateTo", "year", "month", "sort", "limit", "offset", "format", "favorites",
+  "type", "source", "dateFrom", "dateTo", "year", "month", "day", "sort", "limit", "offset", "format", "favorites",
 ];
 export const LIMITE_PADRAO = 50;
 export const LIMITE_MAXIMO = 200;
@@ -191,6 +201,7 @@ export function parseFiltrosDeDocumentos(query: Record<string, unknown>): Filtro
     authorUserId: uuid("authorUserId"),
     year: faixa("year", 2000, 2100),
     month: faixa("month", 1, 12),
+    day: faixa("day", 1, 31),
     type: tipo as TipoDeDocumento | undefined,
     format: formato as Formato | undefined,
     favorites: favoritos === "true" ? true : undefined,
@@ -228,6 +239,7 @@ function cteDosDocumentos(visivel: string): string {
   const mesDaReuniao = `${MESES_SQL}[extract(month FROM (m.start_at AT TIME ZONE m.timezone))::int]`;
   const anoDaReuniao = `extract(year FROM (m.start_at AT TIME ZONE m.timezone))::int`;
   const numeroDoMes = `extract(month FROM (m.start_at AT TIME ZONE m.timezone))::int`;
+  const diaDaReuniao = `extract(day FROM (m.start_at AT TIME ZONE m.timezone))::int`;
   return `
      WITH d AS (
        SELECT 'doc:' || doc.id AS id, doc.id AS document_id, 'anexo'::text AS type, doc.source,
@@ -240,7 +252,8 @@ function cteDosDocumentos(visivel: string): string {
               NULL::uuid AS annual_agenda_id, NULL::int AS annual_agenda_year, NULL::int AS version,
               doc.uploaded_by_user_id AS author_id, ud.name AS author_name,
               doc.created_at AS document_at,
-              ${anoDaReuniao} AS context_year, ${numeroDoMes} AS context_month, ${mesDaReuniao} AS month_name
+              ${anoDaReuniao} AS context_year, ${numeroDoMes} AS context_month, ${mesDaReuniao} AS month_name,
+              ${diaDaReuniao} AS context_day, NULL::uuid AS meeting_version_id
          FROM documents doc
          JOIN meetings m ON m.id = doc.meeting_id
          JOIN governance_bodies gb ON gb.id = m.governance_body_id
@@ -257,15 +270,62 @@ function cteDosDocumentos(visivel: string): string {
               NULL::uuid, NULL::int, NULL::int,
               mm.updated_by_user_id, ua.name,
               mm.updated_at,
-              ${anoDaReuniao}, ${numeroDoMes}, ${mesDaReuniao}
+              ${anoDaReuniao}, ${numeroDoMes}, ${mesDaReuniao}, ${diaDaReuniao}, NULL::uuid
          FROM meeting_minutes mm
          JOIN meetings m ON m.id = mm.meeting_id
          JOIN governance_bodies gb ON gb.id = m.governance_body_id
          LEFT JOIN users ua ON ua.id = mm.updated_by_user_id
         WHERE btrim(mm.content) <> '' AND ${visivel}
        UNION ALL
+       -- Cada VERSÃO DA REUNIÃO (034): PDF gerado do snapshot imutável.
+       SELECT 'versao:' || mv.id, NULL::uuid, 'versao_reuniao', 'pgcp',
+              'Versão ' || mv.version || ' — ' || m.title, 'pdf', NULL::bigint, mv.change_summary, 'versao',
+              m.governance_body_id, gb.name,
+              m.id, m.title, m.start_at, m.timezone,
+              m.annual_agenda_id, TRUE,
+              NULL::uuid, NULL::text, NULL::uuid,
+              NULL::uuid, NULL::int, mv.version,
+              mv.created_by_user_id, umv.name,
+              mv.created_at,
+              ${anoDaReuniao}, ${numeroDoMes}, ${mesDaReuniao}, ${diaDaReuniao}, mv.id
+         FROM meeting_versions mv
+         JOIN meetings m ON m.id = mv.meeting_id
+         JOIN governance_bodies gb ON gb.id = m.governance_body_id
+         LEFT JOIN users umv ON umv.id = mv.created_by_user_id
+        WHERE ${visivel}
+       UNION ALL
+       -- PAUTAS APROVADAS: PDF das pautas (mesmo gerador da antiga validação).
+       SELECT 'pautas:' || m.id, NULL::uuid, 'pautas', 'pgcp',
+              'Pautas aprovadas — ' || m.title, 'pdf', NULL::bigint, NULL::text, 'approved',
+              m.governance_body_id, gb.name,
+              m.id, m.title, m.start_at, m.timezone,
+              m.annual_agenda_id, TRUE,
+              NULL::uuid, NULL::text, NULL::uuid,
+              NULL::uuid, NULL::int, NULL::int,
+              m.agenda_approved_by_user_id, upa.name,
+              m.agenda_approved_at,
+              ${anoDaReuniao}, ${numeroDoMes}, ${mesDaReuniao}, ${diaDaReuniao}, NULL::uuid
+         FROM meetings m
+         JOIN governance_bodies gb ON gb.id = m.governance_body_id
+         LEFT JOIN users upa ON upa.id = m.agenda_approved_by_user_id
+        WHERE m.agenda_validation_status = 'approved' AND ${visivel}
+       UNION ALL
+       -- AGENDA ANUAL — VERSÃO ATUAL (prévia, estado de agora): toda agenda formalizada.
+       SELECT 'previa:' || a.id, NULL::uuid, 'agenda_previa', 'pgcp',
+              'Agenda Anual ' || a.year || ' — ' || a.title || ' (versão atual)', 'pdf', NULL::bigint, NULL::text, a.status,
+              a.governance_body_id, gb.name,
+              NULL, NULL, NULL, NULL, NULL, NULL,
+              NULL, NULL, NULL,
+              a.id, a.year, NULL::int,
+              NULL::uuid, NULL::text,
+              a.updated_at,
+              a.year, NULL::int, NULL, NULL::int, NULL::uuid
+         FROM annual_agendas a
+         JOIN governance_bodies gb ON gb.id = a.governance_body_id
+       UNION ALL
        SELECT 'agenda:' || v.id, NULL::uuid, 'agenda_anual', 'pgcp',
-              'Agenda Anual ' || a.year || ' — ' || a.title, 'pdf', NULL::bigint, NULL::text,
+              'Agenda Anual ' || a.year || ' — ' || a.title
+                || CASE WHEN v.approved_at IS NOT NULL THEN ' (versão aprovada)' ELSE '' END, 'pdf', NULL::bigint, NULL::text,
               CASE WHEN v.approved_at IS NOT NULL THEN 'approved' ELSE 'pending_approval' END,
               a.governance_body_id, gb.name,
               NULL, NULL, NULL, NULL, NULL, NULL,
@@ -273,7 +333,7 @@ function cteDosDocumentos(visivel: string): string {
               a.id, a.year, v.version,
               v.sent_by_user_id, uv.name,
               coalesce(v.approved_at, v.sent_at),
-              a.year, NULL::int, NULL
+              a.year, NULL::int, NULL, NULL::int, NULL::uuid
          FROM annual_agenda_versions v
          JOIN annual_agendas a ON a.id = v.annual_agenda_id
          JOIN governance_bodies gb ON gb.id = a.governance_body_id
@@ -311,6 +371,7 @@ interface Linha {
   author_id: string | null;
   author_name: string | null;
   document_at: Date;
+  meeting_version_id: string | null;
   favorite: boolean;
   total: number;
 }
@@ -329,7 +390,13 @@ function paraDocumento(r: Linha): DocumentoDoPgcp {
         ? "Enviado por usuário"
         : r.type === "ata"
           ? ROTULO_DA_ATA[r.doc_status] ?? "Ata"
-          : r.doc_status === "approved"
+          : r.type === "versao_reuniao"
+            ? `Versão ${r.version} da reunião`
+            : r.type === "pautas"
+              ? "Pautas aprovadas"
+              : r.type === "agenda_previa"
+                ? "Versão atual (estado de agora)"
+                : r.doc_status === "approved"
             ? `Aprovada (versão ${r.version})`
             : `Enviada para aprovação (versão ${r.version})`,
     governanceBody: { id: r.governance_body_id, name: r.governance_body_name },
@@ -344,7 +411,8 @@ function paraDocumento(r: Linha): DocumentoDoPgcp {
         }
       : null,
     topic: r.topic_id ? { id: r.topic_id, title: r.topic_title ?? "" } : null,
-    annualAgenda: r.annual_agenda_id ? { id: r.annual_agenda_id, year: r.annual_agenda_year!, version: r.version! } : null,
+    annualAgenda: r.annual_agenda_id ? { id: r.annual_agenda_id, year: r.annual_agenda_year!, version: r.version ?? 0 } : null,
+    meetingVersion: r.meeting_version_id ? { id: r.meeting_version_id, number: r.version ?? 0 } : null,
     author: r.author_id ? { id: r.author_id, name: r.author_name ?? "" } : null,
     documentAt: r.document_at.toISOString(),
     format: formatoDaExtensao(r.extension),
@@ -388,6 +456,7 @@ export async function listarDocumentos(
   // Pastas da árvore: mesmo ano/mês que as agrupou (o da reunião, não o do upload).
   if (filtros.year !== undefined) onde.push(`d.context_year = ${bind(filtros.year)}`);
   if (filtros.month !== undefined) onde.push(`d.context_month = ${bind(filtros.month)}`);
+  if (filtros.day !== undefined) onde.push(`d.context_day = ${bind(filtros.day)}`);
   if (filtros.type) onde.push(`d.type = ${bind(filtros.type)}`);
   if (filtros.format) onde.push(condicaoDoFormato(filtros.format, bind));
   if (filtros.source) onde.push(`d.source = ${bind(filtros.source)}`);

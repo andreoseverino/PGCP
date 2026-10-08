@@ -87,3 +87,22 @@ test("NÃO reabre reunião inexistente", async () => {
   assert.equal(await reabrirValidacaoSePreReuniao(client, "22222222-2222-2222-2222-222222222222", ATOR), false);
   assert.ok(!reabriu(queries));
 });
+
+test("pautas: aprovação DIRETA (sem e-mail) — aprova a partir do rascunho; envio por e-mail responde 410", async () => {
+  const { readFileSync } = await import("node:fs");
+  const fonte = readFileSync(new URL("./agenda-validation.ts", import.meta.url), "utf8");
+  const aprovar = fonte.slice(fonte.indexOf("export async function aprovarPautas"), fonte.indexOf("export async function reabrirValidacaoSePreReuniao"));
+  assert.ok(!/!== "sent"/.test(aprovar), "rascunho também aprova");
+  const { meetingsRouter } = await import("./routes.js");
+  const pilha = (meetingsRouter as unknown as {
+    stack: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: Function }> } }>;
+  }).stack;
+  const rota = pilha.find((c) => c.route?.path === "/:id/agenda-validation" && c.route.methods.post)?.route;
+  assert.ok(rota);
+  let codigo = 0;
+  let corpo: { code?: string } = {};
+  const res = { status(c: number) { codigo = c; return this; }, json(b: { code?: string }) { corpo = b; return this; } };
+  rota.stack.at(-1)!.handle({}, res);
+  assert.equal(codigo, 410);
+  assert.equal(corpo.code, "agenda_validation_email_removed");
+});

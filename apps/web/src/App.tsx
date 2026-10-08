@@ -67,7 +67,6 @@ import {
 import Sidebar from "./components/Sidebar";
 import { searchMeetings } from "./lib/meeting-search";
 import DashboardView from "./components/DashboardView";
-import MeetingsView from "./components/MeetingsView";
 import MeetingDetailView from "./components/MeetingDetailView";
 import AuditLogsView from "./components/AuditLogsView";
 import SystemSettingsView from "./components/SystemSettingsView";
@@ -76,7 +75,7 @@ import QuickSearchView from "./components/QuickSearchView";
 import NewMeetingModal from "./components/NewMeetingModal";
 import EditMeetingModal from "./components/EditMeetingModal";
 import CalendarView from "./components/CalendarView";
-import PipelineView from "./components/PipelineView";
+import PipelineView, { type PipelineSelecao } from "./components/PipelineView";
 import AnnualAgendaView from "./components/AnnualAgendaView";
 import GovernanceBodyFilter from "./components/GovernanceBodyFilter";
 import { CHAVE_CONTEXTO_ORGAO, contextoValido, orgaoInicialParaCriacao } from "./lib/governance-context";
@@ -84,7 +83,9 @@ import UnlinkedAgendasView from "./components/UnlinkedAgendasView";
 import FupListView from "./components/FupListView";
 import DocumentsView from "./components/DocumentsView";
 import LoginView from "./components/LoginView";
-import { FileCheck, LogOut, Search, Sparkles, Trash2, X } from "lucide-react";
+import ConfirmRemovalDialog from "./components/ConfirmRemovalDialog";
+import ExportMenu from "./components/ExportMenu";
+import { FileCheck, LogOut, Search, Sparkles, X } from "lucide-react";
 
 /**
  * Chave da sessão local. Fica em sessionStorage, NÃO em localStorage:
@@ -186,6 +187,8 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<string>("dashboard");
+  /** Pipeline: ano/órgão escolhidos sobrevivem à ida e volta do detalhe da reunião. */
+  const [pipelineSelecao, setPipelineSelecao] = useState<PipelineSelecao>({ ano: null, orgaoId: null });
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
   /**
    * Data sugerida para a Nova reunião. `null` = modal fechado. Só o Calendário
@@ -916,11 +919,10 @@ export default function App() {
 
   // Encerra apenas a sessão. NÃO usa localStorage.clear(): os dados da
   // aplicação (chaves `cielo_*`) precisam sobreviver ao logout.
+  const [confirmandoSaida, setConfirmandoSaida] = useState(false);
+
   const handleSignout = async () => {
-    const confirmation = window.confirm(
-      "Deseja realmente sair do PGCP?"
-    );
-    if (!confirmation) return;
+    setConfirmandoSaida(false);
 
     // Sessão local primeiro: se o encerramento no Entra falhar, o usuário não
     // fica preso numa sessão do PGCP que ele pediu para fechar.
@@ -1040,7 +1042,6 @@ export default function App() {
             onNewMeeting={(date) => setNewMeetingDate(date)}
             onMeetingClick={abrirNoPipeline}
             onEditMeeting={(m) => void editarPeloCalendario(m)}
-            nomeDoOrgaoContexto={governanceBodies.find((b) => b.id === orgaoContexto)?.name ?? null}
           />
         );
       case "annual-agenda":
@@ -1059,7 +1060,11 @@ export default function App() {
               tipo: a.pautaType ?? null,
               natureza: a.pautaNature ?? null,
               responsavel: a.author || null,
-              participantes: a.participantsCount ?? 0
+              participantes: a.participantsCount ?? 0,
+              isFuture: a.isFuture === true,
+              expectedMonth: a.expectedMonth ?? null,
+              expectedGovernanceBodyId: a.expectedGovernanceBodyId ?? null,
+              expectedGovernanceBodyName: a.expectedGovernanceBodyName ?? null
             }))}
             pautaTypes={pautaTypes}
             pautaNatures={pautaNatures}
@@ -1073,6 +1078,8 @@ export default function App() {
             triggerToast={triggerToast}
           />
         );
+      // Pipeline no visual da Agenda Anual. O clique abre o detalhe
+      // (selectedMeeting) sem trocar de aba; "Voltar" retorna aqui.
       // "meetings" era a aba de lista; continua alcançável como Pipeline.
       case "meetings":
       case "pipeline":
@@ -1081,22 +1088,13 @@ export default function App() {
             language={language}
             meetings={meetings}
             meetingsLoading={meetingsLoading}
-            meetingsError={meetingsError}
+            governanceBodies={governanceBodies}
             orgaoContexto={orgaoContexto}
-            onReload={() => void loadMeetings()}
-            onMeetingClick={(meet) => void openMeeting(meet)}
-            renderList={(filtradas) => (
-              <MeetingsView
-                language={language}
-                meetings={filtradas}
-                meetingsLoading={meetingsLoading}
-                meetingsError={meetingsError}
-                onReloadMeetings={() => void loadMeetings()}
-                onMeetingClick={(meet) => void openMeeting(meet)}
-                canSchedule={usuarioPodeAgendar}
-                onDeleteMeeting={handleDeleteMeeting}
-              />
-            )}
+            selecao={pipelineSelecao}
+            onSelecao={setPipelineSelecao}
+            onOpenMeeting={(meet) => void openMeeting(meet)}
+            canSchedule={usuarioPodeAgendar}
+            onDeleteMeeting={handleDeleteMeeting}
           />
         );
       case "search":
@@ -1157,6 +1155,7 @@ export default function App() {
             onDeleteStandaloneAgenda={handleDeleteStandaloneAgenda}
             onUpdateStandaloneAgenda={handleUpdateStandaloneAgenda}
             onToggleTopicFup={handleToggleTopicFup}
+            onOpenMeeting={(meetingId) => void openMeetingById(meetingId)}
             pautaTypes={pautaTypes}
             pautaNatures={pautaNatures}
           />
@@ -1280,14 +1279,17 @@ export default function App() {
         canOpenAdministration={usuarioPodeAbrirAdministracao}
         mobileHeaderExtra={
           // Contexto global no mobile: o cabeçalho desktop fica oculto.
-          <GovernanceBodyFilter
-            language={language}
-            id="contexto-orgao-mobile"
-            compact
-            governanceBodies={governanceBodies}
-            value={orgaoContexto}
-            onChange={mudarOrgaoContexto}
-          />
+          <div className="flex items-center gap-2 min-w-0">
+            <GovernanceBodyFilter
+              language={language}
+              id="contexto-orgao-mobile"
+              compact
+              governanceBodies={governanceBodies}
+              value={orgaoContexto}
+              onChange={mudarOrgaoContexto}
+            />
+            <ExportMenu language={language} orgaoContexto={orgaoContexto} compacto />
+          </div>
         }
       />
 
@@ -1372,6 +1374,8 @@ export default function App() {
                 </div>
               )}
             </form>
+            {/* Exportar e relatórios: ponto único, em qualquer tela. */}
+            <ExportMenu language={language} orgaoContexto={orgaoContexto} />
           </div>
 
           <div className="flex items-center gap-2 lg:gap-3 shrink-0 min-w-0">
@@ -1396,7 +1400,7 @@ export default function App() {
               {currentUser.name}
             </span>
             <button
-              onClick={handleSignout}
+              onClick={() => setConfirmandoSaida(true)}
               className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-full transition cursor-pointer"
               title={language === "en" ? "Sign Out" : "Sair do Sistema"}
             >
@@ -1446,56 +1450,41 @@ export default function App() {
       {/* MODAL: confirmação de exclusão de reunião — identifica pelo título e
           deixa claro que a Biblioteca não é afetada (mesmo padrão visual do
           modal de excluir pauta em MeetingDetailView). */}
+      {confirmandoSaida && (
+        <ConfirmRemovalDialog
+          language={language === "en" ? "en" : "pt"}
+          variante="aprovar"
+          icone={LogOut}
+          confirmacao={{
+            titulo: language === "pt" ? "Sair do PGCP?" : "Sign out of PGCP?",
+            paragrafos: [language === "pt" ? "Deseja realmente sair do PGCP?" : "Do you really want to sign out?"],
+            temas: [],
+            acao: language === "pt" ? "Sair" : "Sign out"
+          }}
+          onCancel={() => setConfirmandoSaida(false)}
+          onConfirm={() => void handleSignout()}
+        />
+      )}
+
       {meetingParaExcluir && (
-        <div
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"
-          onClick={() => setMeetingParaExcluir(null)}
-        >
-          <div
-            className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-sm w-full overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="p-6">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
-                  <Trash2 className="w-5 h-5 text-red-600" />
-                </div>
-                <h3 className="text-sm font-extrabold text-slate-900">
-                  {language === "pt" ? "Excluir reunião" : "Delete meeting"}
-                </h3>
-              </div>
-              <p className="text-xs text-slate-600 font-medium leading-relaxed">
-                {language === "pt" ? "Excluir a reunião " : "Delete the meeting "}
-                <span className="font-extrabold text-slate-900">&ldquo;{meetingParaExcluir.title}&rdquo;</span>
-                {language === "pt"
-                  ? "? A reunião é cancelada: sai do Pipeline e do Calendário, e o convite do Outlook/Teams é cancelado para os convidados. Versões, documentos, Ata e auditoria ficam preservados como histórico. Não pode ser reativada."
-                  : "? The meeting is cancelled: it leaves the Pipeline and Calendar, and the Outlook/Teams invitation is cancelled for attendees. Versions, documents, Minutes and audit are kept as history. It cannot be reactivated."}
-              </p>
-              <p className="text-xs text-slate-400 font-medium leading-relaxed mt-2">
-                {language === "pt"
-                  ? "Os temas utilizados na reunião continuam disponíveis na Biblioteca de Temas."
-                  : "The topics used in the meeting remain available in the Topic library."}
-              </p>
-            </div>
-            <div className="bg-slate-50 px-6 py-4 flex items-center justify-end gap-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setMeetingParaExcluir(null)}
-                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 transition rounded-xl cursor-pointer"
-              >
-                {language === "pt" ? "Cancelar" : "Cancel"}
-              </button>
-              <button
-                type="button"
-                onClick={() => void confirmarExclusaoReuniao()}
-                className="px-4 py-2 text-xs font-bold bg-red-600 hover:bg-red-700 active:scale-95 text-white transition rounded-xl shadow-sm cursor-pointer inline-flex items-center gap-2"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                {language === "pt" ? "Excluir" : "Delete"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmRemovalDialog
+          language={language === "en" ? "en" : "pt"}
+          confirmacao={{
+            titulo: language === "pt" ? "Excluir reunião" : "Delete meeting",
+            paragrafos: [
+              language === "pt"
+                ? `Excluir a reunião “${meetingParaExcluir.title}”? A reunião é cancelada: sai do Pipeline e do Calendário, e o convite do Outlook/Teams é cancelado para os convidados. Versões, documentos, Ata e auditoria ficam preservados como histórico. Não pode ser reativada.`
+                : `Delete the meeting “${meetingParaExcluir.title}”? The meeting is cancelled: it leaves the Pipeline and Calendar, and the Outlook/Teams invitation is cancelled for attendees. Versions, documents, Minutes and audit are kept as history. It cannot be reactivated.`,
+              language === "pt"
+                ? "Os temas utilizados na reunião continuam disponíveis na Biblioteca de Temas."
+                : "The topics used in the meeting remain available in the Topic library."
+            ],
+            temas: [],
+            acao: language === "pt" ? "Excluir" : "Delete"
+          }}
+          onCancel={() => setMeetingParaExcluir(null)}
+          onConfirm={() => void confirmarExclusaoReuniao()}
+        />
       )}
     </div>
   );

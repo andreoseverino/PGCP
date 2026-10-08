@@ -102,10 +102,13 @@ test("excluir tema: clique só abre a confirmação; Cancelar não exclui; Confi
   assert.match(tela, /onCancel=\{\(\) => setTemaParaExcluir\(null\)\}/);
   assert.match(tela, /onConfirm=\{\(\) => void confirmarExclusao\(\)\}/);
   assert.ok(!/window\.confirm/.test(tela));
-  // Diálogo: Cancelar, X e Esc só chamam onCancel.
+  // Diálogo: Cancelar, X e Esc só chamam onCancel (X e Esc pela casca padrão).
   const dialogo = codigo("../components/ConfirmRemovalDialog.tsx");
-  assert.match(dialogo, /e\.key === "Escape" && !busy\) onCancel\(\)/);
-  assert.equal((dialogo.match(/onClick=\{onCancel\}/g) ?? []).length, 2, "Cancelar e X");
+  assert.match(dialogo, /<ModalShell[\s\S]*?onClose=\{onCancel\}/);
+  assert.equal((dialogo.match(/onClick=\{onCancel\}/g) ?? []).length, 1, "Cancelar");
+  const casca = codigo("../components/ModalShell.tsx");
+  assert.match(casca, /e\.key === "Escape" && !ocupado\) onClose\(\)/);
+  assert.match(casca, /onClick=\{onClose\}/, "X");
   assert.equal((dialogo.match(/onConfirm/g) ?? []).length, 3, "prop, desestruturação e botão de confirmar");
 });
 
@@ -155,6 +158,7 @@ test("header global: único, sticky, com busca, órgão colegiado e usuário", (
   assert.match(header, /placeholder=\{language === "en" \? "Search meetings\.\.\." : "Buscar reuniões\.\.\."\}/);
   assert.match(header, /id="contexto-orgao"/);
   assert.match(header, /getInitials\(currentUser\.name\)/);
-  assert.match(header, /onClick=\{handleSignout\}/);
+  // Sair pede confirmação no modal padrão (não window.confirm).
+  assert.match(header, /onClick=\{\(\) => setConfirmandoSaida\(true\)\}/);
   assert.equal((app.match(/placeholder=\{language === "en" \? "Search meetings\.\.\."/g) ?? []).length, 1, "sem busca duplicada");
 });

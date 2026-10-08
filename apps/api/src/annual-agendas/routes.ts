@@ -7,6 +7,7 @@ import { parseParticipantInput, type MeetingActor } from "../meetings/create.js"
 import { PDF_CONTENT_TYPE } from "../agenda-pdf/document.js";
 import {
   addAnnualAgendaItem,
+  aprovarAgendaAnual,
   alterarTema,
   associarReuniao,
   desassociarReuniao,
@@ -53,8 +54,9 @@ export const annualAgendasRouter = Router();
  * terceiros) — exige `PGCP.Assessoria`. Esconder botao na tela e cortesia; a
  * barreira e esta.
  *
- * SEM APROVACAO desde 10/2026: as rotas de envio/registro/retirada respondem
- * 410 (abaixo). O historico de versoes continua legivel (`/:id/document`).
+ * APROVACAO DIRETA desde 10/2026 (sem e-mail): `POST /:id/approval` aprova e
+ * trava a agenda; envio e retirada respondem 410. Documento oficial da versao
+ * aprovada em `/:id/document`.
  */
 
 function sendError(res: Response, error: unknown, context: string): void {
@@ -133,9 +135,8 @@ annualAgendasRouter.get<{ id: string }>("/:id/pdf", requireActivePgcpUser, async
 });
 
 /**
- * DOCUMENTO da versão enviada/aprovada ANTES de 10/2026 — histórico, sai do
- * snapshot gravado (028), não do estado atual. Mesma política de leitura do
- * PDF de prévia.
+ * DOCUMENTO OFICIAL da versão aprovada — sai do snapshot gravado (028), não do
+ * estado atual. Mesma política de leitura do PDF de prévia.
  */
 annualAgendasRouter.get<{ id: string }>("/:id/document", requireActivePgcpUser, async (req, res) => {
   try {
@@ -205,19 +206,27 @@ annualAgendasRouter.post("/:id/reserve", requirePgcpAssessoria, mutacao("reserva
 ));
 
 /**
- * APROVAÇÃO REMOVIDA (decisão de produto, 10/2026). As rotas continuam
- * registradas só para responder 410 com mensagem clara a um cliente antigo, em
- * vez de 404 genérico. Mesma guarda de papel de toda mutação daqui.
+ * APROVAÇÃO DIRETA (10/2026): marca aprovada, grava a versão e trava a agenda.
+ * Corpo vazio — não há destinatário nem e-mail.
  */
-const aprovacaoRemovida = (_req: Request, res: Response) => {
+annualAgendasRouter.post("/:id/approval", requirePgcpAssessoria, mutacao("aprovar Agenda Anual", (req, ator) => {
+  const chaves = Object.keys((req.body ?? {}) as Record<string, unknown>);
+  if (chaves.length > 0) throw new HttpError(400, `O campo '${chaves[0]}' não pode ser informado aqui.`);
+  return aprovarAgendaAnual(req.params.id as string, ator);
+}));
+
+/**
+ * ENVIO POR E-MAIL e RETIRADA não existem mais (10/2026). As rotas respondem
+ * 410 com mensagem clara a um cliente antigo, em vez de 404 genérico.
+ */
+const envioRemovido = (_req: Request, res: Response) => {
   res.status(410).json({
-    error: "A Agenda Anual não tem mais fluxo de aprovação. As reuniões já seguem para o Pipeline sem esperar aprovação.",
+    error: "A Agenda Anual não é mais enviada por e-mail. Use “Marcar como aprovada”.",
     code: "annual_agenda_approval_removed",
   });
 };
-annualAgendasRouter.post("/:id/approval-request", requirePgcpAssessoria, aprovacaoRemovida);
-annualAgendasRouter.post("/:id/approval", requirePgcpAssessoria, aprovacaoRemovida);
-annualAgendasRouter.post("/:id/withdraw", requirePgcpAssessoria, aprovacaoRemovida);
+annualAgendasRouter.post("/:id/approval-request", requirePgcpAssessoria, envioRemovido);
+annualAgendasRouter.post("/:id/withdraw", requirePgcpAssessoria, envioRemovido);
 
 /**
  * REUNIÕES DO CALENDÁRIO NA AGENDA. Associar só grava `meetings.annual_agenda_id`:

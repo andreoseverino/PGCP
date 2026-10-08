@@ -21,3 +21,25 @@ export async function exportarCalendario(f: FiltrosDaExportacao): Promise<void> 
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+/** CRONOGRAMA ANUAL (PDF) — cliente de `GET /meetings/export/schedule`. */
+export async function exportarCronograma(ano: number, governanceBodyId: string): Promise<void> {
+  const q = new URLSearchParams({ year: String(ano) });
+  if (governanceBodyId) q.set("governanceBodyId", governanceBodyId);
+  const { blob, filename } = await apiRequestBlob(`/meetings/export/schedule?${q.toString()}`, { auth: true });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename ?? `cronograma-pgcp-${ano}.pdf`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/** DOSSIÊ DA REUNIÃO (PDF) — "Exportar" do detalhe: tudo da reunião, estado atual. */
+export async function exportarDossieDaReuniao(meetingId: string): Promise<void> {
+  const { blob, filename } = await apiRequestBlob(`/meetings/${meetingId}/export/pdf`, { auth: true });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename ?? "dossie-reuniao.pdf";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}

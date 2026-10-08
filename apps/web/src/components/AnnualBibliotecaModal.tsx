@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { BookOpen, Search, Users, X } from "lucide-react";
+import { BookOpen, CalendarClock, Search, Users, X } from "lucide-react";
 import DurationHoursMinutesSelect from "./DurationHoursMinutesSelect";
 import { formatMinutesAsTime } from "../lib/agenda-time";
-import { filtrarBiblioteca, type TemaDaBibliotecaResumo } from "../lib/annual-agenda-rules";
+import { filtrarBiblioteca, secoesDaBiblioteca, type TemaDaBibliotecaResumo } from "../lib/annual-agenda-rules";
+import { rotuloDoMes } from "../lib/agenda-topic-adapters";
 
 /**
  * "Adicionar da Biblioteca" — SÓ seleção de tema já cadastrado. Busca local
@@ -11,23 +12,30 @@ import { filtrarBiblioteca, type TemaDaBibliotecaResumo } from "../lib/annual-ag
  * (sugerida pelo tema-mestre) e pauta (com duas ou mais). Não cria, não edita
  * e não exclui tema da Biblioteca; o servidor copia ficha e participantes do
  * tema-mestre pela regra já existente.
+ *
+ * Temas FUTUROS (042) vêm numa seção própria no topo, com selo de mês/comitê
+ * previstos — os previstos para o comitê desta reunião primeiro. Continuam
+ * selecionáveis: ao entrar na reunião o tema vira regular.
  */
 interface Props {
   language: "en" | "pt";
   ocupado: boolean;
   temas: readonly TemaDaBibliotecaResumo[];
+  /** Comitê da reunião: ordena os temas futuros previstos para ele primeiro. */
+  governanceBodyId?: string;
   pautas: ReadonlyArray<{ id: string; title: string }>;
   onCancel: () => void;
   onAdd: (dados: { agendaTopicId: string; durationMinutes: number; agendaId?: string }) => void;
 }
 
-export default function AnnualBibliotecaModal({ language, ocupado, temas, pautas, onCancel, onAdd }: Props) {
+export default function AnnualBibliotecaModal({ language, ocupado, temas, governanceBodyId, pautas, onCancel, onAdd }: Props) {
   const pt = language === "pt";
   const [busca, setBusca] = useState("");
   const [escolhido, setEscolhido] = useState<TemaDaBibliotecaResumo | null>(null);
   const [minutos, setMinutos] = useState(30);
   const [pautaId, setPautaId] = useState(pautas[0]?.id ?? "");
   const visiveis = useMemo(() => filtrarBiblioteca(temas, busca), [temas, busca]);
+  const { futuros, regulares } = useMemo(() => secoesDaBiblioteca(visiveis, governanceBodyId), [visiveis, governanceBodyId]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -72,7 +80,15 @@ export default function AnnualBibliotecaModal({ language, ocupado, temas, pautas
               </div>
               <ul role="listbox" aria-label={pt ? "Temas da Biblioteca" : "Library topics"} className="space-y-1.5">
                 {visiveis.length === 0 && <li className="text-[11px] text-slate-400 font-semibold text-center py-3">{pt ? "Nenhum tema encontrado." : "No topics found."}</li>}
-                {visiveis.map((t) => (
+                {([
+                  ["futuros", pt ? "Temas futuros" : "Future topics", futuros],
+                  ["regulares", pt ? "Temas regulares" : "Regular topics", regulares]
+                ] as const).flatMap(([chave, rotulo, lista]) => lista.length === 0 ? [] : [
+                  <li key={`secao-${chave}`} role="presentation"
+                    className="flex items-center justify-between pt-2 first:pt-0 text-[9.5px] font-extrabold text-slate-500 uppercase tracking-wider">
+                    {rotulo}<span className="text-slate-400">{lista.length}</span>
+                  </li>,
+                  ...lista.map((t) => (
                   <li key={t.id}>
                     <button type="button" role="option" aria-selected={escolhido?.id === t.id} onClick={() => escolher(t)}
                       className={`w-full text-left rounded-xl border px-3 py-2 transition cursor-pointer ${
@@ -83,9 +99,21 @@ export default function AnnualBibliotecaModal({ language, ocupado, temas, pautas
                         {[t.natureza, t.tipo, t.durationMinutes ? `${t.durationMinutes} min` : null, t.responsavel].filter(Boolean).join(" · ")}
                         {t.participantes ? <span className="inline-flex items-center gap-0.5"><Users className="w-3 h-3" />{t.participantes}</span> : null}
                       </p>
+                      {t.isFuture && (
+                        <span className={`mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider border ${
+                          governanceBodyId && t.expectedGovernanceBodyId === governanceBodyId
+                            ? "bg-sky-50 text-[#00658d] border-sky-100"
+                            : "bg-slate-50 text-slate-500 border-slate-200"
+                        }`}>
+                          <CalendarClock className="w-3 h-3" />
+                          {pt ? "Futuro" : "Future"} · {rotuloDoMes(t.expectedMonth, language)}
+                          {t.expectedGovernanceBodyName ? ` · ${t.expectedGovernanceBodyName}` : ""}
+                        </span>
+                      )}
                     </button>
                   </li>
-                ))}
+                  ))
+                ])}
               </ul>
             </>
           )}

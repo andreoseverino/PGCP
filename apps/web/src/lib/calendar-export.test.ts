@@ -25,13 +25,27 @@ const codigo = (arq: string) =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^[ \t]*\/\/.*$/gm, "");
 
-test("Calendário: botão Exportar com o órgão do contexto global", () => {
-  const cal = codigo("../components/CalendarView.tsx");
-  assert.match(cal, /<CalendarExportModal[\s\S]*?governanceBodyId=\{orgaoContexto\}/);
+test("Exportar e relatórios: menu único no cabeçalho global; comitê inicial = contexto global", () => {
+  const menu = codigo("../components/ExportMenu.tsx");
+  assert.match(menu, /<CalendarExportModal[\s\S]*?governanceBodyId=\{orgaoContexto\}/);
   const modal = codigo("../components/CalendarExportModal.tsx");
   assert.match(modal, /"Todo o calendário"/);
   assert.match(modal, /"Intervalo de datas"/);
-  assert.match(modal, /"Excel \(\.xlsx\)"/);
+  // Só PDF na tela; comitê escolhível no próprio modal.
+  assert.ok(!modal.includes("Excel"));
+  assert.match(modal, /id="expComite"/);
+  assert.match(modal, /"Todos os comitês"/);
+  // Dois itens: calendário (lista) e cronograma (grade anual, PDF).
+  assert.match(menu, /"Exportar Agenda Anual"/);
+  assert.match(menu, /"Exportar cronograma"/);
+  assert.match(menu, /<CronogramaExportModal[\s\S]*?governanceBodyId=\{orgaoContexto\}[\s\S]*?ano=\{ano\}/);
+  // No cabeçalho (desktop, ao lado da busca) e na barra do celular; não mais no Calendário.
+  const app = codigo("../App.tsx");
+  assert.equal(app.match(/<ExportMenu /g)?.length, 2);
+  assert.ok(!/Exportar (calendário|cronograma)|ExportModal/.test(codigo("../components/CalendarView.tsx")));
+  const cronograma = codigo("../components/CronogramaExportModal.tsx");
+  assert.match(cronograma, /<ModalShell/);
+  assert.match(codigo("./calendar-export.ts"), /\/meetings\/export\/schedule\?/);
 });
 
 const form: NewMeetingForm = {
@@ -55,4 +69,11 @@ test("nova reunião: descrição saneada vai no POST; vazia não vai", () => {
   assert.match(modal, /montarDescricaoInicial\(/);
   assert.match(modal, /if \(!descricaoEditada\) setDescription\(template\);/);
   assert.match(modal, /<RichTextEditor/);
+});
+
+test("detalhe da reunião: botão Exportar gera o dossiê (PDF) pela API", () => {
+  const detalhe = codigo("../components/MeetingDetailView.tsx");
+  assert.match(detalhe, /onClick=\{\(\) => void exportarDossie\(\)\}/);
+  assert.match(detalhe, /await exportarDossieDaReuniao\(meeting\.id\)/);
+  assert.match(codigo("./calendar-export.ts"), /\/meetings\/\$\{meetingId\}\/export\/pdf/);
 });

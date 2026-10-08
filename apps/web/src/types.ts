@@ -242,6 +242,12 @@ export interface StandaloneAgenda {
    */
   isCircularTheme?: boolean;
 
+  /** TEMA FUTURO (042): sem reunião ainda; mês ("AAAA-MM") e comitê previstos. */
+  isFuture?: boolean;
+  expectedMonth?: string | null;
+  expectedGovernanceBodyId?: string | null;
+  expectedGovernanceBodyName?: string | null;
+
   /** Em quantas reuniões a pauta está. Vem da FK, nunca de casar título. */
   linkedMeetingsCount?: number;
 
@@ -320,6 +326,8 @@ export interface Meeting {
    * Anual, só depois de aprovada. Antes disso a reunião é preparada na Agenda.
    */
   releasedToPipeline?: boolean;
+  /** Está na versão APROVADA da Agenda Anual: só estas aparecem no Pipeline. */
+  approvedInAnnualAgenda?: boolean;
   /** Estado do convite também no resumo (Pipeline). */
   calendarSyncStatus?: "pending" | "synced" | "failed" | "stale" | null;
   /** Situação da Ata (`meeting_minutes.status`); `null` = não iniciada. */

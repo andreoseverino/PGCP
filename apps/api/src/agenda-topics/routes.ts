@@ -27,6 +27,9 @@ import {
   updateAgendaTopic,
 } from "./write.js";
 import { vincularTemaAComites } from "../meetings/update.js";
+import { calendarExportRateLimit } from "../security/limiters.js";
+import type { EspectadorPgcp } from "../meetings/visibility.js";
+import { exportarReunioesDoTema, listarReunioesDoTema, parseFiltrosDaExportacaoDoTema } from "./linked-meetings.js";
 
 export const agendaTopicsRouter = Router();
 
@@ -204,6 +207,44 @@ agendaTopicsRouter.get("/:id", requireActivePgcpUser, async (req, res) => {
     res.json(await findAgendaTopic(req.params.id as string));
   } catch (error) {
     sendError(res, error, "consultar");
+  }
+});
+
+function espectadorDa(req: Request): EspectadorPgcp {
+  const usuario = req.pgcpUser;
+  const principal = req.principal;
+  if (!usuario || !principal) throw new HttpError(500, "Erro interno ao resolver a identidade.");
+  return { userId: usuario.id, entraTenantId: principal.entraTenantId, entraObjectId: principal.entraObjectId ?? null };
+}
+
+/**
+ * GET /agenda-topics/:id/meetings — todas as reuniões em que o tema está na
+ * pauta (passadas, futuras e canceladas). Modal do selo "N reuniões".
+ */
+agendaTopicsRouter.get("/:id/meetings", requireActivePgcpUser, async (req, res) => {
+  try {
+    res.json({ meetings: await listarReunioesDoTema(req.params.id as string, espectadorDa(req)) });
+  } catch (error) {
+    sendError(res, error, "listar reuniões do tema");
+  }
+});
+
+/**
+ * GET /agenda-topics/:id/meetings/export?format=pdf|xlsx[&meetingIds=a,b]
+ *
+ * Exporta as reuniões do tema (todas ou a seleção do modal). Mesmo gerador e
+ * mesmo limite da exportação do Calendário.
+ */
+agendaTopicsRouter.get("/:id/meetings/export", requireActivePgcpUser, calendarExportRateLimit, async (req, res) => {
+  try {
+    const filtros = parseFiltrosDaExportacaoDoTema(req.query as Record<string, unknown>);
+    const arquivo = await exportarReunioesDoTema(req.params.id as string, filtros, espectadorDa(req));
+    res.setHeader("Content-Type", arquivo.tipo);
+    res.setHeader("Content-Disposition", `attachment; filename="${arquivo.nome}"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(arquivo.conteudo);
+  } catch (error) {
+    sendError(res, error, "exportar reuniões do tema");
   }
 });
 

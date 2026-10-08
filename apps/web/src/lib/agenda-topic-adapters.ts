@@ -65,6 +65,11 @@ export interface ApiAgendaTopic {
   ownerUserId: string | null;
   /** PADRÃO de tema circular. Copiado para a pauta ao vincular a uma reunião. */
   isCircularTheme: boolean;
+  /** TEMA FUTURO (042): ainda sem reunião; vira regular ao entrar numa. */
+  isFuture?: boolean;
+  /** "AAAA-MM" previsto; `null` em tema regular. */
+  expectedMonth?: string | null;
+  expectedGovernanceBody?: NamedRef | null;
   source: TopicSource | null;
   isAutomaticCopy: boolean;
   linkedMeetingsCount: number;
@@ -118,6 +123,10 @@ export interface AgendaTopicPayload {
   participants?: TopicParticipantPayload[];
   /** Comitê (040): órgãos extras por onde este tema também deve passar. */
   comites?: ComiteVinculo[];
+  /** TEMA FUTURO (042): os três andam juntos; regular = sem mês/comitê. */
+  isFuture?: boolean;
+  expectedMonth?: string | null;
+  expectedGovernanceBodyId?: string | null;
 }
 
 /** Hidrata o formulário de edição a partir do detalhe canônico da API. */
@@ -203,6 +212,10 @@ export function agendaTopicToStandalone(t: ApiAgendaTopic): StandaloneAgenda {
     pautaNatureId: t.nature?.id,
     pautaNature: t.nature?.name,
     isCircularTheme: t.isCircularTheme,
+    isFuture: t.isFuture === true,
+    expectedMonth: t.expectedMonth ?? null,
+    expectedGovernanceBodyId: t.expectedGovernanceBody?.id ?? null,
+    expectedGovernanceBodyName: t.expectedGovernanceBody?.name ?? null,
     linkedMeetingsCount: t.linkedMeetingsCount,
     participantsCount: t.participantsCount,
     /*
@@ -231,6 +244,8 @@ export interface BibliotecaFormInput {
   participants?: TopicParticipantPayload[];
   /** Comitê (040): órgãos extras por onde este tema também deve passar. */
   comites?: ComiteVinculo[];
+  /** Tema futuro: mês ("AAAA-MM") e comitê previstos. Ausente = não mexe. */
+  futuro?: TemaFuturo;
 }
 
 /**
@@ -265,8 +280,45 @@ export function buildTopicPayload(input: BibliotecaFormInput): AgendaTopicPayloa
     // traz (ex.: alternar FUP) NÃO deve zerar um "Sim" já gravado.
     ...(input.isCircularTheme !== undefined ? { isCircularTheme: input.isCircularTheme } : {}),
     ...(input.participants ? { participants: input.participants } : {}),
-    ...(input.comites && input.comites.length > 0 ? { comites: input.comites } : {})
+    ...(input.comites && input.comites.length > 0 ? { comites: input.comites } : {}),
+    ...(input.futuro ? payloadDoTemaFuturo(input.futuro) : {})
   };
+}
+
+/** Estado do bloco "Tema futuro" dos formulários de tema. */
+export interface TemaFuturo {
+  ativo: boolean;
+  /** "AAAA-MM". */
+  mes: string;
+  comiteId: string;
+}
+
+export const TEMA_FUTURO_VAZIO: TemaFuturo = { ativo: false, mes: "", comiteId: "" };
+
+/** Problema do bloco (para o formulário), ou `null`. O servidor revalida. */
+export function problemaDoTemaFuturo(f: TemaFuturo, language: "en" | "pt"): string | null {
+  if (!f.ativo) return null;
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(f.mes)) {
+    return language === "pt" ? "Informe a data prevista (mês/ano) do tema futuro." : "Enter the expected month.";
+  }
+  if (!f.comiteId) return language === "pt" ? "Escolha o comitê previsto do tema futuro." : "Choose the expected committee.";
+  return null;
+}
+
+export function payloadDoTemaFuturo(
+  f: TemaFuturo
+): Pick<AgendaTopicPayload, "isFuture" | "expectedMonth" | "expectedGovernanceBodyId"> {
+  return f.ativo
+    ? { isFuture: true, expectedMonth: f.mes, expectedGovernanceBodyId: f.comiteId }
+    : { isFuture: false, expectedMonth: null, expectedGovernanceBodyId: null };
+}
+
+/** "2027-03" -> "Março/2027". */
+export function rotuloDoMes(mes: string | null | undefined, language: "en" | "pt"): string {
+  if (!mes || !/^\d{4}-\d{2}$/.test(mes)) return "";
+  const [a, m] = mes.split("-");
+  const nome = new Date(Number(a), Number(m) - 1, 1).toLocaleDateString(language === "pt" ? "pt-BR" : "en-US", { month: "long" });
+  return `${nome.charAt(0).toUpperCase()}${nome.slice(1)}/${a}`;
 }
 
 /** Mensagem para a usuária, a partir do status HTTP. */

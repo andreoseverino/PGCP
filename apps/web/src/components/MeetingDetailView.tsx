@@ -31,9 +31,9 @@ import {
   X,
   CalendarDays,
   MapPin,
-  FolderPlus,
   FolderOpen,
-  Paperclip
+  Paperclip,
+  type LucideIcon
 } from "lucide-react";
 import { Meeting, ActionItem, StandaloneAgenda, Participant, AgendaItem, SessionUser, GovernanceBody } from "../types";
 import { newId } from "../lib/id";
@@ -49,8 +49,7 @@ import {
 } from "../lib/calendar-sync";
 import {
   approveAgenda,
-  describeValidationError,
-  sendAgendaForValidation
+  describeValidationError
 } from "../lib/agenda-validation";
 import type { FupFormInput } from "../lib/action-items";
 import {
@@ -84,18 +83,20 @@ import {
   TEAMS_MESSAGE_MAX_LENGTH,
   updateAgendaItem as apiUpdateAgendaItem,
   removeParticipant as apiRemoveParticipant,
-  addAgenda as apiAddAgenda,
   renameAgenda as apiRenameAgenda,
   removeAgenda as apiRemoveAgenda,
   type AgendaItemPatchPayload
 } from "../lib/meetings";
 import { locationLabel } from "../lib/meeting-locations-rules";
 import type { ComiteVinculo } from "../lib/committee-link";
-import ComiteSelector from "./ComiteSelector";
+import AnnualTemaModal, { type DadosDoTemaCompleto } from "./AnnualTemaModal";
+import { exportarDossieDaReuniao } from "../lib/calendar-export";
+import { buildTopicPayload, createAgendaTopic, rotuloDoMes } from "../lib/agenda-topics";
 import EditMeetingModal from "./EditMeetingModal";
 import { RichTextView } from "./RichTextEditor";
 import ParticipantPicker from "./ParticipantPicker";
 import ConfirmRemovalDialog from "./ConfirmRemovalDialog";
+import ModalShell, { BOTAO_CANCELAR, BOTAO_PRINCIPAL } from "./ModalShell";
 import { cronogramaDosTemas } from "../lib/agenda-schedule";
 import {
   confirmacaoRemoverDaReuniao,
@@ -210,26 +211,26 @@ export default function MeetingDetailView({
   const [versaoDosDocumentos, setVersaoDosDocumentos] = useState(0);
   const podeAdicionarDocumento = canSchedule && meeting.releasedToPipeline !== false;
 
-  // Edição de pauta (PATCH /meetings/:id/agenda-items/:itemId). Campos suportados
-  // pelo contrato: título, duração, responsável. UUID e agendaTopicId preservados
-  // pelo backend (UPDATE parcial, nunca delete+insert).
-  const [editandoPautaId, setEditandoPautaId] = useState<string | null>(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editDuration, setEditDuration] = useState("15 mins");
-  const [editRespLabel, setEditRespLabel] = useState("");
-  const [editRespOid, setEditRespOid] = useState<string | undefined>(undefined);
-  const [editRespUser, setEditRespUser] = useState<DirectoryUser | null>(null);
-  // Tema circular NESTA reunião. Editável Não↔Sim; nunca toca a Biblioteca.
-  const [editCircular, setEditCircular] = useState(false);
-  // Comitê (040): órgãos extras por onde o tema também deve passar.
-  const [editComites, setEditComites] = useState<ComiteVinculo[]>([]);
-  // Ficha (019): edição da PRÓPRIA pauta da reunião; nunca toca a Biblioteca.
-  const [editTypeId, setEditTypeId] = useState("");
-  const [editNatureId, setEditNatureId] = useState("");
-  const [editFup, setEditFup] = useState(false);
-  const [editDescription, setEditDescription] = useState("");
-  const [salvandoEdicao, setSalvandoEdicao] = useState(false);
-  const [erroEdicao, setErroEdicao] = useState<string | null>(null);
+  /*
+   * NOVO/EDITAR TEMA — o MESMO modal da Agenda Anual (`AnnualTemaModal`):
+   * responsável, tipo, natureza, circular, comitê, tema futuro, participantes,
+   * duração e descrição. Editar altera só o tema DESTA reunião (PATCH parcial;
+   * UUID e agendaTopicId preservados; a Biblioteca não muda).
+   */
+  const [exportandoDossie, setExportandoDossie] = useState(false);
+  const exportarDossie = async () => {
+    if (exportandoDossie) return;
+    setExportandoDossie(true);
+    try {
+      await exportarDossieDaReuniao(meeting.id);
+    } catch (erro) {
+      triggerToast(describeMeetingError(erro, language === "en" ? "en" : "pt"));
+    } finally {
+      setExportandoDossie(false);
+    }
+  };
+  const [modalTema, setModalTema] = useState<{ modo: "novo" } | { modo: "editar"; itemId: string } | null>(null);
+  const [salvandoTema, setSalvandoTema] = useState(false);
 
   // Confirmação de exclusão de pauta (evita perda acidental).
   const [pautaParaExcluir, setPautaParaExcluir] = useState<AgendaItem | null>(null);
@@ -391,6 +392,11 @@ export default function MeetingDetailView({
    */
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  // Erro de uma tentativa anterior não sobrevive a um convite que ficou em dia
+  // por outro caminho (ex.: troca de organizador em Editar Detalhes).
+  useEffect(() => {
+    if (meeting.calendar?.syncStatus === "synced") setSyncError(null);
+  }, [meeting.calendar?.syncStatus, meeting.calendar?.lastSyncedAt]);
   const [semEndereco, setSemEndereco] = useState<ParticipanteSemEndereco[]>([]);
 
   /*
@@ -436,9 +442,6 @@ export default function MeetingDetailView({
   const modoExecucao = pautasMode === "execution";
   const modoResultado = pautasMode === "result";
 
-  const [modalValidacaoAberto, setModalValidacaoAberto] = useState(false);
-  const [emailAprovador, setEmailAprovador] = useState("");
-  const [enviandoValidacao, setEnviandoValidacao] = useState(false);
   const [erroValidacao, setErroValidacao] = useState<string | null>(null);
   const [aprovando, setAprovando] = useState(false);
 
@@ -461,31 +464,9 @@ export default function MeetingDetailView({
     if ((statusValidacao === "sent" || statusValidacao === "approved") && depoisStatus === "draft") {
       triggerToast(
         language === "en"
-          ? "The agenda changed. The previous (optional) validation was reopened; resend it if you still want it validated."
-          : "As pautas foram alteradas. A validação anterior (opcional) foi reaberta; reenvie se ainda quiser validá-las."
+          ? "The agenda changed. The previous (optional) approval was reopened; mark it as approved again if needed."
+          : "As pautas foram alteradas. A aprovação anterior (opcional) foi reaberta; marque como aprovadas de novo, se for o caso."
       );
-    }
-  };
-
-  const handleEnviarParaValidacao = async () => {
-    if (enviandoValidacao) return;
-    setErroValidacao(null);
-    setEnviandoValidacao(true);
-    try {
-      const resposta = await sendAgendaForValidation(meeting.id, emailAprovador);
-      absorverReuniao(resposta.meeting);
-      setModalValidacaoAberto(false);
-      setEmailAprovador("");
-      triggerToast(
-        language === "en"
-          ? `Agenda sent to ${resposta.sentTo} for validation.`
-          : `Pautas enviadas para ${resposta.sentTo}.`
-      );
-    } catch (erro) {
-      // Fica NO MODAL: a pessoa corrige o endereço sem perder o que digitou.
-      setErroValidacao(describeValidationError(erro, language === "en" ? "en" : "pt"));
-    } finally {
-      setEnviandoValidacao(false);
     }
   };
 
@@ -644,24 +625,19 @@ export default function MeetingDetailView({
    * Criar/renomear/excluir pauta é estrutural: o servidor reabre a validação
    * se ela já tinha saído, e o aviso abaixo diz isso.
    */
-  const [novaPautaTitulo, setNovaPautaTitulo] = useState("");
-  /** Pauta que recebe o próximo tema criado ou vinculado da Biblioteca. */
+  /**
+   * Pauta que recebe o tema vinculado da Biblioteca. Sem seletor na tela
+   * (10/2026): vazio = sem pauta; o modal de tema escolhe a pauta quando há 2+.
+   */
   const [pautaDestinoId, setPautaDestinoId] = useState("");
-  const [novoTemaTitulo, setNovoTemaTitulo] = useState("");
-  const [novoTemaDuracao, setNovoTemaDuracao] = useState("00:15");
 
-  const criarPauta = async () => {
-    const titulo = novaPautaTitulo.trim();
-    if (!titulo) return;
-    const ok = await persistir(
-      () => apiAddAgenda(meeting.id, titulo),
-      language === "en" ? "Agenda created." : `Pauta "${titulo}" criada.`
-    );
-    if (ok) setNovaPautaTitulo("");
-  };
+  const renomearPauta = (agendaId: string, atual: string) => setRenomeandoPauta({ agendaId, atual, valor: atual });
 
-  const renomearPauta = (agendaId: string, atual: string) => {
-    const titulo = window.prompt(language === "en" ? "Agenda title" : "Título da pauta", atual)?.trim();
+  const salvarRenomeacaoPauta = () => {
+    if (!renomeandoPauta) return;
+    const titulo = renomeandoPauta.valor.trim();
+    const { agendaId, atual } = renomeandoPauta;
+    setRenomeandoPauta(null);
     if (!titulo || titulo === atual) return;
     void persistir(
       () => apiRenameAgenda(meeting.id, agendaId, titulo),
@@ -669,38 +645,28 @@ export default function MeetingDetailView({
     );
   };
 
-  const excluirPauta = (agendaId: string) => {
-    if (!window.confirm(language === "en" ? "Delete this empty agenda?" : "Excluir esta pauta (sem temas)?")) return;
-    if (pautaDestinoId === agendaId) setPautaDestinoId("");
-    void persistir(
-      () => apiRemoveAgenda(meeting.id, agendaId),
-      language === "en" ? "Agenda deleted." : "Pauta excluída."
-    );
-  };
+  const excluirPauta = (agendaId: string) =>
+    setConfirmacaoSimples({
+      confirmacao: {
+        titulo: language === "en" ? "Delete this empty agenda?" : "Excluir esta pauta (sem temas)?",
+        paragrafos: [language === "en" ? "This action cannot be undone." : "Esta ação não pode ser desfeita."],
+        temas: [],
+        acao: language === "en" ? "Delete" : "Excluir"
+      },
+      executar: () => {
+        if (pautaDestinoId === agendaId) setPautaDestinoId("");
+        void persistir(
+          () => apiRemoveAgenda(meeting.id, agendaId),
+          language === "en" ? "Agenda deleted." : "Pauta excluída."
+        );
+      }
+    });
 
   const moverTemaDePauta = (tema: AgendaItem, agendaId: string) =>
     void persistir(
       () => apiUpdateAgendaItem(meeting.id, tema.id, { agendaId: agendaId || null }),
       language === "en" ? "Topic moved." : "Tema movido de pauta."
     );
-
-  const criarTema = async () => {
-    const titulo = novoTemaTitulo.trim();
-    if (!titulo) return;
-    const ok = await persistirNovaPauta(
-      {
-        id: newId(),
-        title: titulo,
-        time: "",
-        duration: novoTemaDuracao,
-        author: "",
-        agendaId: pautaDestinoId || undefined
-      },
-      // Mesmo esquema da Agenda Anual: o tema também nasce na Biblioteca.
-      { registerInLibrary: true }
-    );
-    if (ok) setNovoTemaTitulo("");
-  };
 
   const handleTabAddParticipant = async () => {
     const nome = newTabPartName.trim();
@@ -1201,68 +1167,89 @@ export default function MeetingDetailView({
     setDoneTopicIds(prev => prev.filter(id => id !== removido.id));
   };
 
-  /**
-   * Abre o modal de EDIÇÃO carregando os valores atuais. Só campos suportados
-   * pelo PATCH: título, duração e responsável. UUID e `agendaTopicId` NÃO são
-   * tocados — o backend faz UPDATE parcial em `meeting_agenda_items`, nunca
-   * delete+insert, e não altera o registro mestre da Biblioteca.
-   */
-  const abrirEdicaoPauta = (item: AgendaItem) => {
-    setEditandoPautaId(item.id);
-    setEditTitle(item.title);
-    setEditDuration(item.duration?.trim() || "15 mins");
-    setEditRespLabel(item.author || "");
-    setEditRespOid(item.authorEntraObjectId);
-    setEditRespUser(null);
-    setEditCircular(item.isCircularTheme === true);
-    setEditComites([]);
-    // Ficha: pré-seleciona o snapshot atual; sem valor, cai no primeiro cadastro.
-    setEditTypeId(item.agendaTopicTypeId || pautaTypes[0]?.id || "");
-    setEditNatureId(item.agendaTopicNatureId || pautaNatures[0]?.id || "");
-    setEditFup(item.generatesActionItem === true);
-    setEditDescription(item.description || "");
-    setErroEdicao(null);
-  };
+  const abrirEdicaoPauta = (item: AgendaItem) => setModalTema({ modo: "editar", itemId: item.id });
 
-  const salvarEdicaoPauta = async () => {
-    if (!editandoPautaId) return;
-    const titulo = editTitle.trim();
-    if (!titulo) {
-      setErroEdicao(language === "en" ? "Title is required." : "O título é obrigatório.");
-      return;
-    }
-    setSalvandoEdicao(true);
-    setErroEdicao(null);
+  const salvarTemaDoModal = async (dados: DadosDoTemaCompleto) => {
+    if (!modalTema || salvandoTema) return;
+    const lang = language === "en" ? "en" : "pt";
+    setSalvandoTema(true);
     try {
-      const label = editRespLabel.trim();
-      // Rótulo e identidade andam juntos: oid só acompanha rótulo (o backend
-      // recusa oid solto). Sem rótulo, o responsável não é alterado nesta rodada.
-      const patch: AgendaItemPatchPayload = {
-        title: titulo,
-        durationMinutes: parseDurationMinutes(editDuration),
-        // Booleano estrito. Grava o estado do seletor sempre — permite Sim→Não.
-        isCircularTheme: editCircular,
-        // Ficha (019): grava na PRÓPRIA pauta. `null` limpa; nunca toca a Biblioteca.
-        agendaTopicTypeId: editTypeId || null,
-        agendaTopicNatureId: editNatureId || null,
-        description: editDescription.trim() || null,
-        generatesActionItem: editFup,
-        // Mesmo esquema da Agenda Anual: o tema também nasce na Biblioteca.
-        registerInLibrary: true,
-        ...(editComites.length > 0 ? { comites: editComites } : {}),
-      };
-      if (label) {
-        patch.responsibleLabel = label;
-        patch.responsibleEntraObjectId = editRespOid ?? undefined;
+      // TEMA FUTURO: não entra nesta reunião — só a Biblioteca (mês/comitê previstos).
+      if (modalTema.modo === "novo" && dados.futuro?.ativo) {
+        await createAgendaTopic(
+          buildTopicPayload({
+            title: dados.title,
+            description: dados.description ?? undefined,
+            durationMinutes: dados.durationMinutes,
+            responsibleLabel: dados.responsibleLabel,
+            responsibleEntraObjectId: dados.responsibleEntraObjectId ?? undefined,
+            typeId: dados.agendaTopicTypeId ?? undefined,
+            natureId: dados.agendaTopicNatureId ?? undefined,
+            isCircularTheme: dados.isCircularTheme,
+            participants: dados.participants.map((p) => ({
+              ...(p.entraObjectId ? { entraObjectId: p.entraObjectId } : {}),
+              displayName: p.displayName,
+              ...(p.email ? { email: p.email } : {})
+            })),
+            futuro: dados.futuro
+          })
+        );
+        onReloadAgendaTopics();
+        setModalTema(null);
+        triggerToast(lang === "pt" ? "Tema futuro cadastrado na Biblioteca." : "Future topic saved to the Library.");
+        return;
       }
-      const atualizada = absorverReuniao(await apiUpdateAgendaItem(meeting.id, editandoPautaId, patch));
-      setEditandoPautaId(null);
-      triggerToast(language === "en" ? "Agenda item updated." : "Pauta atualizada.");
-      avisarSeValidacaoReaberta(atualizada);
+
+      if (modalTema.modo === "novo") {
+        const antes = new Set((meeting.agenda || []).map((a) => a.id));
+        let api = await apiAddAgendaItem(meeting.id, {
+          title: dados.title,
+          agendaId: dados.agendaId ?? (pautaDestinoId || undefined),
+          durationMinutes: dados.durationMinutes,
+          responsibleLabel: dados.responsibleLabel,
+          responsibleEntraObjectId: dados.responsibleEntraObjectId ?? undefined,
+          isCircularTheme: dados.isCircularTheme,
+          agendaTopicTypeId: dados.agendaTopicTypeId ?? undefined,
+          agendaTopicNatureId: dados.agendaTopicNatureId ?? undefined,
+          description: dados.description ?? undefined,
+          // Mesmo esquema da Agenda Anual: o tema também nasce na Biblioteca.
+          registerInLibrary: true,
+          ...(dados.comites.length > 0 ? { comites: dados.comites } : {})
+        });
+        // Participantes escolhidos no modal: vinculados ao tema recém-criado.
+        const novo = meetingFromApi(api).agenda?.find((a) => !antes.has(a.id));
+        if (novo) {
+          for (const participante of dados.participants) {
+            api = await apiAddAgendaItemParticipant(meeting.id, novo.id, participante);
+          }
+        }
+        avisarSeValidacaoReaberta(absorverReuniao(api));
+        onReloadAgendaTopics();
+        setModalTema(null);
+        triggerToast(lang === "pt" ? "Tema incluído na reunião." : "Topic added.");
+        return;
+      }
+
+      const patch: AgendaItemPatchPayload = {
+        title: dados.title,
+        durationMinutes: dados.durationMinutes,
+        isCircularTheme: dados.isCircularTheme,
+        agendaTopicTypeId: dados.agendaTopicTypeId,
+        agendaTopicNatureId: dados.agendaTopicNatureId,
+        description: dados.description,
+        responsibleLabel: dados.responsibleLabel,
+        responsibleEntraObjectId: dados.responsibleEntraObjectId ?? undefined,
+        registerInLibrary: true,
+        ...(dados.agendaId ? { agendaId: dados.agendaId } : {}),
+        ...(dados.comites.length > 0 ? { comites: dados.comites } : {})
+      };
+      avisarSeValidacaoReaberta(absorverReuniao(await apiUpdateAgendaItem(meeting.id, modalTema.itemId, patch)));
+      setModalTema(null);
+      triggerToast(lang === "pt" ? "Tema atualizado." : "Topic updated.");
     } catch (erro) {
-      setErroEdicao(describeMeetingError(erro, language === "en" ? "en" : "pt"));
+      triggerToast(describeMeetingError(erro, lang));
     } finally {
-      setSalvandoEdicao(false);
+      setSalvandoTema(false);
     }
   };
 
@@ -1292,6 +1279,14 @@ export default function MeetingDetailView({
     | { tipo: "tema"; itemId: string; participantId: string; confirmacao: ConfirmacaoRemocao }
     | { tipo: "reuniao"; participantId: string; confirmacao: ConfirmacaoRemocao };
   const [remocaoPendente, setRemocaoPendente] = useState<RemocaoPendente | null>(null);
+  /** Confirmação simples no padrão do sistema (substitui window.confirm). */
+  const [confirmacaoSimples, setConfirmacaoSimples] = useState<{
+    confirmacao: ConfirmacaoRemocao;
+    icone?: LucideIcon;
+    executar: () => void;
+  } | null>(null);
+  /** Renomear pauta (substitui window.prompt). */
+  const [renomeandoPauta, setRenomeandoPauta] = useState<{ agendaId: string; atual: string; valor: string } | null>(null);
 
   const pedirRemocaoDoTema = (itemId: string, tema: string, participantId: string, nome: string) =>
     setRemocaoPendente({
@@ -1455,7 +1450,7 @@ export default function MeetingDetailView({
 
 
   const t = {
-    back: language === "en" ? "Back to Meetings" : "Voltar para Reuniões",
+    back: language === "en" ? "Back to Pipeline" : "Voltar para o Pipeline",
     btnEdit: language === "en" ? "Edit Details" : "Editar Detalhes",
     btnJoin: language === "en" ? "Join Meeting" : "Entrar na Reunião",
     organizerLabel: language === "en" ? "Organizer" : "Organizador",
@@ -1574,12 +1569,21 @@ export default function MeetingDetailView({
       .map((ag) => ag.agendaTopicId)
       .filter((id): id is string => Boolean(id))
   );
-  const bibliotecaDisponivel = standaloneAgendas.filter(
-    (ca) =>
-      ca.sourceMeetingId !== meeting.id &&
-      !agendaTopicIdsJaVinculados.has(ca.id) &&
-      ca.title.toLowerCase().includes(annualSearch.toLowerCase())
-  );
+  // Temas FUTUROS previstos para ESTE comitê vêm primeiro (042): é aqui que
+  // eles "chegam" — vincular os torna regulares (servidor).
+  const previstoParaEste = (ca: StandaloneAgenda) =>
+    ca.isFuture === true && ca.expectedGovernanceBodyId === meeting.governanceBodyId;
+  const bibliotecaDisponivel = standaloneAgendas
+    .filter(
+      (ca) =>
+        ca.sourceMeetingId !== meeting.id &&
+        !agendaTopicIdsJaVinculados.has(ca.id) &&
+        ca.title.toLowerCase().includes(annualSearch.toLowerCase())
+    )
+    .sort((a, b) => Number(previstoParaEste(b)) - Number(previstoParaEste(a)));
+  // Painel em duas seções, como as abas da Biblioteca: futuros x regulares.
+  const bibliotecaFuturos = bibliotecaDisponivel.filter((ca) => ca.isFuture === true);
+  const bibliotecaRegulares = bibliotecaDisponivel.filter((ca) => ca.isFuture !== true);
 
   // --- Faixa-resumo de planejamento da aba Pautas ---------------------------
   // Só dado que já chega ao front; nenhuma regra de negócio nova. Reusa os
@@ -1648,17 +1652,22 @@ export default function MeetingDetailView({
       !fupsDaReuniao.some((fup) => fup.originAgendaItemId === item.id)
   );
 
+  /** Reunião ainda conduzível (não realizada/encerrada): mostra Iniciar/Encerrar na aba Reunião. */
+  const reuniaoAberta = !["Done", "Closed"].includes(meeting.status);
+
   /** Rótulo amigável do status formal — mesmos textos da lista de Reuniões. */
   const statusFormalLabel =
     language === "en"
       ? meeting.status
       : (
           {
-            "In Progress": "Iniciação",
+            // Mesmos rótulos do resto do sistema (exportação, Pipeline).
+            "In Progress": "Em andamento",
             Scheduled: "Agendada",
-            Done: "Concluído",
-            Closed: "Fechado",
-            "Needs Approval": "Requer Aprovação",
+            Done: "Realizada",
+            Closed: "Encerrada",
+            Approved: "Realizada",
+            "Needs Approval": "Agendada",
             Draft: "Rascunho",
           } as Record<string, string>
         )[meeting.status] ?? meeting.status;
@@ -1693,16 +1702,6 @@ export default function MeetingDetailView({
         : estadoDoCalendario === "stale"
           ? language === "pt" ? "Desatualizado" : "Outdated"
           : language === "pt" ? "Pendente" : "Pending";
-
-  /**
-   * Abre o modal de validação (mesma ação do botão original). Definido uma vez
-   * e reusado pela faixa e pelo botão secundário "Reenviar pautas".
-   */
-  const abrirValidacao = () => {
-    setErroValidacao(null);
-    setEmailAprovador(validacao?.sentTo ?? "");
-    setModalValidacaoAberto(true);
-  };
 
   /**
    * PRÓXIMA AÇÃO da preparação, derivada dos MESMOS estados dos botões atuais e
@@ -1759,12 +1758,13 @@ export default function MeetingDetailView({
           </button>
         </div>
 
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-5">
-            <div className="space-y-4 flex-grow">
-                <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-slate-900 leading-tight">
-                    {meeting.title}
-                </h1>
-                
+        {/* Título com a largura toda; data e ações na linha de baixo. */}
+        <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-slate-900 leading-tight mb-4">
+            {meeting.title}
+        </h1>
+
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-5">
+            <div className="flex-grow min-w-0">
                 <p className="text-slate-600 font-medium text-sm flex items-center gap-3">
                     <Calendar className="w-4 h-4 text-slate-400" />
                     {new Date(meeting.date + "T12:00:00").toLocaleDateString(language === "en" ? "en-US" : "pt-BR", {
@@ -1791,30 +1791,18 @@ export default function MeetingDetailView({
                 </p>
             </div>
             <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto justify-start md:justify-end shrink-0 select-none">
-              {/* Ações formais: únicos pontos que alteram Meeting.status.
-                  Contextuais — só aparece a transição possível agora. */}
-              {meeting.status === "In Progress" ? (
-                <button
-                  onClick={() => onUpdateStatus(meeting.id, "Done")}
-                  className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 active:scale-95 text-white text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  {language === "en" ? "End Meeting" : "Encerrar Reunião"}
-                </button>
-              ) : meeting.status !== "Done" && meeting.status !== "Closed" ? (
-                <button
-                  onClick={() => onUpdateStatus(meeting.id, "In Progress")}
-                  disabled={!podeIniciar}
-                  title={podeIniciar
-                    ? undefined
-                    : (language === "en" ? "Cannot start: " : "Não é possível iniciar: ") + pendenciasParaIniciar.join(language === "en" ? " and " : " e ")}
-                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed disabled:active:scale-100"
-                >
-                  <Play className="w-3.5 h-3.5" />
-                  {language === "en" ? "Start Meeting" : "Iniciar Reunião"}
-                </button>
-              ) : null}
 
+                {/* EXPORTAR: dossiê da reunião em PDF (tudo, estado atual). Leitura. */}
+                <button
+                  type="button"
+                  disabled={exportandoDossie}
+                  onClick={() => void exportarDossie()}
+                  className="px-5 py-2.5 bg-white hover:bg-slate-50 active:scale-95 text-slate-700 text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer border border-slate-200 disabled:opacity-50"
+                  title={language === "en" ? "Export the full meeting record (PDF)" : "Exportar o dossiê completo da reunião (PDF)"}
+                >
+                    <Download className="w-3.5 h-3.5 text-[#00658d]" />
+                    {exportandoDossie ? (language === "en" ? "Generating..." : "Gerando...") : language === "en" ? "Export" : "Exportar"}
+                </button>
                 <button 
                   onClick={() => setIsEditingMeeting(true)}
                   className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer border border-[#00658d]/10"
@@ -1855,10 +1843,10 @@ export default function MeetingDetailView({
         <nav className="flex gap-2 overflow-x-auto border-b border-slate-200 mt-8 pb-0 select-none">
           {[
             { id: "Overview", label: language === "en" ? "Overview" : "Visão Geral", icon: FileText },
-            { id: "Agendas", label: language === "en" ? "Agenda" : "Pautas", icon: CheckSquare },
+            { id: "Agendas", label: language === "en" ? "Topics" : "Temas", icon: CheckSquare },
             { id: "Participants", label: language === "en" ? "Participants" : "Participantes", icon: Users },
             { id: "Documents", label: language === "en" ? "Documents" : "Documentos", icon: FolderOpen },
-            { id: "Minutes", label: language === "en" ? "Minutes" : "Ata", icon: FileCheck },
+            { id: "Minutes", label: language === "en" ? "Meeting" : "Reunião", icon: FileCheck },
             { id: "Fup", label: "FUP", icon: AlertCircle }
           ].map((tab) => {
             const isTabActive = activeSubTab === tab.id;
@@ -1951,7 +1939,7 @@ export default function MeetingDetailView({
               {/* Nº de pautas */}
               <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
                 <CheckSquare className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-                {pautasCount} {language === "pt" ? "pautas" : "topics"}
+                {pautasCount} {language === "pt" ? (pautasCount === 1 ? "tema" : "temas") : "topics"}
               </span>
               {/* Participantes confirmados / total */}
               <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
@@ -2044,7 +2032,7 @@ export default function MeetingDetailView({
                               <>
                                 <span className="text-xl font-extrabold text-slate-900">{completionPercentage}%</span>
                                 <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-wider">
-                                  {agendaProgress.done}/{agendaProgress.total} {language === "en" ? "topics" : "pautas"}
+                                  {agendaProgress.done}/{agendaProgress.total} {language === "en" ? "topics" : "temas"}
                                 </span>
                               </>
                             )}
@@ -2220,7 +2208,7 @@ export default function MeetingDetailView({
                   {!pautasAprovadas && (
                     <p className="text-[10px] text-slate-500 font-medium leading-relaxed">
                       {language === "pt"
-                        ? "Opcional: a reunião pode ser iniciada sem validação das pautas. O convite já sai no agendamento."
+                        ? "Opcional: a reunião pode ser iniciada sem aprovar as pautas. O convite já sai no agendamento."
                         : "Optional: the meeting can start without agenda validation. The invitation is sent at scheduling."}
                     </p>
                   )}
@@ -2231,16 +2219,8 @@ export default function MeetingDetailView({
                   */}
                   {canSchedule && !pautasAprovadas && (
                     <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={abrirValidacao}
-                        className="px-3 py-1.5 border border-[#00658d] text-[#00658d] hover:bg-[#00658d]/5 text-[11px] font-extrabold rounded-lg transition cursor-pointer"
-                      >
-                        {statusValidacao === "sent"
-                          ? language === "pt" ? "Reenviar pautas" : "Resend agenda"
-                          : language === "pt" ? "Enviar pautas para validação" : "Send agenda for validation"}
-                      </button>
-                      {statusValidacao === "sent" && (
+                      {/* Aprovação DIRETA (10/2026), como na Agenda Anual: sem e-mail. */}
+                      {(
                         <button
                           type="button"
                           disabled={aprovando}
@@ -2252,7 +2232,7 @@ export default function MeetingDetailView({
                       )}
                     </div>
                   )}
-                  {erroValidacao && !modalValidacaoAberto && (
+                  {erroValidacao && (
                     <p className="text-[11px] font-bold text-red-600">{erroValidacao}</p>
                   )}
                 </div>
@@ -2304,8 +2284,22 @@ export default function MeetingDetailView({
                       {meeting.calendar.lastError}
                     </p>
                   )}
-                  {syncError && (
+                  {syncError && estadoDoCalendario !== "synced" && (
                     <p className="text-[11px] font-bold text-red-600">{syncError}</p>
+                  )}
+                  {/* Tentar de novo AQUI, junto do erro (mesmo handler da Próxima ação). */}
+                  {canSchedule && estadoDoCalendario === "failed" && permiteTentarNovamente(meeting.calendar) && (
+                    <button
+                      type="button"
+                      disabled={syncing}
+                      onClick={handleSyncCalendar}
+                      className="px-3 py-1.5 border border-[#00658d] text-[#00658d] hover:bg-[#00658d]/5 text-[11px] font-extrabold rounded-lg transition cursor-pointer disabled:opacity-50 inline-flex items-center gap-1.5"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      {syncing
+                        ? language === "pt" ? "Tentando..." : "Retrying..."
+                        : language === "pt" ? "Tentar novamente" : "Try again"}
+                    </button>
                   )}
 
                   {/*
@@ -2485,7 +2479,7 @@ export default function MeetingDetailView({
           <div className="rounded-2xl border border-slate-200/80 bg-white card-shadow px-4 py-3 flex flex-wrap items-center gap-x-5 gap-y-2">
             <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
               <CheckSquare className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
-              {totalPautas} {language === "pt" ? "pautas" : "topics"}
+              {totalPautas} {language === "pt" ? (totalPautas === 1 ? "tema" : "temas") : "topics"}
             </span>
             <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-700">
               <Clock className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />
@@ -2575,25 +2569,32 @@ export default function MeetingDetailView({
                 <div>
                   <h3 className="text-base font-extrabold text-slate-900 uppercase tracking-wide">
                     {modoExecucao
-                      ? (language === "en" ? "Pautas · Live Meeting" : "Pautas · Reunião ao Vivo")
+                      ? (language === "en" ? "Topics · Live Meeting" : "Temas · Reunião ao Vivo")
                       : modoResultado
-                      ? (language === "en" ? "Pautas · Result" : "Pautas · Resultado")
-                      : (language === "en" ? "Agendas & Topics · Preparation" : "Pautas e Temas · Preparação")}
+                      ? (language === "en" ? "Topics · Result" : "Temas · Resultado")
+                      : (language === "en" ? "Topics · Preparation" : "Temas · Preparação")}
                   </h3>
                   <p className="text-xs text-slate-400 font-semibold mt-0.5">
                     {modoExecucao
                       ? (language === "en"
                           ? "Conduct the meeting: start, approve, postpone and time each topic."
-                          : "Conduza a reunião: inicie, aprove, adie e cronometre cada pauta.")
+                          : "Conduza a reunião: inicie, aprove, adie e cronometre cada tema.")
                       : modoResultado
                       ? (language === "en"
                           ? "Read-only outcome of the executed agenda."
                           : "Leitura do desfecho da agenda executada.")
                       : (language === "en"
-                          ? "Create agendas and add topics to them: order, owners, duration and recurring theme."
-                          : "Crie as pautas e inclua os temas de cada uma: ordem, responsáveis, duração e Tema circular.")}
+                          ? "Add the meeting topics: order, owners, duration and recurring theme."
+                          : "Inclua os temas da reunião: ordem, responsáveis, duração e Tema circular.")}
                   </p>
                 </div>
+                {/* Preparação: "+ Novo tema" no cabeçalho (mesmo modal da Agenda Anual). */}
+                {canSchedule && modoPlanejamento && (
+                  <button type="button" onClick={() => setModalTema({ modo: "novo" })} disabled={isPersisting || salvandoTema}
+                    className="px-3 py-2 bg-[#00658d] hover:bg-[#00aeef] text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shrink-0 self-start sm:self-auto">
+                    <Plus className="w-3.5 h-3.5" />{language === "pt" ? "Novo tema" : "New topic"}
+                  </button>
+                )}
                 {meeting.status === "In Progress" && (
                   <div className="px-3 py-1.5 bg-emerald-50 text-emerald-700 font-bold text-xs rounded-lg border border-emerald-200 animate-pulse flex items-center gap-1.5 self-start sm:self-auto">
                     <span className="w-2 h-2 rounded-full bg-emerald-500 block"></span>
@@ -2601,79 +2602,6 @@ export default function MeetingDetailView({
                   </div>
                 )}
               </div>
-
-              {/*
-                PREPARAÇÃO (025): crie as PAUTAS (ex.: Finanças, Auditoria) e
-                inclua TEMAS nelas — direto aqui ou vinculando da Biblioteca.
-              */}
-              {canSchedule && modoPlanejamento && (
-                <div className="mb-6 p-4 bg-slate-50/70 border border-slate-200 rounded-2xl space-y-3">
-                  <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
-                    <div className="flex-1 flex flex-col gap-1">
-                      <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                        {language === "pt" ? "Nova pauta" : "New agenda"}
-                      </label>
-                      <input
-                        value={novaPautaTitulo}
-                        onChange={(e) => setNovaPautaTitulo(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void criarPauta(); } }}
-                        placeholder={language === "pt" ? "Ex.: Finanças" : "e.g. Finance"}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs"
-                      />
-                    </div>
-                    <button type="button" onClick={() => void criarPauta()} disabled={isPersisting || !novaPautaTitulo.trim()}
-                      className="px-3 py-2 bg-slate-800 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer">
-                      <FolderPlus className="w-3.5 h-3.5" />{language === "pt" ? "Criar pauta" : "Create agenda"}
-                    </button>
-                  </div>
-                  <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
-                    <div className="flex-1 flex flex-col gap-1">
-                      <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                        {language === "pt" ? "Novo tema" : "New topic"}
-                      </label>
-                      <input
-                        value={novoTemaTitulo}
-                        onChange={(e) => setNovoTemaTitulo(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void criarTema(); } }}
-                        placeholder={language === "pt" ? "Ex.: Resultado do trimestre" : "e.g. Quarterly results"}
-                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs"
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1 sm:w-44">
-                      <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                        {language === "pt" ? "Na pauta" : "In agenda"}
-                      </label>
-                      <select value={pautaDestinoId} onChange={(e) => setPautaDestinoId(e.target.value)}
-                        className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs cursor-pointer">
-                        <option value="">{language === "pt" ? "Sem pauta" : "No agenda"}</option>
-                        {(meeting.agendas ?? []).map((a) => (
-                          <option key={a.id} value={a.id}>{a.title}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="flex flex-col gap-1 sm:w-36">
-                      <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                        {language === "pt" ? "Duração" : "Duration"}
-                      </label>
-                      <DurationHoursMinutesSelect
-                        language={language}
-                        value={novoTemaDuracao}
-                        onChangeMinutes={(m) => setNovoTemaDuracao(formatMinutesAsTime(m))}
-                        selectClassName="w-full bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs cursor-pointer"
-                      />
-                    </div>
-                    <button type="button" onClick={() => void criarTema()} disabled={isPersisting || !novoTemaTitulo.trim()}
-                      className="px-3 py-2 bg-[#00658d] hover:bg-[#00aeef] text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer">
-                      <Plus className="w-3.5 h-3.5" />{language === "pt" ? "Incluir tema" : "Add topic"}
-                    </button>
-                  </div>
-                  <p className="text-[10px] text-slate-400 font-semibold">
-                    {language === "pt"
-                      ? "Temas vinculados da Biblioteca (ao lado) também entram na pauta selecionada em \"Na pauta\". Responsável, participantes e ficha completa: use Editar no tema."
-                      : "Topics pulled from the Library (right) also go into the agenda selected above. Owner, participants and details: use Edit on the topic."}
-                  </p>
-                </div>
-              )}
 
               {/* Dynamic timelines of topics */}
               <div className="relative space-y-4">
@@ -2877,7 +2805,7 @@ export default function MeetingDetailView({
                                 type="button"
                                 onClick={() => abrirEdicaoPauta(ag)}
                                 className="p-1.5 text-slate-400 hover:text-[#00658d] hover:bg-slate-100 rounded transition-all cursor-pointer"
-                                title={language === "en" ? "Edit topic" : "Editar pauta"}
+                                title={language === "en" ? "Edit topic" : "Editar tema"}
                               >
                                 <Pencil className="w-4 h-4" />
                               </button>
@@ -3211,7 +3139,7 @@ export default function MeetingDetailView({
                 {language === "en" ? "Topic Library" : "Biblioteca de Temas"}
               </h3>
               <p className="text-[10px] text-slate-400 font-bold block mb-4 uppercase">
-                {language === "en" ? "Capture scheduled themes for this specific month" : "Temas previstos mapeados no cronograma da Cielo"}
+                {language === "en" ? "Future and regular topics; future topics planned for this committee come first" : "Temas futuros e regulares; os futuros previstos para este comitê aparecem primeiro"}
               </p>
 
               <input
@@ -3222,13 +3150,22 @@ export default function MeetingDetailView({
                 className="w-full text-xs p-2 mb-3 border border-slate-200 rounded-lg"
               />
 
-              <div className="space-y-3">
-                {bibliotecaDisponivel.length === 0 ? (
-                  <p className="text-slate-400 text-xs font-semibold py-2">
-                    {language === "en" ? "All annual topics already imported or none match." : "Todos os temas do cronograma anual já integrados ou nenhum encontrado."}
-                  </p>
+              <div className="space-y-5">
+                {([
+                  ["futuros", language === "en" ? "Future topics" : "Temas futuros", bibliotecaFuturos,
+                    language === "en" ? "No future topics available." : "Nenhum tema futuro disponível."],
+                  ["regulares", language === "en" ? "Regular topics" : "Temas regulares", bibliotecaRegulares,
+                    language === "en" ? "All regular topics are already in this meeting, or none match." : "Todos os temas regulares já estão nesta reunião, ou nenhum corresponde à busca."]
+                ] as const).map(([chave, rotulo, lista, vazio]) => (
+                <div key={chave} className="space-y-3">
+                <h4 className="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider flex items-center justify-between">
+                  {rotulo}
+                  <span className="text-slate-400">{lista.length}</span>
+                </h4>
+                {lista.length === 0 ? (
+                  <p className="text-slate-400 text-xs font-semibold py-1">{vazio}</p>
                 ) : (
-                  bibliotecaDisponivel
+                  lista
                     .map((ca) => (
                       <div key={ca.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 flex items-center justify-between hover:bg-slate-100/50 transition">
                         <div className="space-y-0.5 truncate max-w-[70%]">
@@ -3236,6 +3173,12 @@ export default function MeetingDetailView({
                           <p className="text-[10px] text-slate-400 font-bold">
                             {ca.duration} • {ca.author}
                           </p>
+                          {ca.isFuture && (
+                            <p className={`text-[9px] font-extrabold uppercase tracking-wide ${previstoParaEste(ca) ? "text-[#00658d]" : "text-slate-400"}`}>
+                              {language === "en" ? "Future" : "Futuro"} · {rotuloDoMes(ca.expectedMonth, language === "en" ? "en" : "pt")}
+                              {ca.expectedGovernanceBodyName ? ` · ${ca.expectedGovernanceBodyName}` : ""}
+                            </p>
+                          )}
                         </div>
                         {canSchedule && (
                         <button
@@ -3249,6 +3192,8 @@ export default function MeetingDetailView({
                       </div>
                     ))
                 )}
+                </div>
+                ))}
               </div>
             </div>
           </div>
@@ -3441,12 +3386,22 @@ export default function MeetingDetailView({
                         {canSchedule && (
                         <button
                           type="button"
-                          onClick={() => {
-                            const msg = language === "pt"
-                              ? "Isso apaga o texto atual (inclusive o que ainda não foi salvo) e recomeça do esqueleto com os dados de hoje da reunião. Continuar?"
-                              : "This erases the current text (including anything not saved yet) and starts over from the skeleton with today's meeting data. Continue?";
-                            if (window.confirm(msg)) handleCreateMinutes();
-                          }}
+                          onClick={() =>
+                            setConfirmacaoSimples({
+                              icone: RotateCcw,
+                              confirmacao: {
+                                titulo: language === "pt" ? "Regerar a Ata?" : "Regenerate the Minutes?",
+                                paragrafos: [
+                                  language === "pt"
+                                    ? "Isso apaga o texto atual (inclusive o que ainda não foi salvo) e recomeça do esqueleto com os dados de hoje da reunião."
+                                    : "This erases the current text (including anything not saved yet) and starts over from the skeleton with today's meeting data."
+                                ],
+                                temas: [],
+                                acao: language === "pt" ? "Regerar" : "Regenerate"
+                              },
+                              executar: () => handleCreateMinutes()
+                            })
+                          }
                           title={language === "en"
                             ? "Discard current text and regenerate the skeleton"
                             : "Descarta o texto atual e gera o esqueleto de novo"}
@@ -3517,20 +3472,58 @@ export default function MeetingDetailView({
               saneamento continua existindo no backend. */}
           {modoExecucao ? (
           <div className="space-y-6">
+            {/* CONDUÇÃO: Iniciar/Encerrar a reunião no PGCP (muda o status).
+                Fica aqui, na aba Reunião, acima dos Próximos temas. */}
+            {reuniaoAberta && (
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 card-shadow space-y-2 [&>button]:w-full">
+                {/* Ações formais: únicos pontos que alteram Meeting.status.
+                    Contextuais — só aparece a transição possível agora. */}
+                {meeting.status === "In Progress" ? (
+                  <button
+                    onClick={() => onUpdateStatus(meeting.id, "Done")}
+                    className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 active:scale-95 text-white text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    {language === "en" ? "End Meeting" : "Encerrar Reunião"}
+                  </button>
+                ) : meeting.status !== "Done" && meeting.status !== "Closed" ? (
+                  <button
+                    onClick={() => onUpdateStatus(meeting.id, "In Progress")}
+                    disabled={!podeIniciar}
+                    title={podeIniciar
+                      ? undefined
+                      : (language === "en" ? "Cannot start: " : "Não é possível iniciar: ") + pendenciasParaIniciar.join(language === "en" ? " and " : " e ")}
+                    className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed disabled:active:scale-100"
+                  >
+                    <Play className="w-3.5 h-3.5" />
+                    {language === "en" ? "Start Meeting" : "Iniciar Reunião"}
+                  </button>
+                ) : null}
+                <p className="text-[10.5px] text-slate-400 font-semibold leading-relaxed">
+                  {meeting.status === "In Progress"
+                    ? language === "en"
+                      ? "Ending marks the meeting as held and frees the Minutes and FUP."
+                      : "Encerrar marca a reunião como realizada e libera a Ata e os FUPs."
+                    : language === "en"
+                      ? "Starts conducting in the PGCP (call, message and finish each topic). To join the call, use “Join meeting”."
+                      : "Inicia a condução no PGCP (chamar, mensagem e concluir cada tema). Para a chamada, use “Entrar na Reunião”."}
+                </p>
+              </div>
+            )}
             <div className="bg-white border border-slate-200 rounded-2xl p-5 card-shadow">
               <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider mb-1 flex items-center gap-2">
                 <CheckSquare className="w-4 h-4 text-[#00658d]" />
-                {language === "en" ? "Upcoming topics" : "Próximas Pautas"}
+                {language === "en" ? "Upcoming topics" : "Próximos Temas"}
               </h3>
               <p className="text-[11px] text-slate-400 font-semibold mb-4 leading-relaxed">
                 {language === "en"
                   ? "In order of execution. Concluded and postponed topics are grouped separately below."
-                  : "Na ordem de execução. Pautas concluídas e postergadas são organizadas separadamente abaixo."}
+                  : "Na ordem de execução. Temas concluídos e postergados são organizados separadamente abaixo."}
               </p>
 
               {upcomingTopics.length === 0 && finishedTopics.length === 0 && postponedTopics.length === 0 ? (
                 <p className="text-xs text-slate-400 italic py-6 text-center">
-                  {language === "en" ? "No agenda topics registered." : "Nenhuma pauta registrada nesta reunião."}
+                  {language === "en" ? "No topics registered." : "Nenhum tema registrado nesta reunião."}
                 </p>
               ) : (
                 <div className="space-y-2.5">
@@ -3604,7 +3597,7 @@ export default function MeetingDetailView({
                               <button
                                 type="button"
                                 onClick={() => toggleTopicDone(ag)}
-                                title={language === "en" ? "Reopen topic" : "Reabrir pauta"}
+                                title={language === "en" ? "Reopen topic" : "Reabrir tema"}
                                 className="text-[9px] font-extrabold uppercase tracking-wider text-slate-400 hover:text-[#00658d] transition cursor-pointer shrink-0 inline-flex items-center gap-0.5 opacity-0 group-hover/done:opacity-100 focus:opacity-100"
                               >
                                 <RotateCcw className="w-2.5 h-2.5" />
@@ -3652,14 +3645,14 @@ export default function MeetingDetailView({
 
                                 void persistir(
                                   () => apiResumeAgendaItem(meeting.id, ag.id),
-                                  language === "en" ? "Topic resumed." : "Pauta retomada."
+                                  language === "en" ? "Topic resumed." : "Tema retomado."
                                 ).then((ok) => {
                                   if (ok) onReloadAgendaTopics?.();
                                 });
                               }}
                               title={language === "en"
                                 ? "Return topic to this meeting's flow"
-                                : "Devolver a pauta ao fluxo desta reunião"}
+                                : "Devolver o tema ao fluxo desta reunião"}
                               className="text-[9px] font-extrabold uppercase tracking-wider text-amber-600 hover:text-amber-700 transition cursor-pointer shrink-0 inline-flex items-center gap-0.5"
                             >
                               <RotateCcw className="w-2.5 h-2.5" />
@@ -3677,16 +3670,89 @@ export default function MeetingDetailView({
           </div>
           ) : (
           <div className="space-y-6">
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5">
+            {/* CONDUÇÃO: Iniciar/Encerrar a reunião no PGCP (muda o status).
+                Fica aqui, na aba Reunião, acima dos Próximos temas. */}
+            {reuniaoAberta && (
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 card-shadow space-y-2 [&>button]:w-full">
+                {/* Ações formais: únicos pontos que alteram Meeting.status.
+                    Contextuais — só aparece a transição possível agora. */}
+                {meeting.status === "In Progress" ? (
+                  <button
+                    onClick={() => onUpdateStatus(meeting.id, "Done")}
+                    className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 active:scale-95 text-white text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    {language === "en" ? "End Meeting" : "Encerrar Reunião"}
+                  </button>
+                ) : meeting.status !== "Done" && meeting.status !== "Closed" ? (
+                  <button
+                    onClick={() => onUpdateStatus(meeting.id, "In Progress")}
+                    disabled={!podeIniciar}
+                    title={podeIniciar
+                      ? undefined
+                      : (language === "en" ? "Cannot start: " : "Não é possível iniciar: ") + pendenciasParaIniciar.join(language === "en" ? " and " : " e ")}
+                    className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-extrabold rounded-xl transition flex items-center justify-center gap-2 cursor-pointer disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed disabled:active:scale-100"
+                  >
+                    <Play className="w-3.5 h-3.5" />
+                    {language === "en" ? "Start Meeting" : "Iniciar Reunião"}
+                  </button>
+                ) : null}
+                <p className="text-[10.5px] text-slate-400 font-semibold leading-relaxed">
+                  {meeting.status === "In Progress"
+                    ? language === "en"
+                      ? "Ending marks the meeting as held and frees the Minutes and FUP."
+                      : "Encerrar marca a reunião como realizada e libera a Ata e os FUPs."
+                    : language === "en"
+                      ? "Starts conducting in the PGCP (call, message and finish each topic). To join the call, use “Join meeting”."
+                      : "Inicia a condução no PGCP (chamar, mensagem e concluir cada tema). Para a chamada, use “Entrar na Reunião”."}
+                </p>
+              </div>
+            )}
+            {/* Fora da condução: os temas em VISUALIZAÇÃO (ordem, horário, duração,
+                responsável). As ações (Chamar, Mensagem, Concluir) entram ao iniciar. */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 card-shadow">
               <h3 className="text-sm font-extrabold text-slate-900 uppercase tracking-wider mb-1 flex items-center gap-2">
                 <CheckSquare className="w-4 h-4 text-[#00658d]" />
-                {language === "en" ? "Upcoming topics" : "Próximas Pautas"}
+                {modoResultado
+                  ? language === "en" ? "Meeting topics" : "Temas da Reunião"
+                  : language === "en" ? "Upcoming topics" : "Próximos Temas"}
               </h3>
-              <p className="text-[11px] text-slate-400 font-semibold leading-relaxed">
-                {language === "en"
-                  ? "Call, Message and Done are available while the meeting is in progress."
-                  : "Chamar, Mensagem e Concluir ficam disponíveis com a reunião em andamento."}
+              <p className="text-[11px] text-slate-400 font-semibold leading-relaxed mb-4">
+                {modoResultado
+                  ? language === "en" ? "Topics as conducted in this meeting." : "Temas como foram conduzidos nesta reunião."
+                  : language === "en"
+                    ? "In order. Call, Message and Done become available once the meeting starts."
+                    : "Na ordem da reunião. Chamar, Mensagem e Concluir ficam disponíveis ao iniciar a reunião."}
               </p>
+              {notesTopics.length === 0 ? (
+                <p className="text-xs text-slate-400 italic py-4 text-center">
+                  {language === "en" ? "No topics registered." : "Nenhum tema registrado nesta reunião."}
+                </p>
+              ) : (
+                <ol className="space-y-2">
+                  {notesTopics.map(({ ag, status }, ordem) => {
+                    const adiado = isTopicPostponed(ag, status);
+                    const feito = isTopicDone(ag, status);
+                    return (
+                      <li key={ag.id} className="rounded-xl border border-slate-100 bg-slate-50/40 p-3 flex gap-3">
+                        <span className="text-[10px] font-extrabold text-slate-400 tabular-nums mt-0.5">{String(ordem + 1).padStart(2, "0")}</span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[10px] font-bold text-[#00658d]">{ag.time || "—"}</p>
+                          <p className={`text-xs font-extrabold leading-snug mt-0.5 ${adiado ? "text-slate-400 line-through" : "text-slate-800"}`}>{ag.title}</p>
+                          <p className="text-[10px] text-slate-400 font-medium mt-0.5">
+                            {ag.duration}{ag.author ? ` • ${ag.author}` : ""}
+                          </p>
+                        </div>
+                        {(feito || adiado) && (
+                          <span className={`text-[8.5px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-full self-start ${feito ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                            {feito ? (language === "en" ? "Done" : "Concluído") : language === "en" ? "Postponed" : "Postergado"}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
             </div>
           </div>
           )}
@@ -4229,273 +4295,104 @@ export default function MeetingDetailView({
         campos que o contrato aceita. UUID e agendaTopicId são preservados pelo
         backend; item da Biblioteca continua uma CÓPIA (o mestre não é tocado).
       */}
-      {editandoPautaId !== null && (
-        <div
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"
-          onClick={() => { if (!salvandoEdicao) setEditandoPautaId(null); }}
+      {modalTema && (() => {
+        const item = modalTema.modo === "editar" ? (meeting.agenda || []).find((a) => a.id === modalTema.itemId) : undefined;
+        if (modalTema.modo === "editar" && !item) return null;
+        return (
+          <AnnualTemaModal
+            language={language === "en" ? "en" : "pt"}
+            modo={modalTema.modo}
+            ocupado={salvandoTema || isPersisting}
+            pautaTypes={pautaTypes}
+            pautaNatures={pautaNatures}
+            pautas={(meeting.agendas ?? []).map((a) => ({ id: a.id, title: a.title }))}
+            orgao={{ id: meeting.governanceBodyId ?? "", name: meeting.category }}
+            inicial={
+              item
+                ? {
+                    title: item.title,
+                    durationMinutes: item.duration?.trim() ? parseDurationMinutes(item.duration) : null,
+                    responsibleLabel: item.author || null,
+                    responsibleEntraObjectId: item.authorEntraObjectId ?? null,
+                    typeId: item.agendaTopicTypeId ?? null,
+                    natureId: item.agendaTopicNatureId ?? null,
+                    isCircularTheme: item.isCircularTheme === true,
+                    description: item.description ?? null,
+                    agendaId: item.agendaId ?? null,
+                    participants: (item.participants || []).map((p) => ({ id: p.participantId, name: p.name }))
+                  }
+                : undefined
+            }
+            onCancel={() => setModalTema(null)}
+            onSave={(dados) => void salvarTemaDoModal(dados)}
+            onLinkParticipant={(payload) =>
+              item &&
+              void persistir(
+                () => apiAddAgendaItemParticipant(meeting.id, item.id, payload),
+                language === "en" ? "Participant linked to the topic." : "Participante vinculado ao tema."
+              )
+            }
+            onUnlinkParticipant={(participantId) => {
+              if (!item) return;
+              const nome = (item.participants || []).find((p) => p.participantId === participantId)?.name ?? "";
+              pedirRemocaoDoTema(item.id, item.title, participantId, nome);
+            }}
+          />
+        );
+      })()}
+
+      {confirmacaoSimples && (
+        <ConfirmRemovalDialog
+          language={language === "en" ? "en" : "pt"}
+          icone={confirmacaoSimples.icone}
+          confirmacao={confirmacaoSimples.confirmacao}
+          onCancel={() => setConfirmacaoSimples(null)}
+          onConfirm={() => {
+            const { executar } = confirmacaoSimples;
+            setConfirmacaoSimples(null);
+            executar();
+          }}
+        />
+      )}
+
+      {renomeandoPauta && (
+        <ModalShell
+          language={language === "en" ? "en" : "pt"}
+          icone={Pencil}
+          titulo={language === "en" ? "Rename agenda" : "Renomear pauta"}
+          onClose={() => setRenomeandoPauta(null)}
+          rodape={
+            <>
+              <button type="button" onClick={() => setRenomeandoPauta(null)} className={BOTAO_CANCELAR}>
+                {language === "en" ? "Cancel" : "Cancelar"}
+              </button>
+              <button type="submit" form="form-renomear-pauta" disabled={!renomeandoPauta.valor.trim()} className={BOTAO_PRINCIPAL}>
+                {language === "en" ? "Save" : "Salvar"}
+              </button>
+            </>
+          }
         >
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-md w-full overflow-hidden max-h-[90vh] flex flex-col"
-            onClick={(e) => e.stopPropagation()}
+          <form
+            id="form-renomear-pauta"
+            className="flex flex-col gap-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              salvarRenomeacaoPauta();
+            }}
           >
-            <div className="p-6 space-y-4 overflow-y-auto">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-[#c6e7ff]/40 flex items-center justify-center shrink-0">
-                  <Pencil className="w-5 h-5 text-[#00658d]" />
-                </div>
-                <h3 className="text-sm font-extrabold text-slate-900">
-                  {language === "pt" ? "Editar pauta" : "Edit topic"}
-                </h3>
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                  {language === "pt" ? "Título" : "Title"}
-                </label>
-                <input
-                  type="text"
-                  value={editTitle}
-                  onChange={(e) => setEditTitle(e.target.value)}
-                  autoFocus
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                  {language === "pt" ? "Responsável" : "Owner"}
-                </label>
-                <DirectoryUserPicker
-                  language={language}
-                  selected={editRespUser}
-                  selectedLabel={editRespLabel || null}
-                  placeholder={language === "pt" ? "Buscar no diretório..." : "Search directory..."}
-                  onSelect={(user) => {
-                    setEditRespUser(user);
-                    setEditRespLabel(user.displayName ?? directoryEmail(user) ?? "");
-                    setEditRespOid(user.id);
-                  }}
-                  onClear={() => {
-                    setEditRespUser(null);
-                    setEditRespLabel("");
-                    setEditRespOid(undefined);
-                  }}
-                />
-                {!editRespLabel && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditRespLabel("Todos");
-                      setEditRespUser(null);
-                      setEditRespOid(undefined);
-                    }}
-                    className="self-start text-[10px] font-extrabold uppercase tracking-wider text-[#00658d] hover:underline cursor-pointer"
-                  >
-                    {language === "pt" ? "Todos (Conselho)" : "Everyone (Board)"}
-                  </button>
-                )}
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                  {language === "pt" ? "Duração" : "Duration"}
-                </label>
-                <DurationHoursMinutesSelect
-                  language={language}
-                  value={editDuration}
-                  onChangeMinutes={(m) => setEditDuration(formatMinutesAsTime(m))}
-                  selectClassName="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
-                />
-              </div>
-
-              {/* Tema circular NESTA reunião. Permite Não↔Sim; grava via PATCH.
-                  Não toca a Biblioteca — é fato da pauta desta reunião. */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                  {language === "pt" ? "Tema circular?" : "Recurring theme?"}
-                </label>
-                <select
-                  value={editCircular ? "sim" : "nao"}
-                  onChange={(e) => setEditCircular(e.target.value === "sim")}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
-                >
-                  <option value="nao">{language === "pt" ? "Não" : "No"}</option>
-                  <option value="sim">{language === "pt" ? "Sim" : "Yes"}</option>
-                </select>
-              </div>
-
-              <ComiteSelector
-                language={language}
-                homeGovernanceBodyId={meeting.governanceBodyId}
-                value={editComites}
-                onChange={setEditComites}
-              />
-
-              {/* Ficha (019): Tipo e Natureza — MESMOS cadastros da Biblioteca. */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                    {language === "pt" ? "Tipo" : "Type"}
-                  </label>
-                  <select
-                    value={editTypeId}
-                    onChange={(e) => setEditTypeId(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
-                  >
-                    <option value="">{language === "pt" ? "— Sem tipo —" : "— None —"}</option>
-                    {pautaTypes.map((pt) => (
-                      <option key={pt.id} value={pt.id}>{pt.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                    {language === "pt" ? "Natureza" : "Nature"}
-                  </label>
-                  <select
-                    value={editNatureId}
-                    onChange={(e) => setEditNatureId(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
-                  >
-                    <option value="">{language === "pt" ? "— Sem natureza —" : "— None —"}</option>
-                    {pautaNatures.map((pn) => (
-                      <option key={pn.id} value={pn.id}>{pn.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Classificar como Tema de FUP — só classificação (não cria FUP). */}
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={editFup}
-                  onChange={(e) => setEditFup(e.target.checked)}
-                  className="w-4 h-4 accent-[#00658d] cursor-pointer"
-                />
-                <span className="text-[10px] font-extrabold text-slate-500 uppercase">
-                  {language === "pt" ? "Classificar como Tema de FUP" : "Classify as follow-up (FUP) theme"}
-                </span>
-              </label>
-
-              {/* Descrição / Objetivo de Debate. */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                  {language === "pt" ? "Descrição / Objetivo de Debate" : "Description / Debate objective"}
-                </label>
-                <textarea
-                  rows={4}
-                  value={editDescription}
-                  onChange={(e) => setEditDescription(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d] resize-none font-sans"
-                />
-              </div>
-
-              {/* Participantes da pauta (Opção A) — add/remove IMEDIATOS (persistem
-                  já). Vincular alguém novo o adiciona também à reunião. */}
-              {(() => {
-                const itemAtual = (meeting.agenda || []).find((a) => a.id === editandoPautaId);
-                const vinculados = itemAtual?.participants ?? [];
-                return (
-                  <div className="flex flex-col gap-1">
-                    <label className="text-[10px] font-extrabold text-slate-500 uppercase">
-                      {language === "pt" ? "Participantes do tema" : "Topic participants"}
-                    </label>
-                    {vinculados.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mb-1">
-                        {vinculados.map((p) => {
-                          const participanteDaReuniao = (meeting.participants ?? []).find(
-                            (participant) => participant.participantId === p.participantId
-                          );
-                          const isResponsible = Boolean(
-                            itemAtual?.authorEntraObjectId &&
-                            participanteDaReuniao?.entraObjectId &&
-                            itemAtual.authorEntraObjectId.toLowerCase() === participanteDaReuniao.entraObjectId.toLowerCase()
-                          );
-                          return (
-                            <span key={p.participantId} className="inline-flex items-center gap-1 bg-[#00658d]/5 text-[#00658d] text-[10px] font-bold px-2 py-0.5 rounded-full">
-                              {p.name}
-                              {isResponsible && (
-                                <span className="text-[8px] uppercase opacity-75">
-                                  {language === "pt" ? "Responsável" : "Responsible"}
-                                </span>
-                              )}
-                              {canSchedule && !isResponsible && (
-                                <button
-                                  type="button"
-                                  disabled={isPersisting}
-                                  onClick={() => pedirRemocaoDoTema(itemAtual!.id, itemAtual!.title, p.participantId, p.name)}
-                                  className="hover:text-red-600 disabled:opacity-40"
-                                  title={language === "pt" ? "Remover do tema" : "Remove from topic"}
-                                  aria-label={language === "pt" ? `Remover ${p.name} do tema` : `Remove ${p.name} from topic`}
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
-                              )}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {canSchedule && itemAtual && (
-                      <>
-                        <ParticipantPicker
-                          language={language}
-                          sugestao={{
-                            governanceBodyId: meeting.governanceBodyId,
-                            rotuloOrgao: meeting.category,
-                            // Tema da Biblioteca ligado a este tema (quando houver).
-                            agendaTopicId: itemAtual.agendaTopicId,
-                            rotuloTema: itemAtual.title
-                          }}
-                          placeholder={language === "pt" ? "Adicionar participante..." : "Add participant..."}
-                          jaEscolhidos={{
-                            emails: (meeting.participants || [])
-                              .filter((p) => (itemAtual.participants || []).some((x) => x.participantId === p.participantId))
-                              .map((p) => p.email ?? "")
-                          }}
-                          onSelect={(sel) => void vincularParticipantePauta(itemAtual.id, sel)}
-                        />
-                        <p className="text-[10px] text-slate-400 font-semibold">
-                          {language === "pt"
-                            ? "Esta pessoa também será adicionada aos participantes da reunião e receberá o convite quando a reunião for enviada."
-                            : "This person will also be added to the meeting participants and invited when the meeting is sent."}
-                        </p>
-                      </>
-                    )}
-                  </div>
-                );
-              })()}
-
-              {erroEdicao && (
-                <p className="text-[11px] font-bold text-red-600">{erroEdicao}</p>
-              )}
-            </div>
-
-            <div className="bg-slate-50 px-6 py-4 flex items-center justify-end gap-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setEditandoPautaId(null)}
-                disabled={salvandoEdicao}
-                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 transition rounded-xl cursor-pointer disabled:opacity-50"
-              >
-                {language === "pt" ? "Cancelar" : "Cancel"}
-              </button>
-              <button
-                type="button"
-                onClick={salvarEdicaoPauta}
-                disabled={salvandoEdicao || !editTitle.trim()}
-                className="px-4 py-2 text-xs font-bold bg-[#00658d] hover:bg-[#00aeef] active:scale-95 text-white transition rounded-xl shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {salvandoEdicao
-                  ? language === "pt" ? "Salvando..." : "Saving..."
-                  : language === "pt" ? "Salvar" : "Save"}
-              </button>
-            </div>
-          </div>
-        </div>
+            <label htmlFor="renomearPautaTitulo" className="text-[10px] font-extrabold text-slate-500 uppercase">
+              {language === "en" ? "Agenda title" : "Título da pauta"}
+            </label>
+            <input
+              id="renomearPautaTitulo"
+              autoFocus
+              maxLength={300}
+              value={renomeandoPauta.valor}
+              onChange={(e) => setRenomeandoPauta({ ...renomeandoPauta, valor: e.target.value })}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
+            />
+          </form>
+        </ModalShell>
       )}
 
       {/* MODAL: confirmação de exclusão de pauta — identifica a pauta pelo título. */}
@@ -4510,80 +4407,56 @@ export default function MeetingDetailView({
       )}
 
       {pautaParaExcluir && (
-        <div
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"
-          onClick={() => setPautaParaExcluir(null)}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-sm w-full overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="p-6">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
-                  <Trash2 className="w-5 h-5 text-red-600" />
-                </div>
-                <h3 className="text-sm font-extrabold text-slate-900">
-                  {language === "pt" ? "Excluir pauta" : "Delete topic"}
-                </h3>
-              </div>
-              <p className="text-xs text-slate-600 font-medium leading-relaxed">
-                {language === "pt" ? "Excluir a pauta " : "Delete the topic "}
-                <span className="font-extrabold text-slate-900">&ldquo;{pautaParaExcluir.title}&rdquo;</span>
-                {language === "pt"
-                  ? "? Esta ação não pode ser desfeita."
-                  : "? This action cannot be undone."}
-              </p>
-            </div>
-            <div className="bg-slate-50 px-6 py-4 flex items-center justify-end gap-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setPautaParaExcluir(null)}
-                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 transition rounded-xl cursor-pointer"
-              >
-                {language === "pt" ? "Cancelar" : "Cancel"}
-              </button>
-              <button
-                type="button"
-                onClick={confirmarExclusaoPauta}
-                className="px-4 py-2 text-xs font-bold bg-red-600 hover:bg-red-700 active:scale-95 text-white transition rounded-xl shadow-sm cursor-pointer inline-flex items-center gap-2"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                {language === "pt" ? "Excluir" : "Delete"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmRemovalDialog
+          language={language === "en" ? "en" : "pt"}
+          confirmacao={{
+            titulo: language === "pt" ? "Excluir tema" : "Delete topic",
+            paragrafos: [
+              language === "pt"
+                ? `Excluir o tema “${pautaParaExcluir.title}” desta reunião? Esta ação não pode ser desfeita.`
+                : `Delete the topic “${pautaParaExcluir.title}”? This action cannot be undone.`
+            ],
+            temas: [],
+            acao: language === "pt" ? "Excluir" : "Delete"
+          }}
+          onCancel={() => setPautaParaExcluir(null)}
+          onConfirm={confirmarExclusaoPauta}
+        />
       )}
       {/* MODAL: mensagem personalizada para uma pauta (aba Anotações) */}
       {isMessageModalOpen && (
-        <div
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4"
-          onClick={closeMessageModal}
+        <ModalShell
+          language={language === "en" ? "en" : "pt"}
+          icone={MessageSquare}
+          titulo={language === "en" ? "Custom message" : "Mensagem Personalizada"}
+          subtitulo={<span className="block truncate font-semibold text-slate-400">{messageTargetTopic}</span>}
+          ocupado={isSendingCustomMessage}
+          onClose={closeMessageModal}
+          rodape={
+            <>
+              <button
+                type="button"
+                onClick={closeMessageModal}
+                disabled={isSendingCustomMessage}
+                className={BOTAO_CANCELAR}
+              >
+                {language === "en" ? "Cancel" : "Cancelar"}
+              </button>
+              <button
+                type="button"
+                onClick={handleSendCustomMessage}
+                disabled={!customMessage.trim() || isSendingCustomMessage}
+                className={BOTAO_PRINCIPAL}
+              >
+                <Send className="w-3.5 h-3.5" />
+                {isSendingCustomMessage
+                  ? (language === "en" ? "Sending..." : "Enviando...")
+                  : (language === "en" ? "Send" : "Enviar")}
+              </button>
+            </>
+          }
         >
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="bg-white rounded-2xl shadow-2xl border border-slate-100 max-w-md w-full overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="p-6">
-              <div className="flex items-center gap-3.5 mb-4">
-                <div className="w-10 h-10 rounded-full bg-[#c6e7ff]/40 flex items-center justify-center shrink-0">
-                  <MessageSquare className="w-5 h-5 text-[#00658d]" />
-                </div>
-                <div className="min-w-0">
-                  <h3 className="text-sm font-extrabold text-slate-900">
-                    {language === "en" ? "Custom message" : "Mensagem Personalizada"}
-                  </h3>
-                  <p className="text-[11px] text-slate-400 font-semibold truncate">
-                    {messageTargetTopic}
-                  </p>
-                </div>
-              </div>
-
+            <div>
               <textarea
                 value={customMessage}
                 onChange={(e) => setCustomMessage(e.target.value)}
@@ -4613,119 +4486,9 @@ export default function MeetingDetailView({
                 </span>
               </div>
             </div>
-
-            <div className="bg-slate-50 px-6 py-4 flex items-center justify-end gap-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={closeMessageModal}
-                disabled={isSendingCustomMessage}
-                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 transition rounded-xl cursor-pointer"
-              >
-                {language === "en" ? "Cancel" : "Cancelar"}
-              </button>
-              <button
-                type="button"
-                onClick={handleSendCustomMessage}
-                disabled={!customMessage.trim() || isSendingCustomMessage}
-                className="px-4 py-2 text-xs font-bold bg-[#00658d] hover:bg-[#00aeef] active:scale-95 text-white transition rounded-xl shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
-              >
-                <Send className="w-3.5 h-3.5" />
-                {isSendingCustomMessage
-                  ? (language === "en" ? "Sending..." : "Enviando...")
-                  : (language === "en" ? "Send" : "Enviar")}
-              </button>
-            </div>
-          </div>
-        </div>
+        </ModalShell>
       )}
 
-      {/*
-        ENVIAR PAUTAS PARA VALIDAÇÃO.
-
-        Um único campo: o e-mail de quem valida. O PDF é montado no servidor a
-        partir do que já está cadastrado — não há nada para o usuário anexar,
-        escolher ou preencher aqui.
-
-        O aprovador NÃO precisa de conta no PGCP: ele recebe, lê e responde por
-        e-mail. Quem registra a aprovação depois é a Secretaria.
-      */}
-      {modalValidacaoAberto && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div role="dialog" aria-modal="true" className="bg-white rounded-2xl w-full max-w-lg card-shadow overflow-hidden">
-            <div className="px-6 py-5 border-b border-slate-200">
-              <h3 className="text-sm font-extrabold text-slate-900">
-                {language === "en" ? "Send agenda for validation" : "Enviar pautas para validação"}
-              </h3>
-              <p className="text-[11px] text-slate-500 font-medium mt-1 leading-relaxed">
-                {language === "en"
-                  ? "A PDF file with the meeting and its agenda is generated and attached automatically. The e-mail is sent from your own mailbox."
-                  : "Um arquivo PDF com a reunião e as pautas é gerado e anexado automaticamente. O e-mail sai da sua própria caixa."}
-              </p>
-            </div>
-
-            <form
-              onSubmit={(evento) => {
-                evento.preventDefault();
-                void handleEnviarParaValidacao();
-              }}
-            >
-              <div className="px-6 py-5 space-y-2">
-                <label
-                  htmlFor="email-aprovador"
-                  className="block text-[11px] font-extrabold text-slate-700 uppercase tracking-wider"
-                >
-                  {language === "en" ? "Approver e-mail" : "E-mail de quem valida"}
-                </label>
-                <input
-                  id="email-aprovador"
-                  type="email"
-                  required
-                  autoFocus
-                  value={emailAprovador}
-                  onChange={(evento) => {
-                    setEmailAprovador(evento.target.value);
-                    setErroValidacao(null);
-                  }}
-                  placeholder="nome.sobrenome@empresa.com.br"
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#00658d]/30 focus:border-[#00658d]"
-                />
-                <p className="text-[10px] text-slate-500 font-medium">
-                  {language === "en"
-                    ? `${meeting.agenda?.length ?? 0} agenda item(s) will be included.`
-                    : `${meeting.agenda?.length ?? 0} pauta(s) serão incluídas.`}
-                </p>
-                {/* O servidor revalida o endereço; isto é só o aviso imediato. */}
-                {erroValidacao && (
-                  <p className="text-[11px] font-bold text-red-600 leading-relaxed">{erroValidacao}</p>
-                )}
-              </div>
-
-              <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setModalValidacaoAberto(false);
-                    setErroValidacao(null);
-                  }}
-                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 transition rounded-xl cursor-pointer"
-                >
-                  {language === "en" ? "Cancel" : "Cancelar"}
-                </button>
-                <button
-                  type="submit"
-                  disabled={enviandoValidacao || !ehEmailValido(emailAprovador.trim())}
-                  className="px-4 py-2 text-xs font-bold bg-[#00658d] hover:bg-[#00aeef] active:scale-95 text-white transition rounded-xl shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  {enviandoValidacao
-                    ? language === "en" ? "Sending..." : "Enviando..."
-                    : language === "en" ? "Send" : "Enviar"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       </div>
       </div>

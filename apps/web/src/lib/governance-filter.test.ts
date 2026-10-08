@@ -105,8 +105,8 @@ test("Agenda Anual: preparar só com órgão ativo", () => {
   assert.match(anual, /canManage && grupo\.governanceBody\.isActive/, "preparar só com ativos");
 });
 
-test("Pipeline: um só filtro de órgão (o antigo de Categoria saiu do modo Lista)", () => {
-  const lista = codigo("../components/MeetingsView.tsx");
-  assert.ok(!/selectedCategory|availableCategories/.test(lista));
-  assert.match(codigo("../components/PipelineView.tsx"), /renderList\(doOrgao\)/);
+test("Pipeline: um só filtro de órgão (o do contexto global)", () => {
+  const pipeline = codigo("../components/PipelineView.tsx");
+  assert.ok(!/selectedCategory|availableCategories|<GovernanceBodyFilter/.test(pipeline));
+  assert.match(pipeline, /filtrarPorOrgao\(meetings, orgaoContexto\)/);
 });

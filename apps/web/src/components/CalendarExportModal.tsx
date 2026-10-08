@@ -1,19 +1,21 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Download, FileSpreadsheet, FileText, X } from "lucide-react";
+import { Download, X } from "lucide-react";
+import { apiRequest } from "../lib/api";
 import { describeMeetingError } from "../lib/meetings";
-import { exportarCalendario, validarExportacao, type FiltrosDaExportacao, type FormatoDeExportacao } from "../lib/calendar-export";
+import type { GovernanceBody } from "../types";
+import { exportarCalendario, validarExportacao, type FiltrosDaExportacao } from "../lib/calendar-export";
 
 /**
- * Exportar o Calendário em PDF ou Excel. Filtros: período (todo o calendário
- * ou intervalo) + o órgão do CONTEXTO GLOBAL — o mesmo recorte da tela.
+ * Exportar o Calendário em PDF. Filtros: período (todo o calendário ou
+ * intervalo) + comitê, que começa no órgão do CONTEXTO GLOBAL e pode ser
+ * trocado aqui sem mexer no topo. Excel saiu da tela (o servidor ainda aceita).
  */
 
 interface CalendarExportModalProps {
   language: "en" | "pt";
-  /** Órgão do contexto global ("" = todos). */
+  /** Órgão do contexto global ("" = todos): valor inicial do filtro de comitê. */
   governanceBodyId: string;
-  nomeDoOrgao: string | null;
   /** Ano exibido no Calendário: sugere o intervalo. */
   ano: number;
   onClose: () => void;
@@ -23,7 +25,7 @@ const LABEL = "text-[10px] font-bold text-slate-500 uppercase tracking-wide";
 const INPUT =
   "w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#00658d]";
 
-export default function CalendarExportModal({ language, governanceBodyId, nomeDoOrgao, ano, onClose }: CalendarExportModalProps) {
+export default function CalendarExportModal({ language, governanceBodyId, ano, onClose }: CalendarExportModalProps) {
   const pt = language === "pt";
   const [filtros, setFiltros] = useState<FiltrosDaExportacao>({
     formato: "pdf",
@@ -34,6 +36,13 @@ export default function CalendarExportModal({ language, governanceBodyId, nomeDo
   });
   const [exportando, setExportando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const [orgaos, setOrgaos] = useState<GovernanceBody[]>([]);
+
+  useEffect(() => {
+    void apiRequest<GovernanceBody[]>("/governance-bodies", { auth: true })
+      .then(setOrgaos)
+      .catch(() => setOrgaos([]));
+  }, []);
 
   const exportar = async () => {
     const problema = validarExportacao(filtros, language);
@@ -50,11 +59,6 @@ export default function CalendarExportModal({ language, governanceBodyId, nomeDo
     }
   };
 
-  const formatos: Array<{ id: FormatoDeExportacao; rotulo: string; Icone: typeof FileText }> = [
-    { id: "pdf", rotulo: "PDF", Icone: FileText },
-    { id: "xlsx", rotulo: "Excel (.xlsx)", Icone: FileSpreadsheet }
-  ];
-
   // Portal no <body>: centralizado na VIEWPORT, independente de ancestral com
   // transform/backdrop-filter (mesmo padrão do modal Nova reunião).
   return createPortal(
@@ -63,7 +67,7 @@ export default function CalendarExportModal({ language, governanceBodyId, nomeDo
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
           <h3 id="exportar-calendario-titulo" className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
             <Download className="w-4 h-4 text-[#00658d]" />
-            {pt ? "Exportar calendário" : "Export calendar"}
+            {pt ? "Exportar Agenda Anual" : "Export annual plan"}
           </h3>
           <button type="button" onClick={onClose} aria-label={pt ? "Fechar" : "Close"} className="p-1 rounded-lg hover:bg-slate-100 text-slate-500 cursor-pointer">
             <X className="w-5 h-5" />
@@ -71,31 +75,6 @@ export default function CalendarExportModal({ language, governanceBodyId, nomeDo
         </div>
 
         <div className="px-5 py-4 space-y-4 text-xs">
-          <fieldset className="space-y-1.5">
-            <legend className={LABEL}>{pt ? "Formato" : "Format"}</legend>
-            <div className="grid grid-cols-2 gap-2">
-              {formatos.map(({ id, rotulo, Icone }) => (
-                <label
-                  key={id}
-                  className={`flex items-center gap-2 border rounded-xl px-3 py-2 cursor-pointer font-bold ${
-                    filtros.formato === id ? "border-[#00658d] bg-sky-50 text-[#00658d]" : "border-slate-200 text-slate-600"
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="formato"
-                    value={id}
-                    checked={filtros.formato === id}
-                    onChange={() => setFiltros((f) => ({ ...f, formato: id }))}
-                    className="sr-only"
-                  />
-                  <Icone className="w-4 h-4" />
-                  {rotulo}
-                </label>
-              ))}
-            </div>
-          </fieldset>
-
           <fieldset className="space-y-1.5">
             <legend className={LABEL}>{pt ? "Período" : "Period"}</legend>
             <label className="flex items-center gap-2 font-semibold text-slate-700 cursor-pointer">
@@ -120,10 +99,20 @@ export default function CalendarExportModal({ language, governanceBodyId, nomeDo
             )}
           </fieldset>
 
-          <p className="text-[10px] text-slate-500 font-semibold">
-            {pt ? "Órgão de governança" : "Governance body"}: <strong>{nomeDoOrgao ?? (pt ? "Todos" : "All")}</strong>
-            {pt ? " (contexto selecionado no topo)." : " (selected at the top)."}
-          </p>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="expComite" className={LABEL}>{pt ? "Comitê" : "Committee"}</label>
+            <select
+              id="expComite"
+              value={filtros.governanceBodyId ?? ""}
+              onChange={(e) => setFiltros((f) => ({ ...f, governanceBodyId: e.target.value }))}
+              className={`${INPUT} cursor-pointer`}
+            >
+              <option value="">{pt ? "Todos os comitês" : "All committees"}</option>
+              {orgaos.map((o) => (
+                <option key={o.id} value={o.id}>{o.name}</option>
+              ))}
+            </select>
+          </div>
 
           {erro && (
             <p role="alert" className="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">{erro}</p>

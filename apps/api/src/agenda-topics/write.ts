@@ -229,6 +229,14 @@ export interface AgendaTopicInput {
    * `vincularTemaAComites` depois que este tema já existe.
    */
   comites?: ComiteVinculoInput[];
+  /**
+   * TEMA FUTURO (042): ainda sem reunião, com mês/ano e comitê previstos. Vira
+   * regular sozinho ao ser vinculado a uma reunião (trigger da 042).
+   */
+  isFuture?: boolean;
+  /** Mês previsto já normalizado para "AAAA-MM-01" (a API recebe "AAAA-MM"). */
+  expectedMonth?: string | null;
+  expectedGovernanceBodyId?: string | null;
 }
 
 const CAMPOS_PERMITIDOS = new Set([
@@ -244,6 +252,9 @@ const CAMPOS_PERMITIDOS = new Set([
   "isCircularTheme",
   "participants",
   "comites",
+  "isFuture",
+  "expectedMonth",
+  "expectedGovernanceBodyId",
 ]);
 
 /**
@@ -335,6 +346,31 @@ export function parseAgendaTopicInput(body: unknown, parcial = false): AgendaTop
     saida.comites = parseComitesInput(dados.comites);
   }
 
+  // TEMA FUTURO: os três andam juntos. Regular = sem mês/comitê previstos.
+  if ("isFuture" in dados) {
+    if (typeof dados.isFuture !== "boolean") throw new HttpError(400, "'isFuture' deve ser booleano.");
+    saida.isFuture = dados.isFuture;
+  }
+  if ("expectedMonth" in dados) {
+    const v = dados.expectedMonth;
+    if (v === null || v === "") saida.expectedMonth = null;
+    else if (typeof v !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(v)) {
+      throw new HttpError(400, "'expectedMonth' deve estar no formato AAAA-MM.");
+    } else saida.expectedMonth = `${v}-01`;
+  }
+  if ("expectedGovernanceBodyId" in dados) {
+    saida.expectedGovernanceBodyId =
+      dados.expectedGovernanceBodyId === null ? null : (uuidOpcional(dados.expectedGovernanceBodyId, "expectedGovernanceBodyId") ?? null);
+  }
+  if (saida.isFuture === false) {
+    saida.expectedMonth = null;
+    saida.expectedGovernanceBodyId = null;
+  } else if (saida.isFuture === true && (!saida.expectedMonth || !saida.expectedGovernanceBodyId)) {
+    throw new HttpError(400, "Tema futuro precisa de mês previsto e comitê previsto.");
+  } else if (saida.isFuture === undefined && (saida.expectedMonth || saida.expectedGovernanceBodyId)) {
+    throw new HttpError(400, "Informe 'isFuture' junto do mês e do comitê previstos.");
+  }
+
   if (parcial && Object.keys(saida).length === 0) {
     throw new HttpError(400, "Nenhum campo alterável foi informado.");
   }
@@ -348,6 +384,7 @@ async function validarReferencias(client: PoolClient, input: AgendaTopicInput): 
     [input.agendaTopicTypeId, "agenda_topic_types", "Tipo de pauta não encontrado."],
     [input.agendaTopicNatureId, "agenda_topic_natures", "Natureza de pauta não encontrada."],
     [input.governanceBodyId, "governance_bodies", "Órgão de governança não encontrado."],
+    [input.expectedGovernanceBodyId, "governance_bodies", "Comitê previsto não encontrado."],
   ];
 
   for (const [id, tabela, mensagem] of checagens) {
@@ -376,6 +413,9 @@ function traduzirErro(error: unknown): unknown {
   if (error instanceof HttpError) return error;
   if ((error as { code?: string } | null)?.code === "23505") {
     return new HttpError(409, "A mesma pessoa foi informada mais de uma vez neste tema.");
+  }
+  if ((error as { constraint?: string } | null)?.constraint === "agenda_topics_future_check") {
+    return new HttpError(400, "Tema futuro precisa de mês previsto e comitê previsto; tema regular não tem esses campos.");
   }
   return error;
 }
@@ -406,8 +446,8 @@ export async function inserirTemaNaBiblioteca(
             (title, description, estimated_duration_minutes, generates_action_item,
              responsible_label, responsible_entra_tenant_id, responsible_entra_object_id,
              agenda_topic_type_id, agenda_topic_nature_id, governance_body_id,
-             is_circular_theme)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             is_circular_theme, is_future, expected_month, expected_governance_body_id)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING id`,
     [
       input.title,
@@ -421,6 +461,9 @@ export async function inserirTemaNaBiblioteca(
       input.agendaTopicNatureId ?? null,
       input.governanceBodyId ?? null,
       input.isCircularTheme ?? false,
+      input.isFuture ?? false,
+      input.isFuture ? input.expectedMonth ?? null : null,
+      input.isFuture ? input.expectedGovernanceBodyId ?? null : null,
     ],
   );
 
@@ -460,6 +503,9 @@ const COLUNA_DE: Record<string, string> = {
   agendaTopicNatureId: "agenda_topic_nature_id",
   governanceBodyId: "governance_body_id",
   isCircularTheme: "is_circular_theme",
+  isFuture: "is_future",
+  expectedMonth: "expected_month",
+  expectedGovernanceBodyId: "expected_governance_body_id",
 };
 
 export async function updateAgendaTopic(

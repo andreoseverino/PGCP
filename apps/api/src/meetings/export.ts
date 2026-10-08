@@ -31,6 +31,15 @@ export interface FiltrosDeExportacao {
   governanceBodyId?: string;
   dateFrom?: string;
   dateTo?: string;
+  /**
+   * Recorte INTERNO (nunca vem da query de `/meetings/export`): só reuniões
+   * em que este tema da Biblioteca está na pauta — exportação do tema.
+   * Nesse recorte a reunião cancelada ENTRA (marcada "Cancelada"): é
+   * histórico do tema, não calendário operacional.
+   */
+  agendaTopicId?: string;
+  /** Recorte INTERNO: só estas reuniões (seleção feita no modal do tema). */
+  meetingIds?: string[];
 }
 
 /** Teto de linhas: acima disso, a pessoa refina o período. */
@@ -72,6 +81,8 @@ export interface ReuniaoExportada {
   participantes: string[];
   externos: number;
   temas: number;
+  /** Reunião cancelada (036). Só aparece no recorte por tema. */
+  cancelada?: boolean;
 }
 
 export async function consultarReunioesParaExportacao(
@@ -83,8 +94,17 @@ export async function consultarReunioesParaExportacao(
     params.push(v);
     return `$${params.length}`;
   };
-  // Calendário operacional: reunião cancelada (036) não entra.
-  const condicoes = [clausulaDeReuniaoVisivel("m", espectador, bind), "m.cancelled_at IS NULL"];
+  // Calendário operacional: reunião cancelada (036) não entra — salvo no
+  // recorte por tema, que é histórico.
+  const condicoes = [clausulaDeReuniaoVisivel("m", espectador, bind)];
+  if (filtros.agendaTopicId) {
+    condicoes.push(
+      `EXISTS (SELECT 1 FROM meeting_agenda_items ait WHERE ait.meeting_id = m.id AND ait.agenda_topic_id = ${bind(filtros.agendaTopicId)})`,
+    );
+  } else {
+    condicoes.push("m.cancelled_at IS NULL");
+  }
+  if (filtros.meetingIds) condicoes.push(`m.id = ANY(${bind(filtros.meetingIds)}::uuid[])`);
   if (filtros.governanceBodyId) condicoes.push(`m.governance_body_id = ${bind(filtros.governanceBodyId)}`);
   if (filtros.dateFrom) condicoes.push(`(m.start_at AT TIME ZONE m.timezone)::date >= ${bind(filtros.dateFrom)}::date`);
   if (filtros.dateTo) condicoes.push(`(m.start_at AT TIME ZONE m.timezone)::date <= ${bind(filtros.dateTo)}::date`);
@@ -105,9 +125,10 @@ export async function consultarReunioesParaExportacao(
     participantes: string[] | null;
     externos: number;
     temas: number;
+    cancelada: boolean;
   }>(
     `SELECT m.id, m.title, gb.name AS orgao, m.start_at, m.end_at, m.timezone, m.status, m.session_type,
-            m.modality, m.physical_location_snapshot, m.origin,
+            m.modality, m.physical_location_snapshot, m.origin, (m.cancelled_at IS NOT NULL) AS cancelada,
             (SELECT ci.sync_status FROM meeting_calendar_integrations ci
               WHERE ci.meeting_id = m.id AND ci.provider = 'outlook') AS sync_status,
             (SELECT array_agg(coalesce(mp.display_name, u.name, '(sem nome)') ORDER BY coalesce(mp.display_name, u.name))
@@ -146,6 +167,7 @@ export async function consultarReunioesParaExportacao(
     participantes: r.participantes ?? [],
     externos: r.externos,
     temas: r.temas,
+    cancelada: r.cancelada,
   }));
 }
 
@@ -200,7 +222,7 @@ export function linhaDaExportacao(r: ReuniaoExportada) {
     reuniao: r.titulo,
     orgao: r.orgao,
     tipo: r.tipo === "ordinary" ? "Ordinária" : r.tipo === "extraordinary" ? "Extraordinária" : "",
-    status: STATUS[r.status] ?? r.status,
+    status: r.cancelada ? "Cancelada" : STATUS[r.status] ?? r.status,
     modalidade: r.modalidade === "in_person" ? "Presencial" : "Online",
     local: local ?? "",
     participantes: r.participantes.join("; "),
@@ -275,17 +297,20 @@ export function gerarXlsxDoCalendario(reunioes: ReuniaoExportada[]): Buffer {
 
 export function gerarPdfDoCalendario(
   reunioes: ReuniaoExportada[],
-  contexto: { periodo: string; orgao: string | null },
+  contexto: { periodo: string; orgao: string | null; tema?: string },
 ): Promise<Buffer> {
+  // Exportação do TEMA (Biblioteca): mesmo layout, cabeçalho do tema.
+  const titulo = contexto.tema ? `Reuniões do tema — ${contexto.tema}` : `Calendário — ${contexto.periodo}`;
   const { doc, bytes } = novoRelatorio({
-    tipo: "CALENDÁRIO DE REUNIÕES",
+    tipo: contexto.tema ? "REUNIÕES DO TEMA" : "CALENDÁRIO DE REUNIÕES",
     sobretitulo: contexto.orgao ?? "Todos os órgãos de governança",
-    titulo: `Calendário — ${contexto.periodo}`,
+    titulo,
     emitidoEm: new Date().toISOString(),
     paisagem: true,
   });
   secao(doc, "Filtros");
   campos(doc, [
+    ...(contexto.tema ? ([["Tema", contexto.tema]] as [string, string][]) : []),
     ["Período", contexto.periodo],
     ["Órgão de governança", contexto.orgao ?? "Todos"],
     ["Reuniões", String(reunioes.length)],
@@ -319,7 +344,7 @@ export function gerarPdfDoCalendario(
     }),
     "Nenhuma reunião no período.",
   );
-  finalizar(doc, `Calendário — ${contexto.periodo}`);
+  finalizar(doc, titulo);
   return bytes;
 }
 

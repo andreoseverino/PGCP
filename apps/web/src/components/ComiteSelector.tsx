@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import { Plus, X } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { ChevronDown, Plus, X } from "lucide-react";
 import { apiRequest } from "../lib/api";
 import type { GovernanceBody } from "../types";
 import { listMeetings, meetingFromApi } from "../lib/meetings";
@@ -60,7 +60,10 @@ export default function ComiteSelector({ language, homeGovernanceBodyId, value, 
   const nomeDoOrgao = (id: string) => orgaos.find((o) => o.id === id)?.name ?? id;
   const reunioesDoOrgao = (id: string) => reunioes.filter((m) => m.governanceBodyId === id);
 
-  const disponiveis = orgaos.filter((o) => !value.some((v) => v.governanceBodyId === o.id));
+  // Só órgãos com reunião futura agendada — sem reunião não há onde o tema entrar.
+  const disponiveis = orgaos.filter(
+    (o) => reunioesDoOrgao(o.id).length > 0 && !value.some((v) => v.governanceBodyId === o.id),
+  );
 
   const adicionar = (id: string) => {
     if (!id) return;
@@ -113,28 +116,13 @@ export default function ComiteSelector({ language, homeGovernanceBodyId, value, 
               </div>
 
               {v.modo === "especificas" && (
-                <select
-                  multiple
+                <ReunioesDropdown
+                  pt={pt}
                   disabled={disabled}
-                  value={v.meetingIds ?? []}
-                  onChange={(e) =>
-                    atualizar(v.governanceBodyId, {
-                      meetingIds: Array.from(e.target.selectedOptions).map((o) => o.value),
-                    })
-                  }
-                  className={`${CAMPO} cursor-pointer min-h-[72px]`}
-                >
-                  {reunioesDoOrgao(v.governanceBodyId).length === 0 && (
-                    <option disabled value="">
-                      {pt ? "Nenhuma reunião agendada para este órgão" : "No scheduled meeting for this body"}
-                    </option>
-                  )}
-                  {reunioesDoOrgao(v.governanceBodyId).map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.date} {m.startTime} — {m.title}
-                    </option>
-                  ))}
-                </select>
+                  reunioes={reunioesDoOrgao(v.governanceBodyId)}
+                  selecionadas={v.meetingIds ?? []}
+                  onChange={(meetingIds) => atualizar(v.governanceBodyId, { meetingIds })}
+                />
               )}
             </li>
           ))}
@@ -156,6 +144,111 @@ export default function ComiteSelector({ language, homeGovernanceBodyId, value, 
           </select>
           <Plus className="w-3.5 h-3.5 text-slate-300 shrink-0" />
         </div>
+      )}
+    </div>
+  );
+}
+
+type ReuniaoOpcao = { id: string; title: string; date: string; startTime: string };
+
+/** "2026-10-15" -> "15/10/2026"; outro formato passa intacto. */
+const dataBr = (iso: string) => {
+  const [a, m, d] = iso.split("-");
+  return a && m && d ? `${d}/${m}/${a}` : iso;
+};
+
+/** Lista suspensa com checkboxes para "Dias Específicos". */
+function ReunioesDropdown({
+  pt,
+  disabled,
+  reunioes,
+  selecionadas,
+  onChange,
+}: {
+  pt: boolean;
+  disabled?: boolean;
+  reunioes: ReuniaoOpcao[];
+  selecionadas: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const [aberto, setAberto] = useState(false);
+  const raiz = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!aberto) return;
+    const fora = (e: MouseEvent) => {
+      if (raiz.current && !raiz.current.contains(e.target as Node)) setAberto(false);
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAberto(false);
+    };
+    document.addEventListener("mousedown", fora);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", fora);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [aberto]);
+
+  const alternar = (id: string) =>
+    onChange(selecionadas.includes(id) ? selecionadas.filter((s) => s !== id) : [...selecionadas, id]);
+
+  const resumo =
+    selecionadas.length === 0
+      ? pt ? "Selecione as reuniões..." : "Select meetings..."
+      : selecionadas.length === 1
+        ? (() => {
+            const m = reunioes.find((r) => r.id === selecionadas[0]);
+            return m ? `${dataBr(m.date)} ${m.startTime}` : pt ? "1 reunião selecionada" : "1 meeting selected";
+          })()
+        : pt ? `${selecionadas.length} reuniões selecionadas` : `${selecionadas.length} meetings selected`;
+
+  return (
+    <div ref={raiz} className="relative">
+      <button
+        type="button"
+        disabled={disabled || reunioes.length === 0}
+        onClick={() => setAberto((a) => !a)}
+        aria-haspopup="listbox"
+        aria-expanded={aberto}
+        className={`${CAMPO} flex items-center justify-between gap-2 text-left cursor-pointer disabled:cursor-not-allowed disabled:opacity-60`}
+      >
+        <span className={`truncate ${selecionadas.length === 0 ? "text-slate-400" : "font-semibold"}`}>
+          {reunioes.length === 0
+            ? pt ? "Nenhuma reunião agendada para este órgão" : "No scheduled meeting for this body"
+            : resumo}
+        </span>
+        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 shrink-0 transition-transform ${aberto ? "rotate-180" : ""}`} />
+      </button>
+
+      {aberto && (
+        <ul
+          role="listbox"
+          aria-multiselectable="true"
+          className="absolute z-20 mt-1 w-full max-h-56 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-lg p-1"
+        >
+          {reunioes.map((m) => {
+            const marcada = selecionadas.includes(m.id);
+            return (
+              <li key={m.id} role="option" aria-selected={marcada}>
+                <label className="flex items-start gap-2 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-slate-50">
+                  <input
+                    type="checkbox"
+                    checked={marcada}
+                    onChange={() => alternar(m.id)}
+                    className="mt-0.5 accent-[#00658d] cursor-pointer"
+                  />
+                  <span className="flex flex-col min-w-0">
+                    <span className="text-[10.5px] font-bold text-slate-700">
+                      {dataBr(m.date)} · {m.startTime}
+                    </span>
+                    <span className="text-[10px] text-slate-500 truncate" title={m.title}>{m.title}</span>
+                  </span>
+                </label>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );

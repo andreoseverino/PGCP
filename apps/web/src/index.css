@@ -86,6 +86,19 @@
   display: none;
 }
 
+/*
+ * Exceção opt-in: área de modal que costuma passar da altura (ex.: Novo tema)
+ * mostra barra fina, para o usuário perceber que há mais conteúdo abaixo.
+ */
+[role="dialog"] .scroll-visivel {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+[role="dialog"] .scroll-visivel::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+
 /* ---------------------------------------------------------------------------
    Editor de anotações (Tiptap). O reset do Tailwind zera h1/ul/ol, então as
    marcações do rich text precisam ser redeclaradas para aparecerem formatadas.

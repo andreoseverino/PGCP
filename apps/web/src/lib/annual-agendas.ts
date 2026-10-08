@@ -81,10 +81,14 @@ export interface AnnualAgendaMeeting {
   /** Participantes DA REUNIÃO (`meeting_participants`), uma vez cada. */
   participants: Array<{ id: string; name: string; email: string | null; external: boolean; inGovernanceBodyGroup: boolean }>;
   /*
-   * Sem aprovação (10/2026) a Agenda mostra sempre a reunião AO VIVO; os
-   * campos de comparação com a versão aprovada (`current`, `sent`,
-   * `changedAfterSending`) vêm sempre `null` do servidor e não são lidos.
+   * `current`, `sent` e `changedAfterSending` (comparação com a versão enviada
+   * por e-mail, fluxo removido) vêm sempre `null` do servidor e não são lidos.
    */
+  /**
+   * Agenda APROVADA: o cartão vem da foto aprovada. `true` = a reunião foi
+   * cancelada no Pipeline depois da aprovação (não há o que abrir lá).
+   */
+  removedFromPipeline?: boolean;
 }
 
 export interface AnnualAgendaVersion {
@@ -92,13 +96,14 @@ export interface AnnualAgendaVersion {
   number: number;
   state: "open" | "approved";
   sentAt: string;
-  sentTo: string;
+  /** `null` = aprovada diretamente no PGCP (sem e-mail). */
+  sentTo: string | null;
   approvedAt: string | null;
   approvedByName: string | null;
 }
 
 export interface AnnualAgendaDetail extends AnnualAgendaSummary {
-  /** Sempre `true` desde a remoção da aprovação; a permissão é `canManage`. */
+  /** `false` depois de aprovada (trava de vez); a permissão é `canManage`. */
   editable: boolean;
   /** Datas planejadas (reserva). */
   items: AnnualAgendaItem[];
@@ -112,7 +117,7 @@ export interface AnnualAgendaDetail extends AnnualAgendaSummary {
     origin: "manual" | "annual_agenda";
     linkedToOtherAgenda: boolean;
   }>;
-  /** Última versão enviada/aprovada ANTES de 10/2026 — só histórico. */
+  /** Versão aprovada (documento oficial), ou a enviada por e-mail antes de 10/2026. */
   version: AnnualAgendaVersion | null;
   totals: { reunioes: number; pautas: number; temas: number };
 }
@@ -174,9 +179,13 @@ export const deleteAnnualAgenda = (id: string) =>
 export const downloadAnnualAgendaPdf = (id: string) =>
   apiRequestBlob(`/annual-agendas/${id}/pdf`, { auth: true });
 
-/** Documento da versão enviada/aprovada antes de 10/2026 (histórico, snapshot gravado). */
+/** PDF OFICIAL da versão aprovada (snapshot gravado na aprovação). */
 export const downloadAnnualAgendaDocument = (id: string) =>
   apiRequestBlob(`/annual-agendas/${id}/document`, { auth: true });
+
+/** Marca a Agenda Anual como aprovada: grava a versão oficial e TRAVA a agenda. Sem e-mail. */
+export const approveAnnualAgenda = (id: string) =>
+  apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/approval`, { auth: true, method: "POST" });
 
 /** Associa reunião existente (só o vínculo; nenhum convite novo). */
 export const associateAnnualMeeting = (id: string, meetingId: string) =>
@@ -269,10 +278,12 @@ export const deleteAnnualTema = (id: string, meetingId: string, itemId: string) 
   apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agenda-items/${itemId}`, { auth: true, method: "DELETE" });
 
 /**
- * Rótulo da Agenda Anual formalizada. Sem aprovação (10/2026) o status gravado
- * (`draft`/`pending_approval`/`approved`) é só histórico e não muda o rótulo.
+ * Rótulo da Agenda Anual: "Aprovada" (travada) ou "Formalizada" (em
+ * elaboração). `pending_approval` (envio por e-mail, removido) conta como
+ * formalizada.
  */
-export function annualStatusLabel(_status: AnnualAgendaStatus, language: "en" | "pt"): string {
+export function annualStatusLabel(status: AnnualAgendaStatus, language: "en" | "pt"): string {
+  if (status === "approved") return language === "pt" ? "Aprovada" : "Approved";
   return language === "pt" ? "Formalizada" : "Prepared";
 }
 

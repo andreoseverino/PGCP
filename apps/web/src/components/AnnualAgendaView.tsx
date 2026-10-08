@@ -4,7 +4,7 @@ import {
   CalendarRange,
   CheckCircle,
   ExternalLink,
-  Eye,
+  FileDown,
   Info,
   Link2,
   Lock,
@@ -12,16 +12,19 @@ import {
   Send,
   Trash2
 } from "lucide-react";
+import ConfirmRemovalDialog from "./ConfirmRemovalDialog";
 import {
   DEFAULT_TIMEZONE,
   instantToLocal
 } from "../lib/meeting-adapters";
 import {
   annualStatusLabel,
+  approveAnnualAgenda,
   associateAnnualMeeting,
   createAnnualAgenda,
   deleteAnnualAgenda,
   describeAnnualAgendaError,
+  downloadAnnualAgendaDocument,
   downloadAnnualAgendaPdf,
   getAnnualAgenda,
   getAnnualOverview,
@@ -262,7 +265,13 @@ export default function AnnualAgendaView({
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] font-extrabold text-[#00658d]">{ano}</span>
-                <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${g.agenda ? "bg-slate-100 text-slate-600" : "bg-white border border-dashed border-slate-300 text-slate-500"}`}>
+                <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${
+                  !g.agenda
+                    ? "bg-white border border-dashed border-slate-300 text-slate-500"
+                    : g.agenda.status === "approved"
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-slate-100 text-slate-600"
+                }`}>
                   {g.agenda ? annualStatusLabel(g.agenda.status, language) : pt ? "Não formalizada" : "Not prepared"}
                 </span>
               </div>
@@ -451,9 +460,10 @@ interface AgendaDetailProps {
 
 /**
  * Uma Agenda Anual: as reuniões do órgão/ano (as MESMAS do Calendário e do
- * Pipeline) com Pauta -> Tema e o compilado (PDF). Sem aprovação (10/2026):
- * associa reuniões e edita pautas/temas a qualquer momento, com permissão. A
- * versão enviada/aprovada antes disso continua disponível como HISTÓRICO.
+ * Pipeline) com Pauta -> Tema e o compilado (PDF). Em elaboração: associa
+ * reuniões e edita pautas/temas, com permissão. "Marcar como aprovada" (sem
+ * e-mail) grava a versão oficial e TRAVA a agenda: a tela passa a mostrar a
+ * foto aprovada e as reuniões seguem operando só no Pipeline.
  */
 function AgendaDetail({
   language,
@@ -475,18 +485,34 @@ function AgendaDetail({
   const resumo = resumoDaAgenda(agenda);
   const associaveis = candidatasAssociaveis(agenda);
 
-  const baixar = async () => {
+  const aprovada = agenda.status === "approved";
+  const versaoAprovada = agenda.version?.state === "approved" ? agenda.version : null;
+
+  /** Prévia (estado atual) ou o PDF OFICIAL da versão aprovada. */
+  const baixar = async (oficial: boolean) => {
     try {
-      const { blob, filename } = await downloadAnnualAgendaPdf(agenda.id);
+      const { blob, filename } = await (oficial ? downloadAnnualAgendaDocument(agenda.id) : downloadAnnualAgendaPdf(agenda.id));
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = filename ?? `agenda-anual-${agenda.year}.pdf`;
+      a.download = filename ?? `agenda-anual-${agenda.year}${oficial ? "-aprovada" : ""}.pdf`;
       a.click();
       URL.revokeObjectURL(a.href);
     } catch (e) {
       setErro(describeAnnualAgendaError(e, language));
     }
   };
+
+  const [confirmandoAprovacao, setConfirmandoAprovacao] = useState(false);
+  const [confirmandoExclusao, setConfirmandoExclusao] = useState(false);
+  const excluir = () =>
+    void executar(async () => {
+      await deleteAnnualAgenda(agenda.id);
+      onDeleted();
+    }, pt ? "Agenda Anual excluída." : "Annual plan deleted.").finally(() => setConfirmandoExclusao(false));
+  const aprovar = () =>
+    void executar(() => approveAnnualAgenda(agenda.id), pt ? "Agenda Anual aprovada." : "Annual plan approved.").finally(() =>
+      setConfirmandoAprovacao(false)
+    );
 
   const podeExcluir = editavel && agenda.meetingsCount === 0 && agenda.reservedCount === 0 && !agenda.version;
 
@@ -504,19 +530,31 @@ function AgendaDetail({
           </div>
         </div>
         <div className="flex gap-2 flex-wrap shrink-0">
-          <button type="button" onClick={() => void baixar()} className="px-3 py-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer">
-            <Eye className="w-3.5 h-3.5" />{pt ? "Gerar prévia" : "Preview"}
-          </button>
+          {aprovada ? (
+            versaoAprovada && (
+              <button type="button" onClick={() => void baixar(true)} className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer">
+                <FileDown className="w-3.5 h-3.5" />{pt ? "PDF oficial" : "Official PDF"}
+              </button>
+            )
+          ) : (
+            <button type="button" onClick={() => void baixar(false)} className="px-3 py-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer">
+              <FileDown className="w-3.5 h-3.5" />{pt ? "Gerar documento" : "Generate document"}
+            </button>
+          )}
+          {editavel && agenda.meetings.length > 0 && (
+            <button
+              type="button"
+              disabled={ocupado}
+              onClick={() => setConfirmandoAprovacao(true)}
+              className="px-3 py-2 bg-[#00658d] hover:bg-[#00aeef] text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+            >
+              <CheckCircle className="w-3.5 h-3.5" />{pt ? "Marcar como aprovada" : "Mark as approved"}
+            </button>
+          )}
           {podeExcluir && (
             <button
               type="button"
-              onClick={() =>
-                window.confirm(pt ? "Excluir esta Agenda Anual?" : "Delete this annual plan?") &&
-                void executar(async () => {
-                  await deleteAnnualAgenda(agenda.id);
-                  onDeleted();
-                }, pt ? "Agenda Anual excluída." : "Annual plan deleted.")
-              }
+              onClick={() => setConfirmandoExclusao(true)}
               className="px-3 py-2 border border-rose-100 rounded-xl text-xs font-bold text-rose-600 hover:bg-rose-50 inline-flex items-center gap-1.5 cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />{pt ? "Excluir" : "Delete"}
@@ -524,6 +562,73 @@ function AgendaDetail({
           )}
         </div>
       </header>
+
+      {confirmandoExclusao && (
+        <ConfirmRemovalDialog
+          language={language}
+          busy={ocupado}
+          confirmacao={{
+            titulo: pt ? "Excluir esta Agenda Anual?" : "Delete this annual plan?",
+            paragrafos: [
+              pt
+                ? `A Agenda Anual “${agenda.title} — ${agenda.year}” será excluída. Ela não tem reuniões; esta ação não pode ser desfeita.`
+                : `The annual plan “${agenda.title} — ${agenda.year}” will be deleted. It has no meetings; this cannot be undone.`
+            ],
+            temas: [],
+            acao: pt ? "Excluir" : "Delete"
+          }}
+          onCancel={() => setConfirmandoExclusao(false)}
+          onConfirm={excluir}
+        />
+      )}
+
+      {confirmandoAprovacao && (
+        <ConfirmRemovalDialog
+          language={language}
+          variante="aprovar"
+          busy={ocupado}
+          confirmacao={{
+            titulo: pt ? "Marcar a Agenda Anual como aprovada?" : "Mark the annual plan as approved?",
+            paragrafos: [
+              pt
+                ? `O PDF oficial de “${agenda.title} — ${agenda.year}” será gerado com a agenda como está agora.`
+                : `The official PDF of “${agenda.title} — ${agenda.year}” will be generated from the plan as it is now.`,
+              pt
+                ? "Depois de aprovada, a Agenda Anual fica travada e não pode mais ser alterada por aqui. As reuniões continuam sendo editadas no Pipeline."
+                : "Once approved, the plan is locked and can no longer be changed here. Meetings can still be edited in the Pipeline."
+            ],
+            temas: [],
+            acao: pt ? "Aprovar" : "Approve"
+          }}
+          onCancel={() => setConfirmandoAprovacao(false)}
+          onConfirm={aprovar}
+        />
+      )}
+
+      {aprovada && (
+        <div className="flex items-start gap-2.5 bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3">
+          <Lock className="w-4 h-4 text-emerald-700 mt-0.5 shrink-0" />
+          <div className="text-[11px] text-emerald-900 font-semibold space-y-0.5">
+            <p className="font-extrabold">
+              {pt ? "Agenda Anual aprovada" : "Annual plan approved"}
+              {versaoAprovada?.approvedAt && (
+                <>
+                  {" "}
+                  {pt ? "em" : "on"} {new Date(versaoAprovada.approvedAt).toLocaleString(pt ? "pt-BR" : "en-US")}
+                  {versaoAprovada.approvedByName && <> {pt ? "por" : "by"} {versaoAprovada.approvedByName}</>}
+                  {" · "}
+                  {pt ? `versão ${versaoAprovada.number}` : `version ${versaoAprovada.number}`}
+                </>
+              )}
+            </p>
+            <p className="text-emerald-800">
+              {pt
+                ? "Esta visão mostra a agenda como foi aprovada e não muda mais. Alterações nas reuniões são feitas no Pipeline."
+                : "This view shows the plan as approved and no longer changes. Meeting changes are made in the Pipeline."}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Reuniões da agenda — as mesmas do Calendário e do Pipeline */}
       <div className="space-y-2.5">
@@ -543,6 +648,7 @@ function AgendaDetail({
             orgao={agenda.governanceBody}
             meeting={m}
             editable={editavel}
+            agendaAprovada={agenda.status === "approved"}
             ocupado={ocupado}
             libraryTopics={libraryTopics}
             pautaTypes={pautaTypes}

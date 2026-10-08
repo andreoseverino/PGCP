@@ -14,6 +14,9 @@ import {
 import { GraphError } from "../graph/client.js";
 import { calendarExportRateLimit, teamsMessageRateLimit } from "../security/limiters.js";
 import { exportarCalendario, parseFiltrosDeExportacao } from "./export.js";
+import { exportarCronograma, parseFiltrosDoCronograma } from "./schedule-export.js";
+import { exportarDossieDaReuniao } from "./meeting-export.js";
+import { parseTrocaDeOrganizador, trocarOrganizador } from "./organizer-change.js";
 import { diferencasDaVersaoPorId, gerarPdfDaVersao, listarVersoesDaReuniao } from "./versions.js";
 import { podeVisualizarReuniao, type EspectadorPgcp } from "./visibility.js";
 import {
@@ -26,8 +29,7 @@ import {
 } from "../teams/messages.js";
 import {
   aprovarPautas,
-  enviarPautasParaValidacao,
-  parseEmailDoAprovador,
+  gerarPdfDasPautas,
 } from "./agenda-validation.js";
 import { addAgenda, parseAgendaInput, removeAgenda, updateAgenda } from "./agendas.js";
 import { listActiveMeetingLocations } from "../meeting-locations/service.js";
@@ -170,6 +172,26 @@ meetingsRouter.get("/export", requireActivePgcpUser, calendarExportRateLimit, as
     res.send(arquivo.conteudo);
   } catch (error) {
     sendError(res, error, "exportar calendário");
+  }
+});
+
+/**
+ * GET /meetings/export/schedule?year=AAAA[&governanceBodyId]
+ *
+ * CRONOGRAMA ANUAL em PDF: grade órgão × mês com as datas das reuniões. Mesma
+ * política de leitura e mesmo limite da exportação do Calendário. Registrada
+ * ANTES de `/:id`.
+ */
+meetingsRouter.get("/export/schedule", requireActivePgcpUser, calendarExportRateLimit, async (req: Request, res: Response) => {
+  try {
+    const filtros = parseFiltrosDoCronograma(req.query as Record<string, unknown>);
+    const arquivo = await exportarCronograma(filtros, espectadorDa(req));
+    res.setHeader("Content-Type", arquivo.tipo);
+    res.setHeader("Content-Disposition", `attachment; filename="${arquivo.nome}"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(arquivo.conteudo);
+  } catch (error) {
+    sendError(res, error, "exportar cronograma");
   }
 });
 
@@ -357,6 +379,15 @@ function teamsOperation(
  * unicas que `CAMPOS_QUE_DESATUALIZAM` e `marcarComoDesatualizada` reconhecem —
  * por isso sao as unicas com `sincroniza`.
  */
+/**
+ * PUT /meetings/:id/organizer — TROCA O ORGANIZADOR: cancela o evento na caixa
+ * antiga (se houver), grava o novo e envia o convite pela caixa nova. Ver
+ * `organizer-change.ts`. Corpo: { organizer: { entraObjectId, displayName, email? } }.
+ */
+meetingsRouter.put("/:id/organizer", requirePgcpAssessoria, mutacao("trocar organizador", (req, ator) =>
+  trocarOrganizador(req.params.id as string, parseTrocaDeOrganizador(req.body), ator),
+));
+
 meetingsRouter.patch("/:id", requirePgcpAssessoria, mutacao("atualizar", (req, ator) =>
   updateMeeting(req.params.id as string, parseUpdateInput(req.body), ator),
   { sincroniza: true },
@@ -568,46 +599,56 @@ meetingsRouter.delete<{ id: string }>("/:id", requirePgcpAssessoria, async (req,
  * externa real, e aceitar a confirmacao do navegador seria assinatura falsa.
  */
 /**
- * VALIDACAO DE PAUTAS — passo OPCIONAL desde 10/2026: nada no fluxo depende
- * dele (iniciar exige so o convite). Mantido como estava ate decisao futura.
- *
- * `POST /:id/agenda-validation` gera o .pdf, envia ao aprovador pela caixa de
- * QUEM ESTA NA SESSAO (Graph delegado, On-Behalf-Of) e marca `sent`. O
- * aprovador nao precisa ter conta no PGCP.
- *
- * `POST /:id/agenda-approval` registra que a validacao voltou aprovada. E um
- * ato humano da Secretaria: nao existe leitura automatica de resposta de
- * e-mail, e afirmar aprovacao sem evidencia seria o mesmo erro da assinatura
- * ficticia que a 4.10 removeu.
+ * VALIDACAO DE PAUTAS — passo OPCIONAL (nada no fluxo depende dele; iniciar
+ * exige so o convite). Desde 10/2026 e APROVACAO DIRETA, sem e-mail:
+ * `POST /:id/agenda-approval` marca as pautas como aprovadas (ato humano da
+ * Assessoria). Alterar as pautas antes da reuniao reabre (volta a rascunho).
  *
  * Ambas exigem `PGCP.Assessoria`, como toda mutacao de reuniao.
  */
-meetingsRouter.post("/:id/agenda-validation", requirePgcpAssessoria, async (req, res) => {
-  const ator = atorDa(req);
-  const token = req.entraAccessToken;
-  if (!ator || !token) {
-    // A cadeia de middleware garante os dois; falhar alto se ela mudar.
-    res.status(500).json({ error: "Erro interno ao resolver a credencial da sessão." });
-    return;
-  }
+/*
+ * ENVIO POR E-MAIL REMOVIDO (10/2026): aprovação direta, como na Agenda Anual.
+ * A rota continua registrada (com o mesmo papel) só para responder 410 com
+ * mensagem clara a um cliente antigo, em vez de 404 genérico.
+ */
+meetingsRouter.post("/:id/agenda-validation", requirePgcpAssessoria, (_req: Request, res: Response) => {
+  res.status(410).json({
+    error: "As pautas não são mais enviadas por e-mail. Use “Marcar pautas como aprovadas”.",
+    code: "agenda_validation_email_removed",
+  });
+});
 
+/**
+ * GET /meetings/:id/export/pdf — DOSSIÊ DA REUNIÃO ("Exportar" do detalhe):
+ * tudo da reunião num PDF corporativo. Mesma leitura do detalhe; mesmo limite
+ * das exportações do Calendário.
+ */
+meetingsRouter.get("/:id/export/pdf", requireActivePgcpUser, calendarExportRateLimit, async (req: Request, res: Response) => {
   try {
-    const email = parseEmailDoAprovador((req.body as Record<string, unknown> | undefined)?.approverEmail);
-    const resultado = await enviarPautasParaValidacao(
-      req.params.id as string,
-      email,
-      { userId: ator.userId, name: ator.name },
-      token,
-    );
-    res.json({ ...resultado, meeting: await findMeeting(req.params.id as string) });
+    const { pdf, nome } = await exportarDossieDaReuniao(req.params.id as string);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${nome}"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(pdf);
   } catch (error) {
-    if (error instanceof GraphError) {
-      // Falha do Graph (consentimento ausente, throttling, caixa sem licenca)
-      // atravessa com o codigo dela — a pessoa precisa saber o que corrigir.
-      res.status(error.status ?? 502).json({ error: error.message, code: error.code });
-      return;
-    }
-    sendError(res, error, "enviar pautas para validação");
+    sendError(res, error, "exportar a reunião");
+  }
+});
+
+/**
+ * GET /meetings/:id/agenda/pdf — PDF das PAUTAS (pasta da reunião em
+ * Documentos). Leitura: mesma política do detalhe da reunião.
+ */
+meetingsRouter.get("/:id/agenda/pdf", requireActivePgcpUser, async (req: Request, res: Response) => {
+  try {
+    await findMeeting(req.params.id as string);
+    const { pdf, nome } = await gerarPdfDasPautas(req.params.id as string);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${nome}"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(pdf);
+  } catch (error) {
+    sendError(res, error, "gerar PDF das pautas");
   }
 });
 

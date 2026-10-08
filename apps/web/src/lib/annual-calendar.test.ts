@@ -116,7 +116,7 @@ test("Nova reunião existe no Calendário e em nenhuma outra tela", () => {
   assert.match(fonte("../components/CalendarView.tsx"), /onNewMeeting\(dataSugerida/);
   const app = fonte("../App.tsx");
   assert.equal(app.split("setNewMeetingDate(date)").length - 1, 1, "só o Calendário abre o modal");
-  for (const tela of ["DashboardView", "MeetingsView", "PipelineView", "AnnualAgendaView"]) {
+  for (const tela of ["DashboardView", "PipelineView", "AnnualAgendaView"]) {
     assert.ok(!/Nova reuni[aã]o|New meeting/i.test(fonte(`../components/${tela}.tsx`)), tela);
   }
 });

@@ -208,7 +208,7 @@ export async function deleteMeeting(
  * outra via) — é o estado desejado, não falha. Sem Graph configurado, lança:
  * o cancelamento externo fica pendente em vez de ser dado como feito.
  */
-async function cancelarEventoNoGraph(organizerEntraObjectId: string, eventId: string): Promise<void> {
+export async function cancelarEventoNoGraph(organizerEntraObjectId: string, eventId: string): Promise<void> {
   const config = getGraphConfig();
   if (!config) throw new GraphError("Integração com o Microsoft Graph não configurada.", "graph_not_configured");
   try {

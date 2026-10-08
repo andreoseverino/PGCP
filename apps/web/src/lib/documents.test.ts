@@ -29,24 +29,26 @@ test("Documentos: filtros viram query só com o que foi preenchido; padrão = ma
   const q = new URLSearchParams(
     consultaDosFiltros(
       {
-        busca: " Promoção outubro pptx ", orgao: ID, reuniao: M, tema: T, agenda: "", ano: "2026", mes: "10", pessoa: ID,
+        busca: " Promoção outubro pptx ", orgao: ID, reuniao: M, tema: T, agenda: "", ano: "2026", mes: "10", dia: "15", pessoa: ID,
         tipo: "anexo", formato: "planilha", favoritos: true, origem: "user", de: "2026-01-01", ate: "2026-12-31", ordem: "nome"
       },
       { limit: 50, offset: 100 }
     )
   );
   assert.deepEqual(Object.fromEntries(q), {
-    q: "Promoção outubro pptx", governanceBodyId: ID, meetingId: M, agendaItemId: T, year: "2026", month: "10",
+    q: "Promoção outubro pptx", governanceBodyId: ID, meetingId: M, agendaItemId: T, year: "2026", month: "10", day: "15",
     authorUserId: ID, type: "anexo", format: "planilha", favorites: "true", source: "user", dateFrom: "2026-01-01", dateTo: "2026-12-31", sort: "nome", limit: "50", offset: "100"
   });
 });
 
-test("Documentos: pasta da árvore vira filtro de contexto (ano/mês DA REUNIÃO, sem nível Dia)", () => {
+test("Documentos: pasta da árvore vira filtro de contexto (ano/mês/dia DA REUNIÃO)", async () => {
   const base = { ...FILTROS_INICIAIS, busca: "ata", tipo: "anexo" as const, tema: T, reuniao: M };
   assert.deepEqual(filtrosDaPasta({ tipo: "todos" }, base), { ...base, reuniao: "", tema: "" });
   const mes = filtrosDaPasta({ tipo: "mes", orgaoId: ID, ano: 2026, mes: 10 }, base);
   assert.deepEqual([mes.orgao, mes.ano, mes.mes, mes.reuniao, mes.tema, mes.busca, mes.tipo, mes.de], [ID, "2026", "10", "", "", "ata", "anexo", ""]);
-  const reuniao = filtrosDaPasta({ tipo: "reuniao", orgaoId: ID, ano: 2026, mes: 10, reuniaoId: M }, base);
+  const dia = filtrosDaPasta({ tipo: "dia", orgaoId: ID, ano: 2026, mes: 10, dia: 15 }, base);
+  assert.deepEqual([dia.orgao, dia.ano, dia.mes, dia.dia, dia.reuniao], [ID, "2026", "10", "15", ""]);
+  const reuniao = filtrosDaPasta({ tipo: "reuniao", orgaoId: ID, ano: 2026, mes: 10, dia: 15, reuniaoId: M }, base);
   assert.deepEqual([reuniao.reuniao, reuniao.tema, reuniao.ano], [M, T, ""], "tema vale dentro da própria reunião");
   const outra = filtrosDaPasta({ tipo: "reuniao", orgaoId: ID, ano: 2026, mes: 10, reuniaoId: ID }, base);
   assert.equal(outra.tema, "", "tema de outra reunião é descartado");
@@ -62,12 +64,16 @@ test("Documentos: pasta da árvore vira filtro de contexto (ano/mês DA REUNIÃO
       }]
     }]
   };
-  assert.deepEqual(trilhaDaPasta({ tipo: "reuniao", orgaoId: ID, ano: 2026, mes: 10, reuniaoId: M }, arvore, "pt"), [
-    "Comitê de Pessoas", "2026", "Outubro", "15/10 — Reunião Ordinária"
+  // Pasta da reunião = o NOME da reunião; a data está nas pastas Mês e Dia.
+  assert.deepEqual(trilhaDaPasta({ tipo: "reuniao", orgaoId: ID, ano: 2026, mes: 10, dia: 15, reuniaoId: M }, arvore, "pt"), [
+    "Comitê de Pessoas", "2026", "Outubro", "15/10", "Reunião Ordinária"
   ]);
   assert.deepEqual(trilhaDaPasta({ tipo: "agenda", orgaoId: ID, ano: 2026, agendaId: T }, arvore, "pt"), ["Comitê de Pessoas", "2026", "Plano 2026"]);
   assert.deepEqual(trilhaDaPasta({ tipo: "todos" }, arvore, "pt"), ["Todos os documentos"]);
-  assert.equal(rotuloDaReuniaoNaArvore({ title: "R", startAt: "2026-11-01T01:00:00Z", timezone: "America/Sao_Paulo" }), "31/10 — R", "fuso da reunião");
+  assert.equal(rotuloDaReuniaoNaArvore({ title: "R", startAt: "2026-11-01T01:00:00Z", timezone: "America/Sao_Paulo" }), "R");
+  // Dia LOCAL da reunião (fuso dela): 01/11 01:00Z = 31/10 em São Paulo.
+  const { diaDaReuniao } = await import("./documents-rules");
+  assert.equal(diaDaReuniao({ startAt: "2026-11-01T01:00:00Z", timezone: "America/Sao_Paulo" }), 31);
 });
 
 const doc = (extra: Partial<DocumentoDoPgcp>): DocumentoDoPgcp => ({
@@ -192,8 +198,10 @@ test("Drive: subpastas do local atual vêm da MESMA árvore derivada", async () 
   assert.deepEqual(pastasFilhas({ tipo: "todos" }, arvore, "pt").map((p) => [p.nome, p.total]), [["Comitê de Pessoas", 5]]);
   assert.deepEqual(pastasFilhas({ tipo: "orgao", orgaoId: "b1" }, arvore, "pt").map((p) => [p.nome, p.total]), [["2026", 5]]);
   assert.deepEqual(pastasFilhas({ tipo: "ano", orgaoId: "b1", ano: 2026 }, arvore, "pt").map((p) => p.nome), ["Agenda Anual — Plano", "Outubro"]);
-  assert.deepEqual(pastasFilhas({ tipo: "mes", orgaoId: "b1", ano: 2026, mes: 10 }, arvore, "pt").map((p) => p.nome), ["15/10 — Reunião"]);
-  assert.deepEqual(pastasFilhas({ tipo: "reuniao", orgaoId: "b1", ano: 2026, mes: 10, reuniaoId: "r1" }, arvore, "pt"), []);
+  // Mês → Dia → pasta com o NOME da reunião.
+  assert.deepEqual(pastasFilhas({ tipo: "mes", orgaoId: "b1", ano: 2026, mes: 10 }, arvore, "pt").map((p) => p.nome), ["15/10"]);
+  assert.deepEqual(pastasFilhas({ tipo: "dia", orgaoId: "b1", ano: 2026, mes: 10, dia: 15 }, arvore, "pt").map((p) => [p.nome, p.tipo]), [["Reunião", "reuniao"]]);
+  assert.deepEqual(pastasFilhas({ tipo: "reuniao", orgaoId: "b1", ano: 2026, mes: 10, dia: 15, reuniaoId: "r1" }, arvore, "pt"), []);
   assert.deepEqual(pastasFilhas({ tipo: "orgao", orgaoId: "outro" }, arvore, "pt"), [], "pasta fora da árvore visível: nada");
   assert.deepEqual(pastasFilhas({ tipo: "todos" }, null, "pt"), []);
 });
@@ -201,9 +209,9 @@ test("Drive: subpastas do local atual vêm da MESMA árvore derivada", async () 
 test("Drive: breadcrumb clicável leva a cada nível anterior", async () => {
   const { trilhaNavegavel } = await import("./documents-rules");
   const arvore = { bodies: [{ id: "b1", name: "Comitê de Pessoas", total: 1, years: [{ year: 2026, annualAgendas: [], months: [{ month: 10, meetings: [{ id: "r1", title: "Reunião", startAt: "2026-10-15T12:00:00Z", timezone: "America/Sao_Paulo", releasedToPipeline: true, total: 1 }] }] }] }] };
-  const t = trilhaNavegavel({ tipo: "reuniao", orgaoId: "b1", ano: 2026, mes: 10, reuniaoId: "r1" }, arvore, "pt");
-  assert.deepEqual(t.map((x) => x.rotulo), ["Biblioteca", "Comitê de Pessoas", "2026", "Outubro", "15/10 — Reunião"]);
-  assert.deepEqual(t.map((x) => x.pasta.tipo), ["todos", "orgao", "ano", "mes", "reuniao"]);
+  const t = trilhaNavegavel({ tipo: "reuniao", orgaoId: "b1", ano: 2026, mes: 10, dia: 15, reuniaoId: "r1" }, arvore, "pt");
+  assert.deepEqual(t.map((x) => x.rotulo), ["Biblioteca", "Comitê de Pessoas", "2026", "Outubro", "15/10", "Reunião"]);
+  assert.deepEqual(t.map((x) => x.pasta.tipo), ["todos", "orgao", "ano", "mes", "dia", "reuniao"]);
   assert.deepEqual(trilhaNavegavel({ tipo: "todos" }, arvore, "pt").map((x) => x.rotulo), ["Biblioteca"]);
 });
 
@@ -232,4 +240,24 @@ test("Drive: armazenamento e favoritos pelo servidor; preferência Blocos/Lista 
   assert.ok(!/localStorage/.test(tela));
   // Sem capacidade inventada (nenhum "100 GB", "de 15 GB usados" etc.).
   assert.ok(!/\b\d+(?:[.,]\d+)?\s?(GB|TB)\b/i.test(tela));
+});
+
+test("Documentos: pasta da reunião reúne anexos, Ata, pautas aprovadas e versões; download pela rota de origem", async () => {
+  const { secoesDaReuniao } = await import("./documents-rules");
+  const doc = (id: string, type: DocumentoDoPgcp["type"], extra: Partial<DocumentoDoPgcp> = {}) =>
+    ({ id, type, topic: null, meetingVersion: null, ...extra }) as DocumentoDoPgcp;
+  const s = secoesDaReuniao([
+    doc("versao:v1", "versao_reuniao", { meetingVersion: { id: "v1", number: 1 } }),
+    doc("doc:a", "anexo"),
+    doc("versao:v2", "versao_reuniao", { meetingVersion: { id: "v2", number: 2 } }),
+    doc("pautas:m", "pautas"),
+    doc("ata:m", "ata")
+  ]);
+  assert.deepEqual(s.gerais.map((d) => d.id), ["doc:a"]);
+  assert.deepEqual(s.atas.map((d) => d.id), ["ata:m"]);
+  assert.deepEqual(s.gerados.map((d) => d.id), ["pautas:m", "versao:v2", "versao:v1"], "pautas primeiro; versões da mais nova");
+  const cliente = readFileSync(new URL("./documents.ts", import.meta.url), "utf8");
+  assert.match(cliente, /\/meetings\/\$\{d\.meeting\.id\}\/versions\/\$\{d\.meetingVersion\.id\}\/pdf/);
+  assert.match(cliente, /\/meetings\/\$\{d\.meeting\.id\}\/agenda\/pdf/);
+  assert.match(cliente, /d\.type === "agenda_previa" && d\.annualAgenda\) return downloadAnnualAgendaPdf/);
 });

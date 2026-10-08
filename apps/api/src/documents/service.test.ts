@@ -9,7 +9,7 @@ const ID = "11111111-1111-4111-8111-111111111111";
 test("filtros da biblioteca: query fechada e validada", () => {
   assert.deepEqual(parseFiltrosDeDocumentos({}), {
     q: undefined, governanceBodyId: undefined, meetingId: undefined, agendaItemId: undefined, topicId: undefined,
-    annualAgendaId: undefined, authorUserId: undefined, year: undefined, month: undefined, type: undefined, source: undefined,
+    annualAgendaId: undefined, authorUserId: undefined, year: undefined, month: undefined, day: undefined, type: undefined, source: undefined,
     format: undefined, favorites: undefined,
     dateFrom: undefined, dateTo: undefined, sort: "recentes", limit: LIMITE_PADRAO, offset: 0,
   });
@@ -23,7 +23,7 @@ test("filtros da biblioteca: query fechada e validada", () => {
   for (const q of [
     { path: "../../etc/passwd" }, { objectKey: "meetings/x" }, { governanceBodyId: "1 OR 1=1" }, { type: "exe" }, { source: "s3" },
     { sort: "random" }, { dateFrom: "01/01/2026" }, { dateTo: "2026-13-45" }, { limit: String(LIMITE_MAXIMO + 1) },
-    { offset: "-1" }, { q: "x".repeat(201) }, { month: "13" }, { month: "0" }, { year: "26" }, { year: "2026.5" }, { meetingId: ["a", "b"] }, { agendaItemId: "tema" },
+    { offset: "-1" }, { q: "x".repeat(201) }, { month: "13" }, { month: "0" }, { day: "32" }, { day: "0" }, { year: "26" }, { year: "2026.5" }, { meetingId: ["a", "b"] }, { agendaItemId: "tema" },
   ]) {
     assert.throws(() => parseFiltrosDeDocumentos(q), HttpError, JSON.stringify(q));
   }

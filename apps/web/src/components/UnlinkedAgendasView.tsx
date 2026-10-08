@@ -27,18 +27,21 @@ import {
   PlusCircle,
   Calendar,
   Flag,
-  UserPlus,
   ArrowRight,
-  ShieldAlert
+  ShieldAlert,
+  CalendarClock
 } from "lucide-react";
 import { StandaloneAgenda, Meeting } from "../types";
 import ConfirmRemovalDialog from "./ConfirmRemovalDialog";
+import TopicMeetingsModal from "./TopicMeetingsModal";
 import DirectoryUserPicker from "./DirectoryUserPicker";
 import DurationHoursMinutesSelect from "./DurationHoursMinutesSelect";
 import { directoryEmail, type DirectoryUser } from "../lib/directory";
 import { formatMinutesAsTime, parseDurationMinutes } from "../lib/agenda-time";
 import type { ComiteVinculo } from "../lib/committee-link";
 import ComiteSelector from "./ComiteSelector";
+import TemaFuturoFields from "./TemaFuturoFields";
+import { problemaDoTemaFuturo, rotuloDoMes, TEMA_FUTURO_VAZIO, type TemaFuturo } from "../lib/agenda-topic-adapters";
 import {
   abrirEdicaoTema,
   abrirNovoTema,
@@ -63,6 +66,8 @@ interface UnlinkedAgendasViewProps {
   onUpdateStandaloneAgenda: (id: string, input: BibliotecaFormInput) => void;
   /** Bandeira FUP da lista — PATCH parcial só com `generatesActionItem`. */
   onToggleTopicFup: (id: string, marcado: boolean) => void;
+  /** Abre o detalhe de uma reunião (modal de reuniões do tema). */
+  onOpenMeeting?: (meetingId: string) => void;
   /** Cadastros reais. Identidade é o `id`; o nome é rótulo. */
   pautaTypes: TaxonomyItem[];
   pautaNatures: TaxonomyItem[];
@@ -78,6 +83,7 @@ export default function UnlinkedAgendasView({
   onDeleteStandaloneAgenda,
   onUpdateStandaloneAgenda,
   onToggleTopicFup,
+  onOpenMeeting,
   pautaTypes = [],
   pautaNatures = []
 }: UnlinkedAgendasViewProps) {
@@ -86,6 +92,8 @@ export default function UnlinkedAgendasView({
   const editingId = idEmEdicao(modal);
   /** Tema aguardando confirmação de exclusão. `null` = nada a confirmar. */
   const [temaParaExcluir, setTemaParaExcluir] = useState<StandaloneAgenda | null>(null);
+  /** Tema cujo selo "N reuniões" foi clicado: abre o modal de reuniões. */
+  const [temaDasReunioes, setTemaDasReunioes] = useState<StandaloneAgenda | null>(null);
   const [excluindo, setExcluindo] = useState(false);
   const [loadingEditId, setLoadingEditId] = useState<string | null>(null);
   const [editLoadError, setEditLoadError] = useState<string | null>(null);
@@ -128,13 +136,16 @@ export default function UnlinkedAgendasView({
   const [isCircular, setIsCircular] = useState(false);
   // Comitê (040): órgãos extras por onde o tema também deve passar.
   const [comites, setComites] = useState<ComiteVinculo[]>([]);
+  /** Tema futuro (042): mês/ano e comitê previstos; fica na aba Temas Futuros. */
+  const [futuro, setFuturo] = useState<TemaFuturo>(TEMA_FUTURO_VAZIO);
+  const [erroFormulario, setErroFormulario] = useState<string | null>(null);
+  const [aba, setAba] = useState<"regulares" | "futuros">("regulares");
 
   // Search query
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedFupFilter, setSelectedFupFilter] = useState<"all" | "fup" | "non-fup">("all");
 
   // Participant adding/caching states
-  const [isParticipantModalOpen, setIsParticipantModalOpen] = useState(false);
 
   // New user registration fields
 
@@ -170,7 +181,7 @@ export default function UnlinkedAgendasView({
     lblPautaType: language === "en" ? "Topic type" : "Tipo do tema",
     lblPautaNature: language === "en" ? "Topic nature" : "Natureza do tema",
 
-    placeholderTitle: language === "en" ? "e.g. ESG Sustainability Report" : "Ex: Relatório de Sustentabilidade ESG",
+    placeholderTitle: language === "en" ? "e.g. Financial results" : "Ex.: Resultado Financeiro",
     placeholderSpeaker: language === "en" ? "Select responsible..." : "Selecione o responsável...",
     placeholderDesc: language === "en" ? "Strategic context and decisions expected..." : "Pontos fundamentais e materiais a serem lidos previamente para a tomada de decisões.",
     placeholderParticipant: language === "en" ? "Select participant to add..." : "Selecione para adicionar...",
@@ -208,6 +219,9 @@ export default function UnlinkedAgendasView({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || !author.trim()) return;
+    const problema = problemaDoTemaFuturo(futuro, language);
+    setErroFormulario(problema);
+    if (problema) return;
 
     /*
      * Duração vai em MINUTOS: a API guarda `estimated_duration_minutes` como
@@ -229,7 +243,9 @@ export default function UnlinkedAgendasView({
       typeId: pautaTypeId || undefined,
       natureId: pautaNatureId || undefined,
       isCircularTheme: isCircular,
-      comites,
+      // Tema futuro não replica em reuniões: entrar numa o tornaria regular.
+      comites: futuro.ativo ? [] : comites,
+      futuro,
       participants: participantesComResponsavel
     };
 
@@ -255,6 +271,8 @@ export default function UnlinkedAgendasView({
     setPautaNatureId(pautaNatures[0]?.id || "");
     setIsCircular(false);
     setComites([]);
+    setFuturo(TEMA_FUTURO_VAZIO);
+    setErroFormulario(null);
     setSelectedParticipantToAdd("");
   };
 
@@ -285,6 +303,11 @@ export default function UnlinkedAgendasView({
       setPautaNatureId(agenda.pautaNatureId || pautaNatures[0]?.id || "");
       setIsCircular(agenda.isCircularTheme === true);
       setComites([]);
+      setFuturo({
+        ativo: agenda.isFuture === true,
+        mes: agenda.expectedMonth ?? "",
+        comiteId: agenda.expectedGovernanceBodyId ?? ""
+      });
 
       setDuration(agenda.duration);
       setModal(abrirEdicaoTema(agenda.id));
@@ -298,7 +321,6 @@ export default function UnlinkedAgendasView({
   /** Cancelar, X, Esc ou após salvar: descarta o não salvo e fecha. */
   const fecharModal = () => {
     setModal(MODAL_FECHADO);
-    setIsParticipantModalOpen(false);
     limparFormulario();
   };
 
@@ -324,17 +346,22 @@ export default function UnlinkedAgendasView({
   };
 
   useEffect(() => {
-    if (!modalAberto(modal) || isParticipantModalOpen) return;
+    if (!modalAberto(modal)) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") fecharModal();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modal, isParticipantModalOpen]);
+  }, [modal]);
+
+  // Abas: Temas Regulares x Temas Futuros (042).
+  const totalFuturos = standaloneAgendas.filter((a) => a.isFuture === true).length;
+  const totalRegulares = standaloneAgendas.length - totalFuturos;
 
   // Filter lists
   const filteredAgendas = standaloneAgendas.filter((agenda) => {
+    if ((aba === "futuros") !== (agenda.isFuture === true)) return false;
     const matchesSearch =
       agenda.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       agenda.author.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -380,6 +407,28 @@ export default function UnlinkedAgendasView({
 
       {/* LISTA DE TEMAS — o cadastro/edição abre em modal. */}
       <section className="space-y-4 mt-6" aria-label={t.secList}>
+
+          {/* Abas: regulares (já usados ou prontos) x futuros (mês/comitê previstos). */}
+          <div role="tablist" className="flex items-center gap-1 border-b border-slate-200">
+            {([
+              ["regulares", language === "en" ? "Regular topics" : "Temas Regulares", totalRegulares],
+              ["futuros", language === "en" ? "Future topics" : "Temas Futuros", totalFuturos]
+            ] as const).map(([id, rotulo, total]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={aba === id}
+                onClick={() => setAba(id)}
+                className={`px-4 py-2.5 text-xs font-extrabold border-b-2 -mb-px transition cursor-pointer inline-flex items-center gap-2 ${
+                  aba === id ? "border-[#00658d] text-[#00658d]" : "border-transparent text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                {rotulo}
+                <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${aba === id ? "bg-[#00658d]/10" : "bg-slate-100"}`}>{total}</span>
+              </button>
+            ))}
+          </div>
 
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-white p-3.5 border border-slate-100 rounded-2xl">
 
@@ -491,6 +540,14 @@ export default function UnlinkedAgendasView({
                         {agenda.id.toUpperCase()}
                       </span>
 
+                      {agenda.isFuture && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-sky-50 text-[#00658d] border border-sky-100">
+                          <CalendarClock className="w-3 h-3" />
+                          {language === "en" ? "Expected" : "Previsto"}: {rotuloDoMes(agenda.expectedMonth, language)}
+                          {agenda.expectedGovernanceBodyName ? ` · ${agenda.expectedGovernanceBodyName}` : ""}
+                        </span>
+                      )}
+
                       {agenda.pautaType && (
                         <span className="px-2 py-0.5 rounded text-[9px] font-medium text-amber-600 bg-amber-50/40 border border-amber-100/50 uppercase tracking-wider">
                           {agenda.pautaType}
@@ -503,17 +560,23 @@ export default function UnlinkedAgendasView({
                         </span>
                       )}
 
-                      <span className={`px-2 py-0.5 rounded text-[9px] font-medium flex items-center gap-1 border uppercase tracking-wider ${
-                        linkedCount > 0
-                          ? "bg-indigo-50/60 text-indigo-600 border-indigo-100/60"
-                          : "bg-slate-50/50 text-slate-400 border-slate-100"
-                      }`}>
+                      {/* Selo clicável: abre as reuniões do tema (passadas e futuras). */}
+                      <button
+                        type="button"
+                        onClick={() => setTemaDasReunioes(agenda)}
+                        title={language === "en" ? "See meetings with this topic" : "Ver reuniões com este tema"}
+                        className={`px-2 py-0.5 rounded text-[9px] font-medium flex items-center gap-1 border uppercase tracking-wider cursor-pointer transition ${
+                          linkedCount > 0
+                            ? "bg-indigo-50/60 text-indigo-600 border-indigo-100/60 hover:bg-indigo-100/70 hover:border-indigo-200"
+                            : "bg-slate-50/50 text-slate-400 border-slate-100 hover:bg-slate-100"
+                        }`}
+                      >
                         <Calendar className="w-2.5 h-2.5 shrink-0" />
                         <span>{linkedCount} {linkedCount === 1
                           ? (language === "en" ? "meeting" : "reunião")
                           : (language === "en" ? "meetings" : "reuniões")
                         }</span>
-                      </span>
+                      </button>
 
                       <span className={`px-2 py-0.5 rounded text-[9px] font-medium flex items-center gap-1 border uppercase tracking-wider ${
                         hasParts
@@ -607,8 +670,8 @@ export default function UnlinkedAgendasView({
             <form onSubmit={handleSubmit} className="flex-1 min-h-0 flex flex-col font-semibold text-xs text-slate-750">
               {/* Corpo: formulário à esquerda, participantes do tema à direita
                   (md+). Em telas menores empilha, com uma única rolagem. */}
-              <div className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden md:grid md:grid-cols-[minmax(0,1fr)_minmax(0,320px)] md:grid-rows-[minmax(0,1fr)]">
-              <div className="px-6 py-5 space-y-3.5 md:overflow-y-auto md:min-h-0">
+              <div className="scroll-visivel flex-1 min-h-0 overflow-y-auto md:overflow-hidden md:grid md:grid-cols-[minmax(0,1fr)_minmax(0,320px)] md:grid-rows-[minmax(0,1fr)]">
+              <div className="scroll-visivel px-6 py-5 space-y-3.5 md:overflow-y-auto md:min-h-0">
               {/*
                 "Reunião Vinculada" saiu do formulário.
                 O vínculo é `meeting_agenda_items.agenda_topic_id`: o tema entra
@@ -662,61 +725,68 @@ export default function UnlinkedAgendasView({
                 />
               </div>
 
-              {/* Tipo do tema */}
-              <div className="flex flex-col gap-1">
-                <label htmlFor="agendaPautaTypeInput" className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
-                  {t.lblPautaType} *
-                </label>
-                <select
-                  id="agendaPautaTypeInput"
-                  required
-                  value={pautaTypeId}
-                  onChange={(e) => setPautaTypeId(e.target.value)}
-                  className="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] transition-all duration-200"
-                >
-                  {/* `value` é o UUID: renomear o cadastro não quebra vínculo. */}
-                  {pautaTypes.map((pt) => (
-                    <option key={pt.id} value={pt.id}>{pt.name}</option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* Tipo do tema */}
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="agendaPautaTypeInput" className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
+                    {t.lblPautaType} *
+                  </label>
+                  <select
+                    id="agendaPautaTypeInput"
+                    required
+                    value={pautaTypeId}
+                    onChange={(e) => setPautaTypeId(e.target.value)}
+                    className="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] transition-all duration-200"
+                  >
+                    {/* `value` é o UUID: renomear o cadastro não quebra vínculo. */}
+                    {pautaTypes.map((pt) => (
+                      <option key={pt.id} value={pt.id}>{pt.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Natureza do tema */}
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="agendaPautaNatureInput" className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
+                    {t.lblPautaNature} *
+                  </label>
+                  <select
+                    id="agendaPautaNatureInput"
+                    required
+                    value={pautaNatureId}
+                    onChange={(e) => setPautaNatureId(e.target.value)}
+                    className="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] transition-all duration-200"
+                  >
+                    {pautaNatures.map((pn) => (
+                      <option key={pn.id} value={pn.id}>{pn.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Tema circular? — PADRÃO da Biblioteca. Copiado para o item da
+                    reunião ao vincular a uma reunião; sem automação. Default Não. */}
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="agendaCircularInput" className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
+                    {language === "en" ? "Recurring theme?" : "Tema circular?"} *
+                  </label>
+                  <select
+                    id="agendaCircularInput"
+                    value={isCircular ? "sim" : "nao"}
+                    onChange={(e) => setIsCircular(e.target.value === "sim")}
+                    className="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] transition-all duration-200"
+                  >
+                    <option value="nao">{language === "en" ? "No" : "Não"}</option>
+                    <option value="sim">{language === "en" ? "Yes" : "Sim"}</option>
+                  </select>
+                </div>
               </div>
 
-              {/* Natureza do tema */}
-              <div className="flex flex-col gap-1">
-                <label htmlFor="agendaPautaNatureInput" className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
-                  {t.lblPautaNature} *
-                </label>
-                <select
-                  id="agendaPautaNatureInput"
-                  required
-                  value={pautaNatureId}
-                  onChange={(e) => setPautaNatureId(e.target.value)}
-                  className="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] transition-all duration-200"
-                >
-                  {pautaNatures.map((pn) => (
-                    <option key={pn.id} value={pn.id}>{pn.name}</option>
-                  ))}
-                </select>
-              </div>
+              <TemaFuturoFields language={language} value={futuro} onChange={setFuturo} />
 
-              {/* Tema circular? — PADRÃO da Biblioteca. Copiado para o item da
-                  reunião ao vincular a uma reunião; sem automação. Default Não. */}
-              <div className="flex flex-col gap-1">
-                <label htmlFor="agendaCircularInput" className="text-[9.5px] font-bold text-slate-400 uppercase tracking-wider">
-                  {language === "en" ? "Recurring theme?" : "Tema circular?"} *
-                </label>
-                <select
-                  id="agendaCircularInput"
-                  value={isCircular ? "sim" : "nao"}
-                  onChange={(e) => setIsCircular(e.target.value === "sim")}
-                  className="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-3 py-2 text-xs text-slate-700 cursor-pointer focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] transition-all duration-200"
-                >
-                  <option value="nao">{language === "en" ? "No" : "Não"}</option>
-                  <option value="sim">{language === "en" ? "Yes" : "Sim"}</option>
-                </select>
-              </div>
-
-              <ComiteSelector language={language} homeGovernanceBodyId={null} value={comites} onChange={setComites} />
+              {/* Comitê replica o tema em reuniões: não se aplica a tema futuro. */}
+              {!futuro.ativo && (
+                <ComiteSelector language={language} homeGovernanceBodyId={null} value={comites} onChange={setComites} />
+              )}
 
               {/* Estimated time in Standard Duration (HH:mm selects) */}
               <div className="flex flex-col gap-1">
@@ -746,12 +816,16 @@ export default function UnlinkedAgendasView({
                 />
               </div>
 
+              {erroFormulario && (
+                <p role="alert" className="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">{erroFormulario}</p>
+              )}
+
               </div>
 
               {/* PARTICIPANTES DO TEMA — coluna direita (md+). */}
               <aside
                 aria-labelledby="tema-participantes-titulo"
-                className="px-6 py-5 border-t md:border-t-0 md:border-l border-slate-100 bg-slate-50/60 flex flex-col gap-3 md:overflow-y-auto md:min-h-0"
+                className="px-6 py-5 border-t md:border-t-0 md:border-l border-slate-100 bg-slate-50/60 flex flex-col gap-3 md:overflow-y-auto md:min-h-0 scroll-visivel"
               >
                 <div>
                   <h4 id="tema-participantes-titulo" className="text-xs font-extrabold text-slate-800 flex items-center justify-between gap-2">
@@ -765,22 +839,40 @@ export default function UnlinkedAgendasView({
                   </h4>
                   <p className="text-[10px] text-slate-400 font-medium mt-0.5">
                     {language === "en"
-                      ? "Select or review the people related to this topic."
-                      : "Selecione ou visualize os participantes relacionados a este tema."}
+                      ? "The responsible person is added automatically."
+                      : "O responsável entra automaticamente."}
                   </p>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setIsParticipantModalOpen(true)}
-                  className="w-full py-2 px-3 bg-white hover:bg-[#00658d]/5 border border-slate-200 hover:border-[#00658d]/20 text-[#00658d] rounded-xl text-xs transition flex items-center justify-center gap-2 cursor-pointer font-bold select-none text-center"
-                >
-                  <UserPlus className="w-3.5 h-3.5" />
-                  {language === "en" ? "Link participants" : "Vincular participantes"}
-                </button>
+                <DirectoryUserPicker
+                  language={language}
+                  keepOpenOnSelect
+                  alreadyChosenIds={participants
+                    .map((participant) => participant.entraObjectId)
+                    .filter((id): id is string => Boolean(id))}
+                  placeholder={language === "en" ? "Link participant to topic..." : "Vincular participante ao tema..."}
+                  onSelect={(user) => {
+                    /*
+                     * Guarda IDENTIDADE, não só o nome: `entraObjectId` é o
+                     * que permite ao backend reconhecer a pessoa e, se ela já
+                     * tiver conta, vincular ao `users.id` existente.
+                     *
+                     * Deduplicação pelo oid — nome não é chave, e dois
+                     * homônimos do diretório são duas pessoas.
+                     */
+                    const displayName = user.displayName ?? directoryEmail(user) ?? "";
+                    if (!displayName) return;
+                    if (participants.some((p) => p.entraObjectId === user.id)) return;
+
+                    setParticipants([
+                      ...participants,
+                      { entraObjectId: user.id, displayName, email: directoryEmail(user) ?? undefined }
+                    ]);
+                  }}
+                />
 
                 {/* Participantes já vinculados ao tema */}
-                <div className="space-y-1 max-h-60 md:max-h-none md:flex-1 md:min-h-0 overflow-y-auto p-1 bg-white rounded-xl border border-slate-100">
+                <div className="space-y-1">
                   {participants.length > 0 ? (
                     participants.map((p, index) => {
                       const isResponsible = isResponsibleTopicParticipant(p, authorEntraObjectId);
@@ -842,6 +934,16 @@ export default function UnlinkedAgendasView({
       )}
 
       {/* CONFIRMAÇÃO: EXCLUIR TEMA DA BIBLIOTECA */}
+      {temaDasReunioes && (
+        <TopicMeetingsModal
+          language={language}
+          topicId={temaDasReunioes.id}
+          topicTitle={temaDasReunioes.title}
+          onClose={() => setTemaDasReunioes(null)}
+          onOpenMeeting={onOpenMeeting}
+        />
+      )}
+
       {temaParaExcluir && (
         <ConfirmRemovalDialog
           language={language}
@@ -850,121 +952,6 @@ export default function UnlinkedAgendasView({
           onCancel={() => setTemaParaExcluir(null)}
           onConfirm={() => void confirmarExclusao()}
         />
-      )}
-
-      {/* POPUP MODAL: SELECIONAR PARTICIPANTES DO TEMA */}
-      {isParticipantModalOpen && createPortal(
-        <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl border border-slate-200/90 shadow-2xl w-full max-w-4xl max-h-[85vh] overflow-hidden flex flex-col md:flex-row animate-fade-in text-slate-700">
-
-            {/* LEFT AREA: Users list and search */}
-            <div className={`flex-1 p-6 md:p-8 flex flex-col justify-between overflow-y-auto`}>
-              <div>
-                <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-                  <div>
-                    <h3 className="text-lg font-extrabold text-slate-900 flex items-center gap-2">
-                      <Users className="w-5 h-5 text-[#00658d]" />
-                      {language === "en" ? "Link Participants" : "Vincular Participantes"}
-                    </h3>
-                    <p className="text-slate-400 font-semibold text-[11px] mt-0.5">
-                      {language === "en" ? "Select corporate accounts and observers for this topic." : "Selecione membros do diretório, conselho ou convidados."}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setIsParticipantModalOpen(false)}
-                    className="p-1 rounded-lg hover:bg-slate-100 text-slate-500 transition-colors"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-
-                {/* Participantes vêm do diretório corporativo (Microsoft
-                    Graph). A lista local editável e o cadastro manual foram
-                    removidos: pessoa não se cria digitando. */}
-                <div className="my-4">
-                  <DirectoryUserPicker
-                    language={language}
-                    keepOpenOnSelect
-                    alreadyChosenIds={participants
-                      .map((participant) => participant.entraObjectId)
-                      .filter((id): id is string => Boolean(id))}
-                    placeholder={language === "en" ? "Search directory by name or e-mail..." : "Buscar no diretório por nome ou e-mail..."}
-                    onSelect={(user) => {
-                      /*
-                       * Guarda IDENTIDADE, não só o nome: `entraObjectId` é o
-                       * que permite ao backend reconhecer a pessoa e, se ela já
-                       * tiver conta, vincular ao `users.id` existente.
-                       *
-                       * Deduplicação pelo oid — nome não é chave, e dois
-                       * homônimos do diretório são duas pessoas.
-                       */
-                      const displayName = user.displayName ?? directoryEmail(user) ?? "";
-                      if (!displayName) return;
-                      if (participants.some((p) => p.entraObjectId === user.id)) return;
-
-                      setParticipants([
-                        ...participants,
-                        { entraObjectId: user.id, displayName, email: directoryEmail(user) ?? undefined }
-                      ]);
-                    }}
-                  />
-                </div>
-
-                {/* Já vinculados a este tema */}
-                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                  {participants.length === 0 ? (
-                    <p className="text-[10.5px] text-slate-400 font-semibold italic py-4 text-center">
-                      {language === "en" ? "No one linked yet." : "Ninguém vinculado ainda."}
-                    </p>
-                  ) : (
-                    participants.map((p, idx) => {
-                      const isResponsible = isResponsibleTopicParticipant(p, authorEntraObjectId);
-                      return (
-                        <div
-                          key={p.entraObjectId ?? p.email ?? `${p.displayName}-${idx}`}
-                          className="p-3 rounded-2xl border bg-[#00658d]/5 border-[#00658d]/35 flex items-center justify-between gap-3"
-                        >
-                          <span className="font-extrabold text-slate-950 text-xs truncate min-w-0">
-                            {p.displayName ?? p.email ?? ""}
-                            {isResponsible && (
-                              <span className="ml-1.5 text-[8.5px] text-[#00658d] uppercase">
-                                {language === "en" ? "Responsible" : "Responsável"}
-                              </span>
-                            )}
-                          </span>
-                          <button
-                            type="button"
-                            disabled={isResponsible}
-                            onClick={() => handleRemoveParticipant(idx)}
-                            className="px-3 py-1.5 rounded-xl text-[10px] font-bold uppercase tracking-wider bg-rose-500 text-white hover:bg-rose-600 transition cursor-pointer shrink-0 disabled:opacity-35 disabled:cursor-not-allowed disabled:hover:bg-rose-500"
-                            title={isResponsible
-                              ? (language === "en" ? "Change the responsible person before removing." : "Troque o responsável antes de remover.")
-                              : undefined}
-                          >
-                            {language === "en" ? "Remove" : "Remover"}
-                          </button>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-
-              {/* Action feet area row */}
-              <div className="pt-4 border-t border-slate-100 flex items-center justify-end mt-6">
-                <button
-                  type="button"
-                  onClick={() => setIsParticipantModalOpen(false)}
-                  className="px-5 py-2.5 bg-[#00658d] hover:bg-[#00aeef] text-white font-bold text-xs uppercase rounded-xl transition cursor-pointer"
-                >
-                  {language === "en" ? "Confirm & Back" : "Confirmar e Voltar"}
-                </button>
-              </div>
-            </div>
-
-          </div>
-        </div>,
-        document.body
       )}
 
     </div>

@@ -391,6 +391,28 @@ export async function enviarPautasParaValidacao(
   }
 }
 
+/**
+ * PDF DAS PAUTAS da reunião (o mesmo que ia anexado no envio por e-mail, agora
+ * removido) — para a pasta da reunião em Documentos. Gerado sob demanda do
+ * estado atual das pautas.
+ */
+export async function gerarPdfDasPautas(meetingId: string): Promise<{ pdf: Buffer; nome: string }> {
+  if (!UUID_PATTERN.test(meetingId)) throw new HttpError(400, "Identificador da reunião inválido.");
+  const { reuniao, pautas, participantes } = await carregarReuniao(meetingId);
+  const pdf = await gerarPdfDePautas({
+    titulo: reuniao.title,
+    descricao: reuniao.description,
+    orgao: reuniao.governance_body,
+    organizador: reuniao.organizer_name,
+    inicioEm: reuniao.start_at.toISOString(),
+    fimEm: reuniao.end_at.toISOString(),
+    fuso: reuniao.timezone,
+    participantes,
+    pautas,
+  });
+  return { pdf, nome: nomeDoArquivo(reuniao.title) };
+}
+
 // ---------------------------------------------------------------------------
 // Marcar como aprovadas
 // ---------------------------------------------------------------------------
@@ -401,11 +423,10 @@ export interface ResultadoAprovacao {
 }
 
 /**
- * Registra que o aprovador validou as pautas.
- *
- * EXIGE ter passado por `sent`. Aprovar direto do rascunho pularia o pedido de
- * validacao e tornaria o registro de aprovacao uma afirmacao sem lastro — nao
- * haveria a quem, nem quando, a validacao foi pedida.
+ * Registra que as pautas foram aprovadas — APROVAÇÃO DIRETA (10/2026): o envio
+ * por e-mail saiu (mesmo modelo da Agenda Anual); a Assessoria marca
+ * "aprovadas" a partir do rascunho. `sent` (envios antigos) também aprova.
+ * O CHECK da 016 já admite `approved` só com `agenda_approved_at`.
  *
  * IDEMPOTENTE: reaprovar nao muda nada e nao gera segunda entrada na trilha.
  * O `UPDATE` condicionado a `'sent'` e o que garante isso, sem SELECT antes —
@@ -438,13 +459,6 @@ export async function aprovarPautas(meetingId: string, ator: Ator): Promise<Resu
         agendaValidationStatus: "approved",
         approvedAt: reuniao.agenda_approved_at!.toISOString(),
       };
-    }
-
-    if (reuniao.agenda_validation_status !== "sent") {
-      throw new HttpError(
-        409,
-        "As pautas ainda não foram enviadas para validação. Envie-as antes de marcar como aprovadas.",
-      );
     }
 
     const { rows } = await client.query<{ agenda_approved_at: Date }>(

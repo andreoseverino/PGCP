@@ -8,7 +8,8 @@
  * de uma listagem do bucket. Órgão do contexto global é filtro, não autorização.
  */
 
-export type TipoDeDocumento = "anexo" | "ata" | "agenda_anual";
+/** Tipos de NEGÓCIO. Além de anexo/Ata/Agenda: PDFs gerados das versões da reunião, das pautas aprovadas e a versão atual da Agenda. */
+export type TipoDeDocumento = "anexo" | "ata" | "agenda_anual" | "versao_reuniao" | "pautas" | "agenda_previa";
 export type OrigemDoDocumento = "user" | "pgcp";
 /** Formato do arquivo (visão "Tipo" da Biblioteca), decidido pelo servidor pela extensão. */
 export type FormatoDoDocumento = "pdf" | "documento" | "planilha" | "apresentacao" | "imagem" | "video" | "outros";
@@ -36,6 +37,8 @@ export interface DocumentoDoPgcp {
   /** Tema DA REUNIÃO a que o anexo pertence. */
   topic: { id: string; title: string } | null;
   annualAgenda: { id: string; year: number; version: number } | null;
+  /** Versão da reunião (tipo `versao_reuniao`): baixa o PDF daquela versão. */
+  meetingVersion?: { id: string; number: number } | null;
   author: { id: string; name: string } | null;
   documentAt: string;
   /** Formato (ausente em API antiga = "outros"). */
@@ -85,8 +88,8 @@ export function periodoDoModificado(opcao: OpcaoModificado, hoje: string): { de:
 
 /** Filtros da VISÃO: Recentes e Favoritos ignoram a pasta; Recentes ordena por data. */
 export function filtrosDaVisao(visao: VisaoDaBiblioteca, f: FiltrosDaTela): FiltrosDaTela {
-  if (visao === "recentes") return { ...f, orgao: f.orgao, reuniao: "", tema: "", agenda: "", ano: "", mes: "", favoritos: false, ordem: "recentes" };
-  if (visao === "favoritos") return { ...f, reuniao: "", tema: "", agenda: "", ano: "", mes: "", favoritos: true };
+  if (visao === "recentes") return { ...f, orgao: f.orgao, reuniao: "", tema: "", agenda: "", ano: "", mes: "", dia: "", favoritos: false, ordem: "recentes" };
+  if (visao === "favoritos") return { ...f, reuniao: "", tema: "", agenda: "", ano: "", mes: "", dia: "", favoritos: true };
   return { ...f, favoritos: false };
 }
 
@@ -131,16 +134,48 @@ export function pastasFilhas(pasta: PastaSelecionada, arvore: ArvoreDeDocumentos
       }))
     ];
   }
+  const mes = ano.months.find((x) => x.month === (pasta as { mes?: number }).mes);
   if (pasta.tipo === "mes") {
-    const mes = ano.months.find((x) => x.month === pasta.mes);
-    return (mes?.meetings ?? []).map((r) => ({
-      pasta: { tipo: "reuniao", orgaoId: orgao.id, ano: ano.year, mes: pasta.mes, reuniaoId: r.id },
+    return diasDoMes(mes?.meetings ?? []).map((d) => ({
+      pasta: { tipo: "dia", orgaoId: orgao.id, ano: ano.year, mes: pasta.mes, dia: d.dia },
+      nome: rotuloDoDia(d.dia, pasta.mes),
+      total: d.meetings.reduce((s, r) => s + r.total, 0),
+      tipo: "pasta"
+    }));
+  }
+  if (pasta.tipo === "dia") {
+    return (diasDoMes(mes?.meetings ?? []).find((d) => d.dia === pasta.dia)?.meetings ?? []).map((r) => ({
+      pasta: { tipo: "reuniao", orgaoId: orgao.id, ano: ano.year, mes: pasta.mes, dia: pasta.dia, reuniaoId: r.id },
       nome: rotuloDaReuniaoNaArvore(r),
       total: r.total,
       tipo: "reuniao"
     }));
   }
   return []; // Agenda Anual e reunião são o último nível.
+}
+
+type ReuniaoDaArvore = ArvoreDeDocumentos["bodies"][number]["years"][number]["months"][number]["meetings"][number];
+
+/** Dia LOCAL da reunião (fuso dela) — pasta de Dia entre Mês e Reunião. */
+export function diaDaReuniao(r: { startAt: string; timezone: string }): number {
+  return Number(dataNoFuso(r.startAt, r.timezone).slice(0, 2));
+}
+
+/** Reuniões do mês agrupadas por dia local, em ordem. */
+export function diasDoMes(meetings: readonly ReuniaoDaArvore[]): Array<{ dia: number; meetings: ReuniaoDaArvore[] }> {
+  const dias: Array<{ dia: number; meetings: ReuniaoDaArvore[] }> = [];
+  for (const r of meetings) {
+    const dia = diaDaReuniao(r);
+    const grupo = dias.find((d) => d.dia === dia);
+    if (grupo) grupo.meetings.push(r);
+    else dias.push({ dia, meetings: [r] });
+  }
+  return dias.sort((a, b) => a.dia - b.dia);
+}
+
+/** "15/10" — nome da pasta de dia. */
+export function rotuloDoDia(dia: number, mes: number): string {
+  return `${String(dia).padStart(2, "0")}/${String(mes).padStart(2, "0")}`;
 }
 
 /** Breadcrumb CLICÁVEL: "Biblioteca › Órgão › 2026 › Outubro › Reunião". */
@@ -155,12 +190,14 @@ export function trilhaNavegavel(
   const alvos: PastaSelecionada[] = [{ tipo: "orgao", orgaoId: pasta.orgaoId }];
   if (pasta.tipo !== "orgao") alvos.push({ tipo: "ano", orgaoId: pasta.orgaoId, ano: pasta.ano });
   if (pasta.tipo === "agenda") alvos.push(pasta);
-  if (pasta.tipo === "mes" || pasta.tipo === "reuniao") alvos.push({ tipo: "mes", orgaoId: pasta.orgaoId, ano: pasta.ano, mes: pasta.mes });
+  if (pasta.tipo === "mes" || pasta.tipo === "dia" || pasta.tipo === "reuniao") alvos.push({ tipo: "mes", orgaoId: pasta.orgaoId, ano: pasta.ano, mes: pasta.mes });
+  if (pasta.tipo === "dia") alvos.push(pasta);
+  if (pasta.tipo === "reuniao" && pasta.dia !== undefined) alvos.push({ tipo: "dia", orgaoId: pasta.orgaoId, ano: pasta.ano, mes: pasta.mes, dia: pasta.dia });
   if (pasta.tipo === "reuniao") alvos.push(pasta);
   return [raiz, ...alvos.map((p, i) => ({ rotulo: nomes[i] ?? "", pasta: p }))];
 }
 
-/** Pastas VISUAIS (metadados): Órgão → Ano → (Agenda Anual | Mês → Reunião). */
+/** Pastas VISUAIS (metadados): Órgão → Ano → (Agenda Anual | Mês → Dia → Reunião). O Dia é derivado na tela. */
 export interface ArvoreDeDocumentos {
   bodies: Array<{
     id: string;
@@ -184,7 +221,9 @@ export type PastaSelecionada =
   | { tipo: "ano"; orgaoId: string; ano: number }
   | { tipo: "agenda"; orgaoId: string; ano: number; agendaId: string }
   | { tipo: "mes"; orgaoId: string; ano: number; mes: number }
-  | { tipo: "reuniao"; orgaoId: string; ano: number; mes: number; reuniaoId: string };
+  | { tipo: "dia"; orgaoId: string; ano: number; mes: number; dia: number }
+  /** `dia` ausente: reunião aberta por atalho (a trilha não mostra o Dia). */
+  | { tipo: "reuniao"; orgaoId: string; ano: number; mes: number; dia?: number; reuniaoId: string };
 
 export interface FiltrosDaTela {
   busca: string;
@@ -196,6 +235,8 @@ export interface FiltrosDaTela {
   /** Pasta Ano/Mês: ano e mês DA REUNIÃO (mesmo critério da árvore), não do upload. */
   ano: string;
   mes: string;
+  /** Pasta Dia: dia LOCAL da reunião. */
+  dia: string;
   pessoa: string;
   tipo: "" | TipoDeDocumento;
   /** Formato do arquivo (PDF, Planilha...). */
@@ -216,6 +257,7 @@ export const FILTROS_INICIAIS: FiltrosDaTela = {
   agenda: "",
   ano: "",
   mes: "",
+  dia: "",
   pessoa: "",
   tipo: "",
   formato: "",
@@ -237,6 +279,7 @@ export function consultaDosFiltros(f: FiltrosDaTela, pagina: { limit: number; of
     ["annualAgendaId", f.agenda],
     ["year", f.ano],
     ["month", f.mes],
+    ["day", f.dia],
     ["authorUserId", f.pessoa],
     ["type", f.tipo],
     ["format", f.formato],
@@ -259,7 +302,7 @@ export function consultaDosFiltros(f: FiltrosDaTela, pagina: { limit: number; of
 export function filtrosDaPasta(pasta: PastaSelecionada, base: FiltrosDaTela): FiltrosDaTela {
   // Tema da reunião só faz sentido dentro da própria reunião.
   const tema = pasta.tipo === "reuniao" && base.reuniao === pasta.reuniaoId ? base.tema : "";
-  const limpo: FiltrosDaTela = { ...base, orgao: "", reuniao: "", tema, agenda: "", ano: "", mes: "" };
+  const limpo: FiltrosDaTela = { ...base, orgao: "", reuniao: "", tema, agenda: "", ano: "", mes: "", dia: "" };
   switch (pasta.tipo) {
     case "todos":
       return limpo;
@@ -271,6 +314,8 @@ export function filtrosDaPasta(pasta: PastaSelecionada, base: FiltrosDaTela): Fi
       return { ...limpo, orgao: pasta.orgaoId, agenda: pasta.agendaId };
     case "mes":
       return { ...limpo, orgao: pasta.orgaoId, ano: String(pasta.ano), mes: String(pasta.mes) };
+    case "dia":
+      return { ...limpo, orgao: pasta.orgaoId, ano: String(pasta.ano), mes: String(pasta.mes), dia: String(pasta.dia) };
     case "reuniao":
       return { ...limpo, orgao: pasta.orgaoId, reuniao: pasta.reuniaoId };
   }
@@ -297,19 +342,24 @@ export function trilhaDaPasta(pasta: PastaSelecionada, arvore: ArvoreDeDocumento
   }
   trilha.push(NOMES_DOS_MESES[pasta.mes - 1] ?? String(pasta.mes));
   if (pasta.tipo === "mes") return trilha;
+  if (pasta.tipo === "dia") return [...trilha, rotuloDoDia(pasta.dia, pasta.mes)];
+  if (pasta.dia !== undefined) trilha.push(rotuloDoDia(pasta.dia, pasta.mes));
   const reuniao = ano?.months.find((m) => m.month === pasta.mes)?.meetings.find((r) => r.id === pasta.reuniaoId);
   trilha.push(reuniao ? rotuloDaReuniaoNaArvore(reuniao) : language === "pt" ? "Reunião" : "Meeting");
   return trilha;
 }
 
-/** "DD/MM — Título" no fuso da reunião (sem nível de Dia na árvore). */
+/** Pasta da reunião = o NOME da reunião (a data já está nas pastas Mês e Dia). */
 export function rotuloDaReuniaoNaArvore(r: { title: string; startAt: string; timezone: string }): string {
-  return `${dataNoFuso(r.startAt, r.timezone).slice(0, 5)} — ${r.title}`;
+  return r.title;
 }
 
 export function rotuloDoTipo(tipo: TipoDeDocumento, language: "en" | "pt"): string {
   if (tipo === "anexo") return language === "pt" ? "Anexo" : "Attachment";
   if (tipo === "ata") return language === "pt" ? "Ata" : "Minutes";
+  if (tipo === "versao_reuniao") return language === "pt" ? "Versão da reunião" : "Meeting version";
+  if (tipo === "pautas") return language === "pt" ? "Pautas aprovadas" : "Approved agenda";
+  if (tipo === "agenda_previa") return language === "pt" ? "Agenda Anual (versão atual)" : "Annual plan (current)";
   return language === "pt" ? "Agenda Anual" : "Annual plan";
 }
 
@@ -393,17 +443,24 @@ export function secoesDaReuniao(docs: readonly DocumentoDoPgcp[]): {
   gerais: DocumentoDoPgcp[];
   temas: Array<{ tema: { id: string; title: string }; docs: DocumentoDoPgcp[] }>;
   atas: DocumentoDoPgcp[];
+  /** Gerados pelo PGCP: pautas aprovadas e as versões da reunião (mais nova primeiro). */
+  gerados: DocumentoDoPgcp[];
 } {
   const gerais: DocumentoDoPgcp[] = [];
   const atas: DocumentoDoPgcp[] = [];
+  const gerados: DocumentoDoPgcp[] = [];
   const temas: Array<{ tema: { id: string; title: string }; docs: DocumentoDoPgcp[] }> = [];
   for (const d of docs) {
     if (d.type === "ata") atas.push(d);
+    else if (d.type === "versao_reuniao" || d.type === "pautas") gerados.push(d);
     else if (d.topic) {
       const grupo = temas.find((t) => t.tema.id === d.topic!.id);
       if (grupo) grupo.docs.push(d);
       else temas.push({ tema: d.topic, docs: [d] });
     } else if (d.type === "anexo") gerais.push(d);
   }
-  return { gerais, temas, atas };
+  gerados.sort((a, b) =>
+    a.type !== b.type ? (a.type === "pautas" ? -1 : 1) : (b.meetingVersion?.number ?? 0) - (a.meetingVersion?.number ?? 0)
+  );
+  return { gerais, temas, atas, gerados };
 }

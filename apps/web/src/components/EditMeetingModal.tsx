@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Pencil, X } from "lucide-react";
 import type { GovernanceBody, Meeting } from "../types";
-import { describeMeetingError, meetingFromApi, updateMeeting } from "../lib/meetings";
+import { changeMeetingOrganizer, describeMeetingError, meetingFromApi, updateMeeting } from "../lib/meetings";
+import DirectoryUserPicker from "./DirectoryUserPicker";
+import { directoryEmail, type DirectoryUser } from "../lib/directory";
 import { previaDoTitulo, SESSION_TYPE_OPTIONS, type SessionType } from "../lib/meeting-title";
 import { formularioDaReuniao, montarPatchDaEdicao, type FormDeEdicao } from "../lib/edit-meeting";
 import { descricaoAposMudanca, type DadosDoTemplate } from "../lib/rich-text";
@@ -47,6 +49,8 @@ export default function EditMeetingModal({
   const en = language === "en";
   const [form, setForm] = useState<FormDeEdicao>(() => formularioDaReuniao(meeting));
   const [salvando, setSalvando] = useState(false);
+  /** Novo organizador escolhido no diretório (troca o calendário do convite). */
+  const [novoOrganizador, setNovoOrganizador] = useState<DirectoryUser | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [avisoDescricao, setAvisoDescricao] = useState<string | null>(null);
   const alterar = <K extends keyof FormDeEdicao>(campo: K, valor: FormDeEdicao[K]) => setForm((f) => ({ ...f, [campo]: valor }));
@@ -133,13 +137,23 @@ export default function EditMeetingModal({
       return;
     }
     const patch = montarPatchDaEdicao(meeting, form);
-    if (Object.keys(patch).length === 0) {
+    if (Object.keys(patch).length === 0 && !novoOrganizador) {
       (onUnchanged ?? onClose)();
       return;
     }
     setSalvando(true);
     try {
-      onSaved(meetingFromApi(await updateMeeting(meeting.id, patch)));
+      let api = Object.keys(patch).length > 0 ? await updateMeeting(meeting.id, patch) : null;
+      // Organizador por último: o convite sai já com os dados atualizados.
+      if (novoOrganizador) {
+        const email = directoryEmail(novoOrganizador);
+        api = await changeMeetingOrganizer(meeting.id, {
+          entraObjectId: novoOrganizador.id,
+          displayName: novoOrganizador.displayName ?? email ?? "",
+          ...(email ? { email } : {})
+        });
+      }
+      onSaved(meetingFromApi(api!));
     } catch (error) {
       // Fica no modal: a pessoa corrige sem perder o que digitou.
       setErro(describeMeetingError(error, language));
@@ -294,16 +308,29 @@ export default function EditMeetingModal({
           <div className="space-y-3 min-w-0">
           <div className="flex flex-col gap-1">
             <label htmlFor="editOrganizer" className={ROTULO}>{en ? "Organizer" : "Organizador"}</label>
-            {/* Somente leitura: o convite mora no calendário do organizador. */}
-            <input
-              id="editOrganizer"
-              type="text"
-              value={meeting.organizer || (en ? "Not informed" : "Não informado")}
-              readOnly
-              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-500 outline-none cursor-not-allowed"
-            />
-            <p className="text-[10px] text-slate-400 font-semibold">
-              {en ? "Defined when the meeting is scheduled." : "Definido no agendamento da reunião."}
+            {/* O convite mora no calendário do organizador: trocar move o convite de caixa. */}
+            <div id="editOrganizer">
+              <DirectoryUserPicker
+                language={language}
+                selected={novoOrganizador}
+                selectedLabel={novoOrganizador ? null : meeting.organizer || null}
+                placeholder={en ? "Search directory to change organizer..." : "Buscar no diretório para trocar o organizador..."}
+                onSelect={(u) => setNovoOrganizador(u)}
+                onClear={() => setNovoOrganizador(null)}
+              />
+            </div>
+            <p className={`text-[10px] font-semibold leading-relaxed ${novoOrganizador ? "text-amber-700" : "text-slate-400"}`}>
+              {novoOrganizador
+                ? meeting.calendarSyncStatus === "synced" || meeting.calendarSyncStatus === "stale"
+                  ? en
+                    ? "On save, the current invitation is cancelled in the old organizer's calendar and sent again from the new organizer's calendar. Participants receive the cancellation and the new invitation."
+                    : "Ao salvar, o convite atual é cancelado na agenda do organizador antigo e enviado de novo pela agenda do novo organizador. Os participantes recebem o cancelamento e o novo convite."
+                  : en
+                    ? "On save, the invitation is sent from the new organizer's calendar."
+                    : "Ao salvar, o convite é enviado pela agenda do novo organizador."
+                : en
+                  ? "The invitation lives in the organizer's calendar."
+                  : "O convite sai da agenda do organizador."}
             </p>
           </div>
           {/*

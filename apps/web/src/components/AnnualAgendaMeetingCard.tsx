@@ -11,7 +11,6 @@ import {
   Pencil,
   Plus,
   Trash2,
-  Unlink,
   UserRound,
   Users,
   X
@@ -21,7 +20,6 @@ import {
   createAnnualTema,
   deleteAnnualPauta,
   deleteAnnualTema,
-  dissociateAnnualMeeting,
   linkAnnualTemaParticipant,
   removeAnnualMeetingParticipant,
   renameAnnualPauta,
@@ -31,6 +29,7 @@ import {
   type AnnualAgendaDetail,
   type AnnualAgendaMeeting
 } from "../lib/annual-agendas";
+import { buildTopicPayload, createAgendaTopic } from "../lib/agenda-topics";
 import {
   destinoSobre,
   fichaDaLinha,
@@ -85,6 +84,8 @@ interface Props {
   orgao: { id: string; name: string };
   meeting: AnnualAgendaMeeting;
   editable: boolean;
+  /** Agenda aprovada: mostra o atalho para o Pipeline (única ação no cabeçalho). */
+  agendaAprovada: boolean;
   ocupado: boolean;
   libraryTopics: TemaDaBibliotecaResumo[];
   /** Taxonomias da Administração (tipo/natureza do tema). */
@@ -150,6 +151,7 @@ export default function AnnualAgendaMeetingCard({
   orgao,
   meeting,
   editable,
+  agendaAprovada,
   ocupado,
   libraryTopics,
   pautaTypes,
@@ -159,7 +161,8 @@ export default function AnnualAgendaMeetingCard({
   triggerToast
 }: Props) {
   const pt = language === "pt";
-  const [aberta, setAberta] = useState(true);
+  // Sempre recolhida ao abrir a página: a lista fica curta; o usuário expande a que quer.
+  const [aberta, setAberta] = useState(false);
   const [renomeando, setRenomeando] = useState<{ tipo: "pauta" | "tema"; id: string; titulo: string } | null>(null);
   /** Modal aberto: cadastro completo (novo/editar) ou seleção da Biblioteca. */
   const [modalTema, setModalTema] = useState<{ modo: "novo" | "biblioteca" | "editar"; tema?: Tema } | null>(null);
@@ -218,6 +221,29 @@ export default function AnnualAgendaMeetingCard({
   const salvarTema = (dados: DadosDoTemaCompleto) => {
     const alvo = modalTema;
     void executar(async () => {
+      // TEMA FUTURO: não entra nesta reunião — só a Biblioteca, com mês/comitê previstos.
+      if (alvo?.modo !== "editar" && dados.futuro?.ativo) {
+        await createAgendaTopic(
+          buildTopicPayload({
+            title: dados.title,
+            description: dados.description ?? undefined,
+            durationMinutes: dados.durationMinutes,
+            responsibleLabel: dados.responsibleLabel,
+            responsibleEntraObjectId: dados.responsibleEntraObjectId ?? undefined,
+            typeId: dados.agendaTopicTypeId ?? undefined,
+            natureId: dados.agendaTopicNatureId ?? undefined,
+            isCircularTheme: dados.isCircularTheme,
+            participants: dados.participants.map((p) => ({
+              ...(p.entraObjectId ? { entraObjectId: p.entraObjectId } : {}),
+              displayName: p.displayName,
+              ...(p.email ? { email: p.email } : {})
+            })),
+            futuro: dados.futuro
+          })
+        );
+        setModalTema(null);
+        return;
+      }
       const r =
         alvo?.modo === "editar" && alvo.tema
           ? await updateAnnualTema(agendaId, meeting.id, alvo.tema.id, {
@@ -247,7 +273,11 @@ export default function AnnualAgendaMeetingCard({
             });
       setModalTema(null);
       return r;
-    }, alvo?.modo === "editar" ? (pt ? "Tema atualizado; horários recalculados." : "Topic updated.") : pt ? "Tema adicionado." : "Topic added.");
+    }, alvo?.modo === "editar"
+      ? (pt ? "Tema atualizado; horários recalculados." : "Topic updated.")
+      : dados.futuro?.ativo
+        ? (pt ? "Tema futuro cadastrado na Biblioteca." : "Future topic saved to the Library.")
+        : pt ? "Tema adicionado." : "Topic added.");
   };
 
   /** "Adicionar da Biblioteca": só o id do tema-mestre (+ duração/pauta). */
@@ -566,37 +596,21 @@ export default function AnnualAgendaMeetingCard({
           </p>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          {/* Toda reunião da Agenda opera no Pipeline desde o agendamento (10/2026). */}
-          <button type="button" onClick={() => onOpenMeeting(meeting.id)} className="p-1.5 text-[#00658d] hover:bg-sky-50 rounded-lg cursor-pointer" title={pt ? "Abrir no Pipeline" : "Open in Pipeline"} aria-label={pt ? "Abrir no Pipeline" : "Open in Pipeline"}>
-            <ExternalLink className="w-3.5 h-3.5" />
-          </button>
-          {editable && !meeting.plannedItemId && (
-            <button
-              type="button"
-              disabled={ocupado}
-              onClick={() =>
-                confirmar(
-                  {
-                    titulo: pt ? "Desassociar reunião da Agenda Anual?" : "Remove meeting from the annual plan?",
-                    paragrafos: [
-                      pt ? `“${meeting.title}” deixa de fazer parte desta Agenda Anual.` : `“${meeting.title}” will no longer be part of this annual plan.`,
-                      pt
-                        ? "A reunião, o convite Outlook/Teams, as pautas e os temas continuam como estão no Calendário e no Pipeline."
-                        : "The meeting, its Outlook/Teams invite, agendas and topics stay as they are."
-                    ],
-                    temas: [],
-                    acao: pt ? "Desassociar" : "Remove"
-                  },
-                  () => dissociateAnnualMeeting(agendaId, meeting.id)
-                )
-              }
-              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer disabled:opacity-40"
-              title={pt ? "Desassociar da Agenda Anual" : "Remove from annual plan"}
-              aria-label={pt ? "Desassociar da Agenda Anual" : "Remove from annual plan"}
-            >
-              <Unlink className="w-3.5 h-3.5" />
-            </button>
-          )}
+          {/*
+            Só com a Agenda APROVADA: a operação das reuniões passa ao Pipeline
+            (a Agenda trava). Em elaboração não há atalho nem desassociar.
+          */}
+          {agendaAprovada &&
+            (meeting.removedFromPipeline ? (
+              // Foto da Agenda aprovada: a reunião foi cancelada depois, não há o que abrir.
+              <span className="text-[9px] font-extrabold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full">
+                {pt ? "Cancelada no Pipeline" : "Cancelled in Pipeline"}
+              </span>
+            ) : (
+              <button type="button" onClick={() => onOpenMeeting(meeting.id)} className="p-1.5 text-[#00658d] hover:bg-sky-50 rounded-lg cursor-pointer" title={pt ? "Abrir no Pipeline" : "Open in Pipeline"} aria-label={pt ? "Abrir no Pipeline" : "Open in Pipeline"}>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </button>
+            ))}
         </div>
       </header>
 
@@ -830,6 +844,7 @@ export default function AnnualAgendaMeetingCard({
           language={language}
           ocupado={ocupado}
           temas={libraryTopics}
+          governanceBodyId={orgao.id}
           pautas={pautas}
           onCancel={() => setModalTema(null)}
           onAdd={adicionarDaBiblioteca}

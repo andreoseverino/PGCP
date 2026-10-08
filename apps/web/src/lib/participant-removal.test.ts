@@ -72,7 +72,8 @@ test("cancelar não executa: chamadas destrutivas só no handler de confirmaçã
     assert.ok(pos > inicio && pos < fim, `${chamada} só dentro de confirmarRemocao`);
   }
   // Os botões só abrem a confirmação.
-  assert.match(tela, /onClick=\{\(\) => pedirRemocaoDoTema\(/);
+  // Desvincular do tema: pelo modal de tema padrão, que só abre a confirmação.
+  assert.match(tela, /onUnlinkParticipant=\{\(participantId\) => \{[\s\S]*?pedirRemocaoDoTema\(item\.id/);
   assert.match(tela, /onClick=\{\(\) => pedirRemocaoDaReuniao\(/);
   // O modal: cancelar só limpa o estado.
   assert.match(tela, /onCancel=\{\(\) => setRemocaoPendente\(null\)\}/);
