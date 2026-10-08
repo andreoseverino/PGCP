@@ -4,13 +4,14 @@ import { Pencil, Users, X } from "lucide-react";
 import DirectoryUserPicker from "./DirectoryUserPicker";
 import DurationHoursMinutesSelect from "./DurationHoursMinutesSelect";
 import ParticipantPicker from "./ParticipantPicker";
+import ComiteSelector from "./ComiteSelector";
 import type { DirectoryUser } from "../lib/directory";
 import { directoryEmail } from "../lib/directory";
 import { formatMinutesAsTime } from "../lib/agenda-time";
 import type { TaxonomyItem } from "../lib/agenda-topic-adapters";
 import type { CreateParticipantPayload } from "../lib/meeting-adapters";
 import { nomeDoSelecionado, selecionadoParaPayload, type ParticipanteSelecionado } from "../lib/participant-search";
-import { AJUDA_RECORRENCIA, OPCOES_DE_RECORRENCIA, recorrenciaParaApi, type RecorrenciaDoTema } from "../lib/topic-recurrence";
+import type { ComiteVinculo } from "../lib/committee-link";
 
 /**
  * CADASTRO COMPLETO DE TEMA da Agenda Anual ("+ Novo tema" e "Editar").
@@ -34,8 +35,8 @@ export interface DadosDoTemaCompleto {
   agendaTopicTypeId: string | null;
   agendaTopicNatureId: string | null;
   isCircularTheme: boolean;
-  /** Recorrência (039). `null` = não se repete. */
-  recurrence: RecorrenciaDoTema | null;
+  /** Comitê (040): órgãos extras por onde o tema também deve passar. */
+  comites: ComiteVinculo[];
   description: string | null;
   agendaId?: string;
   /** Só no "Novo tema": vinculados na mesma transação da criação. */
@@ -50,7 +51,6 @@ export interface TemaEmEdicao {
   typeId: string | null;
   natureId: string | null;
   isCircularTheme: boolean;
-  recurrence?: RecorrenciaDoTema | null;
   description: string | null;
   agendaId: string | null;
   participants: Array<{ id: string; name: string }>;
@@ -106,7 +106,7 @@ export default function AnnualTemaModal({
   const [tipoId, setTipoId] = useState(inicial?.typeId ?? tipos[0]?.id ?? "");
   const [naturezaId, setNaturezaId] = useState(inicial?.natureId ?? naturezas[0]?.id ?? "");
   const [circular, setCircular] = useState(inicial?.isCircularTheme ?? false);
-  const [recorrencia, setRecorrencia] = useState<string>(inicial?.recurrence ?? "");
+  const [comites, setComites] = useState<ComiteVinculo[]>([]);
   const [minutos, setMinutos] = useState<number>(inicial?.durationMinutes ?? 30);
   const [descricao, setDescricao] = useState(inicial?.description ?? "");
   const [pautaId, setPautaId] = useState(inicial?.agendaId ?? pautas[0]?.id ?? "");
@@ -134,7 +134,7 @@ export default function AnnualTemaModal({
       agendaTopicTypeId: tipoId || null,
       agendaTopicNatureId: naturezaId || null,
       isCircularTheme: circular,
-      recurrence: recorrenciaParaApi(recorrencia),
+      comites,
       description: descricao.trim() || null,
       ...(pautas.length > 1 && pautaId ? { agendaId: pautaId } : {}),
       participants: novos.map(selecionadoParaPayload)
@@ -196,7 +196,7 @@ export default function AnnualTemaModal({
               />
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="flex flex-col gap-1">
                 <label htmlFor="annualTemaTipo" className={LABEL}>{pt ? "Tipo do tema" : "Topic type"}</label>
                 <select id="annualTemaTipo" value={tipoId} onChange={(e) => setTipoId(e.target.value)} className={`${CAMPO} cursor-pointer`}>
@@ -211,9 +211,6 @@ export default function AnnualTemaModal({
                   {naturezas.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
                 </select>
               </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="flex flex-col gap-1">
                 <label htmlFor="annualTemaCircular" className={LABEL}>{pt ? "Tema circular?" : "Recurring theme?"}</label>
                 <select id="annualTemaCircular" value={circular ? "sim" : "nao"} onChange={(e) => setCircular(e.target.value === "sim")} className={`${CAMPO} cursor-pointer`}>
@@ -221,27 +218,18 @@ export default function AnnualTemaModal({
                   <option value="sim">{pt ? "Sim" : "Yes"}</option>
                 </select>
               </div>
-              <div className="flex flex-col gap-1">
-                <label htmlFor="annualTemaRecorrencia" className={LABEL}>{pt ? "Recorrência" : "Recurrence"}</label>
-                <select
-                  id="annualTemaRecorrencia"
-                  value={recorrencia}
-                  onChange={(e) => setRecorrencia(e.target.value)}
-                  title={AJUDA_RECORRENCIA[language]}
-                  className={`${CAMPO} cursor-pointer`}
-                >
-                  {OPCOES_DE_RECORRENCIA.map((o) => <option key={o.value} value={o.value}>{o[language]}</option>)}
-                </select>
-              </div>
-              <div className="flex flex-col gap-1 sm:col-span-2">
-                <label className={LABEL}>{pt ? "Tempo estimado (duração)" : "Estimated duration"} *</label>
-                <DurationHoursMinutesSelect
-                  language={language}
-                  value={formatMinutesAsTime(minutos)}
-                  onChangeMinutes={setMinutos}
-                  selectClassName="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-2.5 py-1.5 text-xs text-slate-700 focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] focus:bg-white outline-none cursor-pointer transition-all duration-200"
-                />
-              </div>
+            </div>
+
+            <ComiteSelector language={language} homeGovernanceBodyId={orgao.id} value={comites} onChange={setComites} />
+
+            <div className="flex flex-col gap-1">
+              <label className={LABEL}>{pt ? "Tempo estimado (duração)" : "Estimated duration"} *</label>
+              <DurationHoursMinutesSelect
+                language={language}
+                value={formatMinutesAsTime(minutos)}
+                onChangeMinutes={setMinutos}
+                selectClassName="w-full bg-slate-50/50 border border-slate-200/50 rounded-xl px-2.5 py-1.5 text-xs text-slate-700 focus:ring-2 focus:ring-[#00658d]/20 focus:border-[#00658d] focus:bg-white outline-none cursor-pointer transition-all duration-200"
+              />
             </div>
 
             <div className="flex flex-col gap-1">

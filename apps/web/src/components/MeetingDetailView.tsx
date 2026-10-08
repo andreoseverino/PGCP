@@ -90,7 +90,8 @@ import {
   type AgendaItemPatchPayload
 } from "../lib/meetings";
 import { locationLabel } from "../lib/meeting-locations-rules";
-import { AJUDA_RECORRENCIA, OPCOES_DE_RECORRENCIA, recorrenciaParaApi } from "../lib/topic-recurrence";
+import type { ComiteVinculo } from "../lib/committee-link";
+import ComiteSelector from "./ComiteSelector";
 import EditMeetingModal from "./EditMeetingModal";
 import { RichTextView } from "./RichTextEditor";
 import ParticipantPicker from "./ParticipantPicker";
@@ -220,8 +221,8 @@ export default function MeetingDetailView({
   const [editRespUser, setEditRespUser] = useState<DirectoryUser | null>(null);
   // Tema circular NESTA reunião. Editável Não↔Sim; nunca toca a Biblioteca.
   const [editCircular, setEditCircular] = useState(false);
-  // Recorrência do tema NESTA reunião (039). "" = não se repete.
-  const [editRecorrencia, setEditRecorrencia] = useState("");
+  // Comitê (040): órgãos extras por onde o tema também deve passar.
+  const [editComites, setEditComites] = useState<ComiteVinculo[]>([]);
   // Ficha (019): edição da PRÓPRIA pauta da reunião; nunca toca a Biblioteca.
   const [editTypeId, setEditTypeId] = useState("");
   const [editNatureId, setEditNatureId] = useState("");
@@ -609,7 +610,7 @@ export default function MeetingDetailView({
    * Recebe o `AgendaItem` que a tela montou apenas como fonte dos VALORES; o
    * `id` local é descartado, porque a identidade da linha é gerada pelo banco.
    */
-  const persistirNovaPauta = (item: AgendaItem) =>
+  const persistirNovaPauta = (item: AgendaItem, opcoes?: { registerInLibrary?: boolean; comites?: ComiteVinculo[] }) =>
     persistir(
       () =>
         apiAddAgendaItem(meeting.id, {
@@ -631,7 +632,9 @@ export default function MeetingDetailView({
           agendaTopicTypeId: item.agendaTopicTypeId,
           agendaTopicNatureId: item.agendaTopicNatureId,
           description: item.description?.trim() ? item.description.trim() : undefined,
-          generatesActionItem: item.generatesActionItem
+          generatesActionItem: item.generatesActionItem,
+          ...(opcoes?.registerInLibrary ? { registerInLibrary: true } : {}),
+          ...(opcoes?.comites && opcoes.comites.length > 0 ? { comites: opcoes.comites } : {})
         }),
       language === "en" ? "Topic added." : "Tema incluído na reunião."
     );
@@ -684,14 +687,18 @@ export default function MeetingDetailView({
   const criarTema = async () => {
     const titulo = novoTemaTitulo.trim();
     if (!titulo) return;
-    const ok = await persistirNovaPauta({
-      id: newId(),
-      title: titulo,
-      time: "",
-      duration: novoTemaDuracao,
-      author: "",
-      agendaId: pautaDestinoId || undefined
-    });
+    const ok = await persistirNovaPauta(
+      {
+        id: newId(),
+        title: titulo,
+        time: "",
+        duration: novoTemaDuracao,
+        author: "",
+        agendaId: pautaDestinoId || undefined
+      },
+      // Mesmo esquema da Agenda Anual: o tema também nasce na Biblioteca.
+      { registerInLibrary: true }
+    );
     if (ok) setNovoTemaTitulo("");
   };
 
@@ -1208,7 +1215,7 @@ export default function MeetingDetailView({
     setEditRespOid(item.authorEntraObjectId);
     setEditRespUser(null);
     setEditCircular(item.isCircularTheme === true);
-    setEditRecorrencia(item.recurrence ?? "");
+    setEditComites([]);
     // Ficha: pré-seleciona o snapshot atual; sem valor, cai no primeiro cadastro.
     setEditTypeId(item.agendaTopicTypeId || pautaTypes[0]?.id || "");
     setEditNatureId(item.agendaTopicNatureId || pautaNatures[0]?.id || "");
@@ -1235,12 +1242,14 @@ export default function MeetingDetailView({
         durationMinutes: parseDurationMinutes(editDuration),
         // Booleano estrito. Grava o estado do seletor sempre — permite Sim→Não.
         isCircularTheme: editCircular,
-        recurrence: recorrenciaParaApi(editRecorrencia),
         // Ficha (019): grava na PRÓPRIA pauta. `null` limpa; nunca toca a Biblioteca.
         agendaTopicTypeId: editTypeId || null,
         agendaTopicNatureId: editNatureId || null,
         description: editDescription.trim() || null,
         generatesActionItem: editFup,
+        // Mesmo esquema da Agenda Anual: o tema também nasce na Biblioteca.
+        registerInLibrary: true,
+        ...(editComites.length > 0 ? { comites: editComites } : {}),
       };
       if (label) {
         patch.responsibleLabel = label;
@@ -4317,21 +4326,12 @@ export default function MeetingDetailView({
                 </select>
               </div>
 
-              {/* Recorrência (039): define a inclusão automática em reuniões NOVAS do órgão. */}
-              <div className="flex flex-col gap-1">
-                <label htmlFor="editTemaRecorrencia" className="text-[10px] font-extrabold text-slate-500 uppercase">
-                  {language === "pt" ? "Recorrência" : "Recurrence"}
-                </label>
-                <select
-                  id="editTemaRecorrencia"
-                  value={editRecorrencia}
-                  onChange={(e) => setEditRecorrencia(e.target.value)}
-                  title={AJUDA_RECORRENCIA[language]}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 cursor-pointer focus:bg-white focus:outline-none focus:ring-1 focus:ring-[#00658d]"
-                >
-                  {OPCOES_DE_RECORRENCIA.map((o) => <option key={o.value} value={o.value}>{o[language]}</option>)}
-                </select>
-              </div>
+              <ComiteSelector
+                language={language}
+                homeGovernanceBodyId={meeting.governanceBodyId}
+                value={editComites}
+                onChange={setEditComites}
+              />
 
               {/* Ficha (019): Tipo e Natureza — MESMOS cadastros da Biblioteca. */}
               <div className="grid grid-cols-2 gap-3">

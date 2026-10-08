@@ -1,6 +1,6 @@
 import { apiRequest, apiRequestBlob } from "./api";
-import type { RecorrenciaDoTema } from "./topic-recurrence";
 import type { CreateParticipantPayload } from "./meeting-adapters";
+import type { ComiteVinculo } from "./committee-link";
 
 /**
  * AGENDA ANUAL — consolida as reuniões (do Calendário) de um órgão no ano,
@@ -71,8 +71,6 @@ export interface AnnualAgendaMeeting {
     typeId: string | null;
     natureId: string | null;
     isCircularTheme: boolean;
-    /** Recorrência (039); `null` = não se repete. */
-    recurrence?: RecorrenciaDoTema | null;
     description: string | null;
     inicio: string;
     fim: string | null;
@@ -210,8 +208,8 @@ export const updateAnnualTema = (
     agendaTopicTypeId?: string | null;
     agendaTopicNatureId?: string | null;
     isCircularTheme?: boolean;
-    recurrence?: RecorrenciaDoTema | null;
     description?: string | null;
+    comites?: ComiteVinculo[];
   }
 ) => apiRequest<AnnualAgendaDetail>(`${conteudo(id, meetingId)}/agenda-items/${itemId}`, json("PATCH", payload));
 
@@ -227,9 +225,9 @@ export interface NovoTemaPayload {
   agendaTopicTypeId?: string;
   agendaTopicNatureId?: string;
   isCircularTheme: boolean;
-  recurrence: RecorrenciaDoTema | null;
   description?: string;
   agendaId?: string;
+  comites?: ComiteVinculo[];
   participants: CreateParticipantPayload[];
 }
 

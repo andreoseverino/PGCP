@@ -26,6 +26,7 @@ import {
   removeTopicParticipant,
   updateAgendaTopic,
 } from "./write.js";
+import { vincularTemaAComites } from "../meetings/update.js";
 
 export const agendaTopicsRouter = Router();
 
@@ -183,7 +184,19 @@ agendaTopicsRouter.get("/", requireActivePgcpUser, async (req: Request, res: Res
 agendaTopicsRouter.post(
   "/",
   requireActivePgcpUser,
-  mutacao("criar", (req, ator) => createAgendaTopic(parseAgendaTopicInput(req.body), ator), 201),
+  mutacao(
+    "criar",
+    async (req, ator) => {
+      const input = parseAgendaTopicInput(req.body);
+      const topic = await createAgendaTopic(input, ator);
+      // COMITÊ (040): replica o tema (já mestre) nas reuniões dos comitês escolhidos.
+      if (input.comites && input.comites.length > 0) {
+        await vincularTemaAComites(topic.id, input.comites, ator);
+      }
+      return topic;
+    },
+    201,
+  ),
 );
 
 agendaTopicsRouter.get("/:id", requireActivePgcpUser, async (req, res) => {
@@ -197,9 +210,14 @@ agendaTopicsRouter.get("/:id", requireActivePgcpUser, async (req, res) => {
 agendaTopicsRouter.patch(
   "/:id",
   requireActivePgcpUser,
-  mutacao("atualizar", (req, ator) =>
-    updateAgendaTopic(req.params.id as string, parseAgendaTopicInput(req.body, true), ator),
-  ),
+  mutacao("atualizar", async (req, ator) => {
+    const input = parseAgendaTopicInput(req.body, true);
+    const topic = await updateAgendaTopic(req.params.id as string, input, ator);
+    if (input.comites && input.comites.length > 0) {
+      await vincularTemaAComites(topic.id, input.comites, ator);
+    }
+    return topic;
+  }),
 );
 
 /**

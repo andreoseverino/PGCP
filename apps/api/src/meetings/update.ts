@@ -18,7 +18,6 @@ import {
   type ParticipantInput
 } from "./create.js";
 import { resolverLocalParaReuniao } from "../meeting-locations/service.js";
-import { parseRecorrenciaDoTema, type RecorrenciaDoTema } from "./topic-recurrence.js";
 import {
   aplicarListaDeParticipantes,
   exigirQueNaoParticipa,
@@ -41,6 +40,8 @@ import {
   vincularParticipanteNaPauta,
 } from "./agenda-item-participants.js";
 import { exigirProntaParaIniciar, startMeetingWhenAgendaItemCompletes } from "./meeting-start.js";
+import { parseComitesInput, type ComiteVinculoInput } from "../agenda-topics/committee-link.js";
+import { inserirTemaNaBiblioteca } from "../agenda-topics/write.js";
 
 /**
  * Mutacoes direcionadas do nucleo da reuniao.
@@ -149,13 +150,16 @@ async function exigirReuniao(client: PoolClient, meetingId: string): Promise<str
  * chegariam juntas ao SELECT, nao achariam ninguem e inseririam a mesma pessoa
  * duas vezes. O lock na linha da reuniao serializa isso.
  */
-async function exigirReuniaoTravada(client: PoolClient, meetingId: string): Promise<string> {
-  const { rows } = await client.query<{ title: string }>(
-    "SELECT title FROM meetings WHERE id = $1 FOR UPDATE",
+async function exigirReuniaoTravada(
+  client: PoolClient,
+  meetingId: string,
+): Promise<{ title: string; governanceBodyId: string }> {
+  const { rows } = await client.query<{ title: string; governance_body_id: string }>(
+    "SELECT title, governance_body_id FROM meetings WHERE id = $1 FOR UPDATE",
     [meetingId],
   );
   if (rows.length === 0) throw new HttpError(404, "Reunião não encontrada.");
-  return rows[0]!.title;
+  return { title: rows[0]!.title, governanceBodyId: rows[0]!.governance_body_id };
 }
 
 // -----------------------------------------------------------------------------
@@ -647,15 +651,19 @@ export async function addAgendaItem(
 ): Promise<MeetingDetail> {
   assertUuid(meetingId, "Identificador");
 
+  let agendaTopicIdResolvido: string | undefined;
+
   await emTransacaoVersionada(meetingId, actor, async (client) => {
     // Travada: a pauta pode acrescentar o responsavel a lista de participantes.
-    const titulo = await exigirReuniaoTravada(client, meetingId);
+    const { title: titulo, governanceBodyId } = await exigirReuniaoTravada(client, meetingId);
+
+    let agendaTopicId = input.agendaTopicId;
 
     // Importar da Biblioteca preserva a IDENTIDADE da pauta: o vinculo e o
     // UUID, nunca o titulo. Nenhuma agenda_topic nova e criada aqui.
-    if (input.agendaTopicId) {
+    if (agendaTopicId) {
       const { rows } = await client.query("SELECT id FROM agenda_topics WHERE id = $1", [
-        input.agendaTopicId,
+        agendaTopicId,
       ]);
       if (rows.length === 0) {
         throw new HttpError(404, "Pauta não encontrada na biblioteca.");
@@ -666,12 +674,33 @@ export async function addAgendaItem(
       // impede de fato, inclusive num clique duplo ou numa chamada direta.
       const { rows: existentes } = await client.query(
         "SELECT 1 FROM meeting_agenda_items WHERE meeting_id = $1 AND agenda_topic_id = $2",
-        [meetingId, input.agendaTopicId],
+        [meetingId, agendaTopicId],
       );
       if (existentes.length > 0) {
         throw new HttpError(409, "Esta pauta da Biblioteca já está vinculada a esta reunião.");
       }
+    } else if (input.registerInLibrary) {
+      // COMITÊ (040): mesmo esquema do "+ Novo tema" da Agenda Anual — o tema
+      // nasce também na Biblioteca, para poder ser replicado por identidade.
+      agendaTopicId = await inserirTemaNaBiblioteca(
+        client,
+        {
+          title: input.title,
+          description: input.description ?? null,
+          estimatedDurationMinutes: input.durationMinutes ?? null,
+          generatesActionItem: input.generatesActionItem ?? false,
+          responsibleLabel: input.responsibleLabel ?? null,
+          responsibleEntraObjectId: input.responsibleEntraObjectId ?? null,
+          agendaTopicTypeId: input.agendaTopicTypeId ?? null,
+          agendaTopicNatureId: input.agendaTopicNatureId ?? null,
+          governanceBodyId,
+          isCircularTheme: input.isCircularTheme ?? false,
+          participants: [],
+        },
+        actor,
+      );
     }
+    agendaTopicIdResolvido = agendaTopicId;
 
     // Tema dentro de pauta: a pauta precisa ser DESTA reuniao (IDOR).
     if (input.agendaId) {
@@ -691,16 +720,14 @@ export async function addAgendaItem(
                responsible_entra_tenant_id, responsible_entra_object_id,
                is_circular_theme,
                agenda_topic_type_id, agenda_topic_nature_id, description, generates_action_item,
-               meeting_agenda_id, recurrence)
+               meeting_agenda_id)
             VALUES ($1, $9, $2, $3, $4, $5, 'pending', $6, $7, $8,
                COALESCE($10::boolean, (SELECT is_circular_theme FROM agenda_topics WHERE id = $9), false),
                COALESCE($11::uuid,    (SELECT agenda_topic_type_id   FROM agenda_topics WHERE id = $9)),
                COALESCE($12::uuid,    (SELECT agenda_topic_nature_id FROM agenda_topics WHERE id = $9)),
                COALESCE($13::text,    (SELECT description            FROM agenda_topics WHERE id = $9)),
                COALESCE($14::boolean, (SELECT generates_action_item  FROM agenda_topics WHERE id = $9), false),
-               $15,
-               CASE WHEN $16::boolean THEN $17::text
-                    ELSE (SELECT recurrence FROM agenda_topics WHERE id = $9) END)
+               $15)
          RETURNING id`,
       [
         meetingId,
@@ -711,7 +738,7 @@ export async function addAgendaItem(
         input.responsibleLabel ?? null,
         input.responsibleEntraObjectId ? actor.entraTenantId : null,
         input.responsibleEntraObjectId ?? null,
-        input.agendaTopicId ?? null,
+        agendaTopicId ?? null,
         // Ausente + vínculo com a Biblioteca => herda o padrão do tema mestre
         // (snapshot). Ausente sem vínculo => false. Valor explícito manda.
         input.isCircularTheme ?? null,
@@ -721,9 +748,6 @@ export async function addAgendaItem(
         input.description ?? null,
         input.generatesActionItem ?? null,
         input.agendaId ?? null,
-        // Recorrência (039): informada manda (inclusive null); ausente herda do tema.
-        input.recurrence !== undefined,
-        input.recurrence ?? null,
       ],
     );
 
@@ -739,12 +763,12 @@ export async function addAgendaItem(
 
     // Vínculo com a Biblioteca: snapshot dos participantes do tema para a pauta
     // (find-or-create em meeting_participants + vínculo). Depois, independente.
-    if (input.agendaTopicId) {
+    if (agendaTopicId) {
       await snapshotTopicParticipantsIntoItem(
         client,
         meetingId,
         rows[0]!.id,
-        input.agendaTopicId,
+        agendaTopicId,
         actor,
         titulo,
       );
@@ -765,7 +789,93 @@ export async function addAgendaItem(
     await reabrirValidacaoSePreReuniao(client, meetingId, actor);
   });
 
+  // COMITÊ (040): replica o tema nas reuniões dos comitês escolhidos. Roda
+  // FORA da transação acima — cada reunião-alvo tem seu próprio lock e sua
+  // própria versão; melhor esforço (uma reunião problemática não trava as demais).
+  if (agendaTopicIdResolvido && input.comites && input.comites.length > 0) {
+    await vincularTemaAComites(
+      agendaTopicIdResolvido,
+      input.comites,
+      actor,
+    );
+  }
+
   return findMeeting(meetingId);
+}
+
+/**
+ * COMITÊ (040): replica o tema (já mestre na Biblioteca) como PAUTA DE
+ * VERDADE nas reuniões dos comitês escolhidos — inclusive o próprio comitê
+ * "dono" da reunião/tema (replica para as OUTRAS reuniões dele). Mesmo
+ * caminho do "Adicionar da Biblioteca" (`addAgendaItem` com `agendaTopicId`):
+ * ficha e participantes padrão são copiados, e a reunião entra em
+ * `linkedMeetingsCount` do tema.
+ *
+ *   todos         toda reunião não cancelada, ainda não realizada, do ANO
+ *                 ATUAL daquele órgão, nesta chamada — não é um vínculo
+ *                 vivo: reunião criada depois não recebe o tema.
+ *   especificas   só as reuniões informadas, confirmadas como daquele órgão.
+ *
+ * Melhor esforço: reunião onde o tema já está (409, inclusive a reunião de
+ * origem quando o próprio comitê dela está na lista) ou que deixou de existir
+ * (404) é só pulada — uma reunião problemática não pode impedir as demais.
+ */
+export async function vincularTemaAComites(
+  agendaTopicId: string,
+  comites: readonly ComiteVinculoInput[],
+  actor: MeetingActor,
+): Promise<void> {
+  if (comites.length === 0) return;
+
+  const { rows: mestreRows } = await pool.query<{
+    title: string;
+    estimated_duration_minutes: number | null;
+  }>("SELECT title, estimated_duration_minutes FROM agenda_topics WHERE id = $1", [agendaTopicId]);
+  const mestre = mestreRows[0];
+  if (!mestre) return;
+
+  for (const comite of comites) {
+
+    const meetingIds =
+      comite.modo === "todos"
+        ? (
+            // "Todos" = só reuniões AINDA NÃO REALIZADAS (`start_at` no futuro) do
+            // ANO ATUAL (no fuso de cada reunião) — nunca reunião passada, nem de
+            // outro ano, mesmo que já cadastrada para aquele órgão.
+            await pool.query<{ id: string }>(
+              `SELECT id FROM meetings
+                WHERE governance_body_id = $1
+                  AND cancelled_at IS NULL
+                  AND start_at > now()
+                  AND EXTRACT(YEAR FROM start_at AT TIME ZONE timezone)
+                    = EXTRACT(YEAR FROM now() AT TIME ZONE timezone)`,
+              [comite.governanceBodyId],
+            )
+          ).rows.map((r) => r.id)
+        : (
+            await pool.query<{ id: string }>(
+              `SELECT id FROM meetings
+                WHERE id = ANY($1::uuid[]) AND governance_body_id = $2 AND cancelled_at IS NULL`,
+              [comite.meetingIds ?? [], comite.governanceBodyId],
+            )
+          ).rows.map((r) => r.id);
+
+    for (const meetingId of meetingIds) {
+      try {
+        await addAgendaItem(
+          meetingId,
+          {
+            title: mestre.title,
+            durationMinutes: mestre.estimated_duration_minutes ?? undefined,
+            agendaTopicId,
+          },
+          actor,
+        );
+      } catch (erro) {
+        if (!(erro instanceof HttpError)) throw erro;
+      }
+    }
+  }
 }
 
 /**
@@ -793,14 +903,19 @@ export interface AgendaItemPatch {
   executionStatus?: ExecutionStatus;
   /** Tema circular NESTA reuniao. So boolean; nunca toca a Biblioteca. */
   isCircularTheme?: boolean;
-  /** Recorrência NESTA reunião (039). `null` = não se repete; nunca toca a Biblioteca. */
-  recurrence?: RecorrenciaDoTema | null;
   /** Ficha cadastral (019). `null` limpa; nunca toca a Biblioteca. */
   agendaTopicTypeId?: string | null;
   agendaTopicNatureId?: string | null;
   description?: string | null;
   /** "Tema de FUP" — apenas classificacao. Nao cria action_item. */
   generatesActionItem?: boolean;
+  /** COMITÊ (040): órgãos extras por onde este tema também deve passar. */
+  comites?: ComiteVinculoInput[];
+  /**
+   * Promove o tema (sem `agenda_topic_id`) a mestre da Biblioteca, para poder
+   * replicar por `comites`. Mesmo esquema do "+ Novo tema" da Agenda Anual.
+   */
+  registerInLibrary?: boolean;
 }
 
 /**
@@ -819,9 +934,9 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
   const permitidos = new Set([
     "title", "durationMinutes", "scheduledStartTime",
     "responsibleLabel", "responsibleEntraObjectId", "executionStatus",
-    "isCircularTheme", "recurrence",
+    "isCircularTheme",
     "agendaTopicTypeId", "agendaTopicNatureId", "description", "generatesActionItem",
-    "agendaId",
+    "agendaId", "comites", "registerInLibrary",
   ]);
   for (const chave of Object.keys(dados)) {
     if (!permitidos.has(chave)) {
@@ -901,8 +1016,6 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
     saida.isCircularTheme = dados.isCircularTheme;
   }
 
-  if ("recurrence" in dados) saida.recurrence = parseRecorrenciaDoTema(dados.recurrence);
-
   // Ficha cadastral (019). `null` limpa. UUID validado por forma; a existência é
   // garantida pela FK (23503 -> 400 no traduzirErro).
   if ("agendaTopicTypeId" in dados) {
@@ -954,6 +1067,16 @@ export function parseAgendaItemPatch(body: unknown): AgendaItemPatch {
     throw new HttpError(400, "Informe 'responsibleLabel' junto de 'responsibleEntraObjectId'.");
   }
 
+  if ("comites" in dados) {
+    saida.comites = parseComitesInput(dados.comites);
+  }
+  if ("registerInLibrary" in dados) {
+    if (typeof dados.registerInLibrary !== "boolean") {
+      throw new HttpError(400, "'registerInLibrary' deve ser booleano (true ou false).");
+    }
+    saida.registerInLibrary = dados.registerInLibrary;
+  }
+
   if (Object.keys(saida).length === 0) {
     throw new HttpError(400, "Nenhum campo alterável foi informado.");
   }
@@ -977,9 +1100,11 @@ export async function updateAgendaItem(
   assertUuid(meetingId, "Identificador");
   assertUuid(agendaItemId, "Identificador da pauta");
 
+  let agendaTopicIdResolvido: string | undefined;
+
   await emTransacaoVersionada(meetingId, actor, async (client) => {
     // Travada: trocar o responsavel pode acrescenta-lo aos participantes.
-    const titulo = await exigirReuniaoTravada(client, meetingId);
+    const { title: titulo, governanceBodyId } = await exigirReuniaoTravada(client, meetingId);
 
     // UPDATE parcial, nunca DELETE + INSERT: o `id` sobrevive a edicao.
     const atribuicoes: string[] = [];
@@ -998,7 +1123,6 @@ export async function updateAgendaItem(
     if (input.scheduledStartTime !== undefined) bind("scheduled_start_time", input.scheduledStartTime);
     if (input.executionStatus !== undefined) bind("execution_status", input.executionStatus);
     if (input.isCircularTheme !== undefined) bind("is_circular_theme", input.isCircularTheme);
-    if (input.recurrence !== undefined) bind("recurrence", input.recurrence);
     // Ficha (019). UPDATE parcial na PRÓPRIA pauta — nunca toca a Biblioteca.
     if (input.agendaTopicTypeId !== undefined) bind("agenda_topic_type_id", input.agendaTopicTypeId);
     if (input.agendaTopicNatureId !== undefined) bind("agenda_topic_nature_id", input.agendaTopicNatureId);
@@ -1079,7 +1203,60 @@ export async function updateAgendaItem(
     if (alterouEstrutura) {
       await reabrirValidacaoSePreReuniao(client, meetingId, actor);
     }
+
+    // COMITÊ (040): tema ainda sem vínculo com a Biblioteca que pede Comitê
+    // nasce também lá agora — mesmo esquema do "+ Novo tema" da Agenda Anual.
+    if (input.comites?.length || input.registerInLibrary) {
+      const { rows } = await client.query<{
+        agenda_topic_id: string | null;
+        title: string;
+        duration_minutes: number | null;
+        responsible_label: string | null;
+        responsible_entra_object_id: string | null;
+        agenda_topic_type_id: string | null;
+        agenda_topic_nature_id: string | null;
+        description: string | null;
+        is_circular_theme: boolean;
+        generates_action_item: boolean;
+      }>(
+        `SELECT agenda_topic_id, title, duration_minutes, responsible_label, responsible_entra_object_id,
+                agenda_topic_type_id, agenda_topic_nature_id, description, is_circular_theme, generates_action_item
+           FROM meeting_agenda_items WHERE id = $1 AND meeting_id = $2`,
+        [agendaItemId, meetingId],
+      );
+      const atual = rows[0];
+      if (atual && !atual.agenda_topic_id && input.registerInLibrary) {
+        const novoId = await inserirTemaNaBiblioteca(
+          client,
+          {
+            title: atual.title,
+            description: atual.description,
+            estimatedDurationMinutes: atual.duration_minutes,
+            generatesActionItem: atual.generates_action_item,
+            responsibleLabel: atual.responsible_label,
+            responsibleEntraObjectId: atual.responsible_entra_object_id,
+            agendaTopicTypeId: atual.agenda_topic_type_id,
+            agendaTopicNatureId: atual.agenda_topic_nature_id,
+            governanceBodyId,
+            isCircularTheme: atual.is_circular_theme,
+            participants: [],
+          },
+          actor,
+        );
+        await client.query("UPDATE meeting_agenda_items SET agenda_topic_id = $1 WHERE id = $2", [
+          novoId,
+          agendaItemId,
+        ]);
+        agendaTopicIdResolvido = novoId;
+      } else {
+        agendaTopicIdResolvido = atual?.agenda_topic_id ?? undefined;
+      }
+    }
   });
+
+  if (agendaTopicIdResolvido && input.comites && input.comites.length > 0) {
+    await vincularTemaAComites(agendaTopicIdResolvido, input.comites, actor);
+  }
 
   return findMeeting(meetingId);
 }
@@ -1164,7 +1341,7 @@ export async function addAgendaItemParticipant(
 
   await emTransacaoVersionada(meetingId, actor, async (client) => {
     // Lock da reunião: serializa o find-or-create do participante.
-    const titulo = await exigirReuniaoTravada(client, meetingId);
+    const { title: titulo } = await exigirReuniaoTravada(client, meetingId);
 
     await exigirPautaNaReuniao(client, meetingId, agendaItemId);
 

@@ -162,8 +162,6 @@ export interface AnnualAgendaMeeting {
     typeId: string | null;
     natureId: string | null;
     isCircularTheme: boolean;
-    /** Recorrência do tema nesta reunião (039). */
-    recurrence: string | null;
     description: string | null;
     inicio: string;
     fim: string | null;
@@ -713,12 +711,11 @@ async function carregarConteudo(db: Executor, id: string) {
     type_name: string | null;
     nature_name: string | null;
     is_circular_theme: boolean;
-    recurrence: string | null;
     description: string | null;
   }>(
     `SELECT i.id, i.meeting_id, i.meeting_agenda_id, i.title, i.position, i.agenda_topic_id, i.duration_minutes,
             i.responsible_label, i.responsible_entra_object_id, i.agenda_topic_type_id, i.agenda_topic_nature_id,
-            ty.name AS type_name, na.name AS nature_name, i.is_circular_theme, i.recurrence, i.description
+            ty.name AS type_name, na.name AS nature_name, i.is_circular_theme, i.description
        FROM meeting_agenda_items i
        LEFT JOIN agenda_topic_types ty ON ty.id = i.agenda_topic_type_id
        LEFT JOIN agenda_topic_natures na ON na.id = i.agenda_topic_nature_id
@@ -957,7 +954,6 @@ export async function findAnnualAgenda(id: string): Promise<AnnualAgendaDetail> 
           typeId: t.agenda_topic_type_id,
           natureId: t.agenda_topic_nature_id,
           isCircularTheme: t.is_circular_theme,
-          recurrence: t.recurrence,
           description: t.description,
           inicio: horarios.get(t.id)!.inicio,
           fim: horarios.get(t.id)!.fim,
@@ -1454,7 +1450,8 @@ async function exigirReuniaoDaAgenda(client: PoolClient, id: string, meetingId: 
  */
 const CAMPOS_DO_TEMA_NA_AGENDA = [
   "title", "agendaId", "durationMinutes", "responsibleLabel", "responsibleEntraObjectId",
-  "agendaTopicTypeId", "agendaTopicNatureId", "isCircularTheme", "recurrence", "description",
+  "agendaTopicTypeId", "agendaTopicNatureId", "isCircularTheme", "description",
+  "comites", "registerInLibrary",
 ] as const;
 
 /**
@@ -1508,8 +1505,8 @@ export function parseNovoTemaDaAgenda(body: unknown): NovoTemaDaAgenda {
 
   somenteCampos(dados, [
     "title", "durationMinutes", "responsibleLabel", "responsibleEntraObjectId",
-    "agendaTopicTypeId", "agendaTopicNatureId", "isCircularTheme", "recurrence", "description",
-    "agendaId", "participants",
+    "agendaTopicTypeId", "agendaTopicNatureId", "isCircularTheme", "description",
+    "agendaId", "participants", "comites",
   ]);
   duracaoObrigatoria(dados.durationMinutes);
   const { participants, ...campos } = dados;
@@ -1596,8 +1593,6 @@ export async function criarTemaNaReuniao(
       agendaTopicTypeId: t.agendaTopicTypeId ?? null,
       agendaTopicNatureId: t.agendaTopicNatureId ?? null,
       isCircularTheme: t.isCircularTheme ?? false,
-      // Padrão da Biblioteca = o escolhido aqui (o tema nasce neste formulário).
-      recurrence: t.recurrence ?? null,
       participants: input.participantes.map((p) => ({
         userId: p.userId,
         entraObjectId: p.entraObjectId,

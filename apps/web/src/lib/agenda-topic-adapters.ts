@@ -1,4 +1,5 @@
 import type { StandaloneAgenda } from "../types";
+import type { ComiteVinculo } from "./committee-link";
 
 /**
  * Contrato da Biblioteca de pautas e a tradução para o view model das telas.
@@ -64,8 +65,6 @@ export interface ApiAgendaTopic {
   ownerUserId: string | null;
   /** PADRÃO de tema circular. Copiado para a pauta ao vincular a uma reunião. */
   isCircularTheme: boolean;
-  /** PADRÃO de recorrência (039). */
-  recurrence?: "weekly" | "biweekly" | "monthly" | "quarterly" | null;
   source: TopicSource | null;
   isAutomaticCopy: boolean;
   linkedMeetingsCount: number;
@@ -116,9 +115,9 @@ export interface AgendaTopicPayload {
   governanceBodyId?: string | null;
   /** PADRÃO de tema circular do tema mestre. Booleano estrito no servidor. */
   isCircularTheme?: boolean;
-  /** PADRÃO de recorrência (039). `null` = não se repete. */
-  recurrence?: "weekly" | "biweekly" | "monthly" | "quarterly" | null;
   participants?: TopicParticipantPayload[];
+  /** Comitê (040): órgãos extras por onde este tema também deve passar. */
+  comites?: ComiteVinculo[];
 }
 
 /** Hidrata o formulário de edição a partir do detalhe canônico da API. */
@@ -204,7 +203,6 @@ export function agendaTopicToStandalone(t: ApiAgendaTopic): StandaloneAgenda {
     pautaNatureId: t.nature?.id,
     pautaNature: t.nature?.name,
     isCircularTheme: t.isCircularTheme,
-    recurrence: t.recurrence ?? null,
     linkedMeetingsCount: t.linkedMeetingsCount,
     participantsCount: t.participantsCount,
     /*
@@ -230,9 +228,9 @@ export interface BibliotecaFormInput {
   natureId?: string;
   /** PADRÃO de tema circular. Default Não no formulário. */
   isCircularTheme?: boolean;
-  /** PADRÃO de recorrência. `null` = não se repete. */
-  recurrence?: "weekly" | "biweekly" | "monthly" | "quarterly" | null;
   participants?: TopicParticipantPayload[];
+  /** Comitê (040): órgãos extras por onde este tema também deve passar. */
+  comites?: ComiteVinculo[];
 }
 
 /**
@@ -266,8 +264,8 @@ export function buildTopicPayload(input: BibliotecaFormInput): AgendaTopicPayloa
     // Só emite quando o formulário informou o campo. Um PATCH parcial que não o
     // traz (ex.: alternar FUP) NÃO deve zerar um "Sim" já gravado.
     ...(input.isCircularTheme !== undefined ? { isCircularTheme: input.isCircularTheme } : {}),
-    ...(input.recurrence !== undefined ? { recurrence: input.recurrence } : {}),
-    ...(input.participants ? { participants: input.participants } : {})
+    ...(input.participants ? { participants: input.participants } : {}),
+    ...(input.comites && input.comites.length > 0 ? { comites: input.comites } : {})
   };
 }
 

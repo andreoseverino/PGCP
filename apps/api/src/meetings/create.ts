@@ -16,7 +16,7 @@ import {
 import { resolverLocalParaReuniao } from "../meeting-locations/service.js";
 import { parseDescricao } from "./rich-text.js";
 import { versionarReuniaoSeMudou } from "./versions.js";
-import { incluirTemasRecorrentes, parseRecorrenciaDoTema, type RecorrenciaDoTema } from "./topic-recurrence.js";
+import { parseComitesInput, type ComiteVinculoInput } from "../agenda-topics/committee-link.js";
 
 /**
  * Criacao de reuniao — reuniao, participantes e pautas em UMA transacao.
@@ -103,11 +103,6 @@ export interface AgendaItemInput {
    */
   isCircularTheme?: boolean;
   /**
-   * Recorrência NESTA reunião (039). Ausente + vínculo com a Biblioteca =>
-   * herda o padrão do tema; `null` = não se repete.
-   */
-  recurrence?: RecorrenciaDoTema | null;
-  /**
    * Ficha cadastral NESTA reuniao (snapshot, migration 019). Ausente + vinculo
    * com a Biblioteca => herda do tema mestre. `agenda_topics` continua o mestre;
    * aqui e a copia efetiva da pauta daquela reuniao.
@@ -117,6 +112,19 @@ export interface AgendaItemInput {
   description?: string | null;
   /** "Tema de FUP" — APENAS classificacao. Nao cria action_item. */
   generatesActionItem?: boolean;
+  /**
+   * COMITÊ (040): órgãos extras por onde este tema também deve passar. Sem
+   * `agendaTopicId` (tema novo), o servidor primeiro cadastra o mestre na
+   * Biblioteca (`registerInLibrary`) para poder replicar por identidade.
+   */
+  comites?: ComiteVinculoInput[];
+  /**
+   * Tema novo (sem `agendaTopicId`) que deve nascer também na Biblioteca —
+   * mesmo esquema do "+ Novo tema" da Agenda Anual. Ausente/false preserva o
+   * comportamento antigo (item ad-hoc, fora da Biblioteca — ex.: pauta [EXTRA]
+   * lançada durante a reunião ao vivo).
+   */
+  registerInLibrary?: boolean;
 }
 
 /**
@@ -437,8 +445,15 @@ export function parseAgendaItemInput(bruto: unknown, onde = "agendaItem"): Agend
     generatesActionItem = dados.generatesActionItem;
   }
 
-  // Recorrência (039): ausente => herda do tema da Biblioteca; null/"" => não se repete.
-  const recurrence = "recurrence" in dados ? parseRecorrenciaDoTema(dados.recurrence, `${onde}.recurrence`) : undefined;
+  // Comitê (040): só faz sentido com tema novo (sem agendaTopicId), mas isso é
+  // responsabilidade de quem resolve a ligação (`addAgendaItem`), não do parser.
+  let registerInLibrary: boolean | undefined;
+  if (dados.registerInLibrary !== undefined && dados.registerInLibrary !== null) {
+    if (typeof dados.registerInLibrary !== "boolean") {
+      throw new HttpError(400, `${onde}.registerInLibrary deve ser booleano (true ou false).`);
+    }
+    registerInLibrary = dados.registerInLibrary;
+  }
 
   return {
     title: textoObrigatorio(dados.title, `${onde}.title`, 300),
@@ -449,11 +464,12 @@ export function parseAgendaItemInput(bruto: unknown, onde = "agendaItem"): Agend
     responsibleLabel,
     responsibleEntraObjectId,
     isCircularTheme,
-    recurrence,
     agendaTopicTypeId,
     agendaTopicNatureId,
     description,
     generatesActionItem,
+    comites: parseComitesInput(dados.comites),
+    registerInLibrary,
   };
 }
 
@@ -1076,16 +1092,13 @@ export async function inserirReuniao(
                  duration_minutes, execution_status, responsible_label,
                  responsible_entra_tenant_id, responsible_entra_object_id,
                  is_circular_theme,
-                 agenda_topic_type_id, agenda_topic_nature_id, description, generates_action_item,
-                 recurrence)
+                 agenda_topic_type_id, agenda_topic_nature_id, description, generates_action_item)
               VALUES ($1, $10, $2, $3, $4, $5, $6, $7, $8, $9,
                  COALESCE($11::boolean, (SELECT is_circular_theme FROM agenda_topics WHERE id = $10), false),
                  COALESCE($12::uuid,    (SELECT agenda_topic_type_id   FROM agenda_topics WHERE id = $10)),
                  COALESCE($13::uuid,    (SELECT agenda_topic_nature_id FROM agenda_topics WHERE id = $10)),
                  COALESCE($14::text,    (SELECT description            FROM agenda_topics WHERE id = $10)),
-                 COALESCE($15::boolean, (SELECT generates_action_item  FROM agenda_topics WHERE id = $10), false),
-                 CASE WHEN $16::boolean THEN $17::text
-                      ELSE (SELECT recurrence FROM agenda_topics WHERE id = $10) END)
+                 COALESCE($15::boolean, (SELECT generates_action_item  FROM agenda_topics WHERE id = $10), false))
            RETURNING id`,
         [
           meetingId,
@@ -1106,9 +1119,6 @@ export async function inserirReuniao(
           item.agendaTopicNatureId ?? null,
           item.description ?? null,
           item.generatesActionItem ?? null,
-          // Recorrência (039): informada manda (inclusive null); ausente herda do tema.
-          item.recurrence !== undefined,
-          item.recurrence ?? null,
         ],
       );
 
@@ -1144,10 +1154,6 @@ export async function inserirReuniao(
         input.title,
       );
     }
-
-    // TEMAS RECORRENTES (039): vencidos do mesmo órgão entram como tema sem
-    // pauta, depois dos temas enviados (nada é repetido). Só reunião NOVA.
-    await incluirTemasRecorrentes(client, meetingId, input.governanceBodyId, actor, input.title);
 
     // Na MESMA transacao: ou o ato e a trilha existem juntos, ou nenhum dos
     // dois. `entity_label` guarda o titulo, nao a lista de participantes.

@@ -122,8 +122,6 @@ function temaDaVersao(t: MeetingDetail["agendaItems"][number]): TemaNaVersao {
     tipo: t.type?.name ?? null,
     natureza: t.nature?.name ?? null,
     circular: t.isCircularTheme,
-    // Só quando há recorrência: não muda o hash das versões existentes.
-    ...(t.recurrence ? { recorrencia: t.recurrence } : {}),
     temaDeFup: t.generatesActionItem,
     // Execução (apresentando/concluído) é estado da sessão, não configuração;
     // postergar tira o tema desta reunião, e isso é configuração.

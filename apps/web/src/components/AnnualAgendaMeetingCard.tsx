@@ -228,9 +228,9 @@ export default function AnnualAgendaMeetingCard({
               agendaTopicTypeId: dados.agendaTopicTypeId,
               agendaTopicNatureId: dados.agendaTopicNatureId,
               isCircularTheme: dados.isCircularTheme,
-              recurrence: dados.recurrence,
               description: dados.description,
-              ...(dados.agendaId ? { agendaId: dados.agendaId } : {})
+              ...(dados.agendaId ? { agendaId: dados.agendaId } : {}),
+              ...(dados.comites.length > 0 ? { comites: dados.comites } : {})
             })
           : await createAnnualTema(agendaId, meeting.id, {
               title: dados.title,
@@ -240,9 +240,9 @@ export default function AnnualAgendaMeetingCard({
               ...(dados.agendaTopicTypeId ? { agendaTopicTypeId: dados.agendaTopicTypeId } : {}),
               ...(dados.agendaTopicNatureId ? { agendaTopicNatureId: dados.agendaTopicNatureId } : {}),
               isCircularTheme: dados.isCircularTheme,
-              recurrence: dados.recurrence,
               ...(dados.description ? { description: dados.description } : {}),
               ...(dados.agendaId ? { agendaId: dados.agendaId } : {}),
+              ...(dados.comites.length > 0 ? { comites: dados.comites } : {}),
               participants: dados.participants
             });
       setModalTema(null);
@@ -854,7 +854,6 @@ export default function AnnualAgendaMeetingCard({
                   typeId: temaVivo.typeId,
                   natureId: temaVivo.natureId,
                   isCircularTheme: temaVivo.isCircularTheme,
-                  recurrence: temaVivo.recurrence ?? null,
                   description: temaVivo.description,
                   agendaId: temaVivo.agendaId,
                   participants: temaVivo.participants

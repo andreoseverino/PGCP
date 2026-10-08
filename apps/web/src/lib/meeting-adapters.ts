@@ -2,6 +2,7 @@ import { parseDurationMinutes } from "./agenda-time";
 import type { AgendaValidation } from "./agenda-validation";
 import { getInitials } from "./user";
 import type { AgendaItem, Meeting, MeetingAgenda, Participant, PhysicalLocation } from "../types";
+import type { ComiteVinculo } from "./committee-link";
 
 /**
  * Tradução entre o contrato da API de reuniões e o modelo que as telas usam.
@@ -127,8 +128,6 @@ export interface ApiMeetingAgendaItem {
   presenterLabel: string | null;
   /** Tema circular nesta reunião (`meeting_agenda_items.is_circular_theme`). */
   isCircularTheme: boolean;
-  /** Recorrência nesta reunião (039). */
-  recurrence?: "weekly" | "biweekly" | "monthly" | "quarterly" | null;
   /** Ficha cadastral (snapshot 019). Tipo/Natureza vêm com `{id, name}`. */
   type: { id: string; name: string } | null;
   nature: { id: string; name: string } | null;
@@ -320,7 +319,6 @@ export function agendaItemFromApi(item: ApiMeetingAgendaItem): AgendaItem {
         ? item.executionStatus
         : "pending",
     isCircularTheme: item.isCircularTheme,
-    recurrence: item.recurrence ?? null,
     agendaTopicTypeId: item.type?.id,
     pautaType: item.type?.name,
     agendaTopicNatureId: item.nature?.id,
@@ -426,8 +424,6 @@ export interface CreateAgendaItemPayload {
    * um fato; a API recusa qualquer valor que não seja booleano estrito.
    */
   isCircularTheme?: boolean;
-  /** Recorrência (039). Ausente herda da Biblioteca; `null` = não se repete. */
-  recurrence?: "weekly" | "biweekly" | "monthly" | "quarterly" | null;
   /**
    * Ficha cadastral (019). Ausente + `agendaTopicId` => o backend herda do tema
    * (snapshot). Explícito manda. `null` limpa (no PATCH). Allowlist estrita.
@@ -436,6 +432,13 @@ export interface CreateAgendaItemPayload {
   agendaTopicNatureId?: string | null;
   description?: string | null;
   generatesActionItem?: boolean;
+  /** Comitê (040): órgãos extras por onde este tema também deve passar. */
+  comites?: ComiteVinculo[];
+  /**
+   * Tema novo (sem `agendaTopicId`) que deve nascer também na Biblioteca —
+   * mesmo esquema do "+ Novo tema" da Agenda Anual.
+   */
+  registerInLibrary?: boolean;
 }
 
 /**

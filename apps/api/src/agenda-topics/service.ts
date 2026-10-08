@@ -79,8 +79,6 @@ export interface AgendaTopicSummary {
   ownerUserId: string | null;
   /** PADRÃO de tema circular. Copiado para a pauta ao vincular a uma reunião. */
   isCircularTheme: boolean;
-  /** PADRÃO de recorrência (039). Copiado para o tema ao vincular a uma reunião. */
-  recurrence: "weekly" | "biweekly" | "monthly" | "quarterly" | null;
   source: TopicSource | null;
   /** DERIVADO: nasceu de um Postergar. Equivale a `source !== null`. */
   isAutomaticCopy: boolean;
@@ -111,7 +109,6 @@ interface TopicRow {
   responsible_entra_object_id: string | null;
   owner_user_id: string | null;
   is_circular_theme: boolean;
-  recurrence: "weekly" | "biweekly" | "monthly" | "quarterly" | null;
   source_meeting_id: string | null;
   source_agenda_item_id: string | null;
   type_id: string | null;
@@ -150,7 +147,6 @@ function toSummary(row: TopicRow): AgendaTopicSummary {
     governanceBody: row.body_id && row.body_name ? { id: row.body_id, name: row.body_name } : null,
     ownerUserId: row.owner_user_id,
     isCircularTheme: row.is_circular_theme,
-    recurrence: row.recurrence,
     source,
     isAutomaticCopy: source !== null,
     linkedMeetingsCount: row.linked_meetings_count,
@@ -171,7 +167,6 @@ const SUMMARY_SELECT = `
          t.responsible_entra_object_id,
          t.owner_user_id,
          t.is_circular_theme,
-         t.recurrence,
          t.source_meeting_id,
          t.source_agenda_item_id,
          tt.id   AS type_id,   tt.name AS type_name,
