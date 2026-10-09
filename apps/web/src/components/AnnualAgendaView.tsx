@@ -1,6 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  CalendarCheck,
   CalendarRange,
   CheckCircle,
   ExternalLink,
@@ -37,6 +36,7 @@ import {
   estadoDaVisao,
   gruposDoContexto,
   podeEditarAgenda,
+  podePrepararSozinho,
   reunioesAAssociar,
   resumoDaAgenda,
   rodarMutacao
@@ -113,6 +113,12 @@ export default function AnnualAgendaView({
   const [selecionada, setSelecionada] = useState<AnnualAgendaDetail | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
+  /** Órgão cuja Agenda Anual está sendo preparada automaticamente agora. */
+  const [preparando, setPreparando] = useState<string | null>(null);
+  /** Trava contra preparo duplo (efeito do contexto + clique no mesmo instante). */
+  const emPreparo = useRef(new Set<string>());
+  /** Órgão/ano cujo preparo automático falhou: não tenta de novo sozinho (sem laço). */
+  const preparoFalhou = useRef(new Set<string>());
 
   // Órgão = CONTEXTO GLOBAL (cabeçalho). Sem filtro local de órgão.
   const visiveis = useMemo(() => gruposDoContexto(grupos, orgaoContexto), [grupos, orgaoContexto]);
@@ -159,8 +165,15 @@ export default function AnnualAgendaView({
     setErro(null);
     setOrgaoSelecionado(orgaoId);
     const grupo = grupos.find((g) => g.governanceBody.id === orgaoId);
-    if (!grupo?.agenda) {
+    if (!grupo) {
       setSelecionada(null);
+      return;
+    }
+    if (!grupo.agenda) {
+      setSelecionada(null);
+      // Sem botão (10/2026): quem pode gerir já entra preparando — a Agenda
+      // Anual do órgão/ano nasce ao abrir, com as reuniões do Calendário.
+      if (podePrepararSozinho(grupo, canManage)) await prepararAgenda(grupo);
       return;
     }
     try {
@@ -198,12 +211,34 @@ export default function AnnualAgendaView({
     setOcupado(false);
   };
 
-  /** FORMALIZA o grupo: cria a Agenda Anual do órgão/ano e associa as reuniões dele. */
-  const prepararAgenda = (grupo: AnnualOverviewGroup) =>
-    executar(
-      () => createAnnualAgenda({ governanceBodyId: grupo.governanceBody.id, year: ano, title: grupo.governanceBody.name }),
-      pt ? "Agenda Anual preparada com as reuniões do Calendário." : "Annual plan prepared with the Calendar meetings."
-    );
+  /**
+   * FORMALIZA o grupo SOZINHO, ao abrir: cria a Agenda Anual do órgão/ano e
+   * associa as reuniões dele. Sem toast — para quem usa, a reunião só "já está
+   * pronta para preparar". 409 = outra pessoa preparou no mesmo instante:
+   * relê e abre a que existe.
+   */
+  const prepararAgenda = async (grupo: AnnualOverviewGroup) => {
+    const orgaoId = grupo.governanceBody.id;
+    const chave = `${orgaoId}:${ano}`;
+    if (emPreparo.current.has(orgaoId) || preparoFalhou.current.has(chave)) return;
+    emPreparo.current.add(orgaoId);
+    setPreparando(orgaoId);
+    try {
+      const criada = await createAnnualAgenda({ governanceBodyId: orgaoId, year: ano, title: grupo.governanceBody.name });
+      setSelecionada(criada);
+      setOrgaoSelecionado(orgaoId);
+      onMeetingsChanged();
+    } catch (e) {
+      if ((e as { status?: number } | null)?.status !== 409) {
+        preparoFalhou.current.add(chave);
+        setErro(describeAnnualAgendaError(e, language));
+      }
+    } finally {
+      emPreparo.current.delete(orgaoId);
+      setPreparando(null);
+      await carregar();
+    }
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -215,7 +250,7 @@ export default function AnnualAgendaView({
           </h2>
           <p className="text-xs text-slate-500 font-medium mt-1 max-w-2xl">
             {pt
-              ? "As reuniões do Calendário do ano, por órgão colegiado. Prepare a Agenda Anual do órgão, cadastre os temas de cada reunião e envie o compilado para aprovação. A operação das reuniões continua no Pipeline."
+              ? "As reuniões do Calendário do ano, por órgão colegiado. Abra o órgão, cadastre os temas de cada reunião e envie o compilado para aprovação. A operação das reuniões continua no Pipeline."
               : "The year's Calendar meetings by governance body. Prepare the body's annual plan to organise agendas and topics and send it for approval. Meetings are run in the Pipeline."}
           </p>
         </div>
@@ -250,8 +285,8 @@ export default function AnnualAgendaView({
           {!carregando && estado === "a_formalizar" && (
             <p className="text-[10px] text-slate-500 font-semibold px-1">
               {pt
-                ? "Estas reuniões já estão no Calendário e podem ser preparadas para a Agenda Anual."
-                : "These meetings are already in the Calendar and can be prepared for the annual plan."}
+                ? "Estas reuniões já estão no Calendário. Abra o órgão para preparar os temas."
+                : "These meetings are already in the Calendar. Open the body to prepare the topics."}
             </p>
           )}
           {visiveis.map((g) => (
@@ -272,7 +307,7 @@ export default function AnnualAgendaView({
                       ? "bg-emerald-50 text-emerald-700"
                       : "bg-slate-100 text-slate-600"
                 }`}>
-                  {g.agenda ? annualStatusLabel(g.agenda.status, language) : pt ? "Não formalizada" : "Not prepared"}
+                  {g.agenda ? annualStatusLabel(g.agenda.status, language) : pt ? "Nova" : "New"}
                 </span>
               </div>
               <p className="text-[13px] font-extrabold text-slate-800">
@@ -311,9 +346,7 @@ export default function AnnualAgendaView({
             language={language}
             ano={ano}
             grupo={grupoAtual}
-            canManage={canManage}
-            ocupado={ocupado}
-            onPreparar={() => void prepararAgenda(grupoAtual)}
+            preparando={preparando === grupoAtual.governanceBody.id}
             onOpenMeeting={onOpenMeeting}
           />
         ) : (
@@ -346,25 +379,21 @@ export default function AnnualAgendaView({
 // ---------------------------------------------------------------------------
 
 /**
- * Órgão com reuniões no Calendário e SEM Agenda Anual formal. Mostra as
- * reuniões (as mesmas do Calendário/Pipeline) e a ação explícita de preparar
- * — abrir a tela não grava nada.
+ * Órgão com reuniões no Calendário e AINDA sem Agenda Anual. Para quem pode
+ * gerir, é um estado de passagem (a agenda é preparada sozinha ao abrir); para
+ * quem só lê, ou órgão inativo, mostra as reuniões sem ação.
  */
 function GrupoNaoFormalizado({
   language,
   ano,
   grupo,
-  canManage,
-  ocupado,
-  onPreparar,
+  preparando,
   onOpenMeeting
 }: {
   language: "en" | "pt";
   ano: number;
   grupo: AnnualOverviewGroup;
-  canManage: boolean;
-  ocupado: boolean;
-  onPreparar: () => void;
+  preparando: boolean;
   onOpenMeeting: (meetingId: string) => void;
 }) {
   const pt = language === "pt";
@@ -378,28 +407,10 @@ function GrupoNaoFormalizado({
           <h3 className="text-xl font-extrabold text-[#001e2d]">{pt ? `Agenda Anual ${ano}` : `Annual plan ${ano}`}</h3>
           <p className="text-[10px] text-slate-500 font-semibold mt-1">
             {grupo.meetings.length} {pt ? "reunião(ões) encontrada(s)" : "meeting(s) found"} ·{" "}
-            <span className="text-slate-400">{pt ? "Agenda Anual ainda não formalizada" : "Annual plan not prepared yet"}</span>
+            {preparando && <span className="text-[#00658d]">{pt ? "Preparando a Agenda Anual..." : "Preparing the annual plan..."}</span>}
           </p>
         </div>
-        {canManage && grupo.governanceBody.isActive && (
-          <button
-            type="button"
-            disabled={ocupado}
-            onClick={onPreparar}
-            className="px-4 py-2.5 bg-[#00658d] hover:bg-[#00aeef] text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 disabled:opacity-50 cursor-pointer shrink-0"
-          >
-            <CalendarCheck className="w-4 h-4" />
-            {pt ? "Preparar Agenda Anual" : "Prepare annual plan"}
-          </button>
-        )}
       </header>
-
-      <p className="flex gap-2 p-3 rounded-xl bg-slate-50 border border-slate-100 text-[11px] text-slate-600 font-medium">
-        <Info className="w-4 h-4 shrink-0 mt-px text-[#00658d]" />
-        {pt
-          ? `Preparar cria a Agenda Anual de ${ano} deste órgão e inclui ${aAssociar.length} reunião(ões) do Calendário — as mesmas reuniões, sem novo convite. Reuniões criadas depois no Calendário entram automaticamente.`
-          : `Preparing creates this body's ${ano} annual plan with ${aAssociar.length} Calendar meeting(s) — the same meetings, no new invite.`}
-      </p>
 
       <ul className="space-y-1.5">
         {grupo.meetings.map((m) => {
@@ -648,6 +659,7 @@ function AgendaDetail({
             orgao={agenda.governanceBody}
             meeting={m}
             editable={editavel}
+            podeMarcarPreparada={canManage}
             agendaAprovada={agenda.status === "approved"}
             ocupado={ocupado}
             libraryTopics={libraryTopics}

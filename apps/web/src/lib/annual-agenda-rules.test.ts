@@ -112,20 +112,42 @@ test("visão anual: contexto global, anos, estados vazios distintos", async () =
   assert.equal(reunioesAAssociar(grupo("x", false, [null, "outra"])).length, 1);
 });
 
-test("tela: ano padrão = atual; sem 'Todos'; reuniões sem agenda ≠ nenhuma reunião; Preparar explícito", () => {
+test("tela: ano padrão = atual; sem 'Todos'; reuniões sem agenda ≠ nenhuma reunião; preparo automático ao abrir", () => {
   const view = codigo("../components/AnnualAgendaView.tsx");
   assert.match(view, /const \[ano, setAno\] = useState<number>\(anoAtual\)/);
   assert.match(view, /instantToLocal\(new Date\(\)\.toISOString\(\), DEFAULT_TIMEZONE\)/);
   const seletor = view.slice(view.indexOf('id="agenda-ano"'), view.indexOf("</select>", view.indexOf('id="agenda-ano"')));
   assert.ok(!/"Todos"/.test(seletor), "sem opção Todos no ano");
   assert.match(view, /getAnnualOverview\(anoAlvo\)/);
-  assert.match(view, /"Estas reuniões já estão no Calendário e podem ser preparadas para a Agenda Anual\."/);
+  assert.match(view, /"Estas reuniões já estão no Calendário\. Abra o órgão para preparar os temas\."/);
   assert.match(view, /"Nenhuma reunião encontrada para este ano\. Crie a reunião no Calendário para preparar sua Agenda Anual\."/);
   assert.match(view, /"Ir para Calendário"/);
-  assert.match(view, /"Preparar Agenda Anual"/);
-  // Abrir/trocar de ano só LÊ: criar agenda só no clique de Preparar/Criar.
+  // Sem botão (10/2026): abrir o órgão já prepara a Agenda Anual.
+  assert.ok(!/"Preparar Agenda Anual"/.test(view), "sem botão Preparar");
+  const abrir = view.slice(view.indexOf("const abrirGrupo"), view.indexOf("const executar"));
+  assert.match(abrir, /if \(podePrepararSozinho\(grupo, canManage\)\) await prepararAgenda\(grupo\);/);
+  // Trocar de ano continua só LENDO; preparo só ao abrir um órgão.
   const efeitos = view.slice(view.indexOf("useEffect(() => {"), view.indexOf("const abrirGrupo"));
   assert.ok(!/createAnnualAgenda/.test(efeitos));
+  // Sem laço: falha (≠ 409) não é repetida sozinha; duplo disparo travado.
+  const preparar = view.slice(view.indexOf("const prepararAgenda"), view.indexOf("return (", view.indexOf("const prepararAgenda")));
+  assert.match(preparar, /preparoFalhou\.current\.has\(chave\)/);
+  assert.match(preparar, /emPreparo\.current\.has\(orgaoId\)/);
+  assert.match(preparar, /status !== 409/);
+});
+
+test("preparo automático: só quem gere, órgão ativo e com reunião a trazer", async () => {
+  const { podePrepararSozinho } = await import("./annual-agenda-rules");
+  const g = (isActive: boolean, ids: Array<string | null>) =>
+    ({
+      governanceBody: { id: "o", name: "Órgão", isActive },
+      agenda: null,
+      meetings: ids.map((annualAgendaId, i) => ({ id: String(i), annualAgendaId }))
+    }) as unknown as Parameters<typeof podePrepararSozinho>[0];
+  assert.equal(podePrepararSozinho(g(true, [null]), true), true);
+  assert.equal(podePrepararSozinho(g(true, [null]), false), false, "só leitura não grava");
+  assert.equal(podePrepararSozinho(g(false, [null]), true), false, "órgão inativo");
+  assert.equal(podePrepararSozinho(g(true, ["outra"]), true), false, "nada a trazer = sem agenda vazia");
 });
 
 test("arrastar ordena DENTRO da pauta; a ordem global dos demais não muda", async () => {
@@ -436,4 +458,19 @@ test("sem aprovação da Agenda Anual: toda reunião opera no Pipeline; Calendá
   const app = codigo("../App.tsx");
   assert.ok(!/aindaNaAgendaAnual|frozen|Frozen|calendarMeetings/.test(app));
   assert.match(app, /<CalendarView[\s\S]*?meetings=\{meetings\}/);
+});
+
+test("marca Preparada: só sinalização na linha da reunião; quem não gere só vê o selo", () => {
+  const card = codigo("../components/AnnualAgendaMeetingCard.tsx");
+  assert.match(card, /setAnnualMeetingPrepared\(agendaId, meeting\.id, !meeting\.prepared\)/);
+  assert.match(card, /podeMarcarPreparada \? \(/);
+  assert.match(card, /"Marcar como preparada"/);
+  assert.match(card, /aria-pressed=\{Boolean\(meeting\.prepared\)\}/);
+  // Independe da Agenda estar editável (vale também aprovada): não usa `editable`.
+  const bloco = card.slice(card.indexOf("podeMarcarPreparada ? ("), card.indexOf("agendaAprovada &&"));
+  assert.ok(!/editable/.test(bloco));
+  const view = codigo("../components/AnnualAgendaView.tsx");
+  assert.match(view, /podeMarcarPreparada=\{canManage\}/);
+  const lib = codigo("./annual-agendas.ts");
+  assert.match(lib, /\/annual-agendas\/\$\{id\}\/meetings\/\$\{meetingId\}\/prepared`, \{\s*auth: true,\s*method: "PUT"/);
 });

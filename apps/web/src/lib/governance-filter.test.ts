@@ -100,9 +100,11 @@ test("contexto global: um seletor no cabeçalho; telas sem filtro de órgão pr�
 });
 
 test("Agenda Anual: preparar só com órgão ativo", () => {
+  // Agenda nasce ao abrir o órgão (sem botão), e só para órgão ativo.
   const anual = codigo("../components/AnnualAgendaView.tsx");
-  // Agenda só nasce por "Preparar Agenda Anual", e só para órgão ativo.
-  assert.match(anual, /canManage && grupo\.governanceBody\.isActive/, "preparar só com ativos");
+  assert.match(anual, /podePrepararSozinho\(grupo, canManage\)/);
+  const regras = codigo("./annual-agenda-rules.ts");
+  assert.match(regras, /canManage && grupo\.governanceBody\.isActive/, "preparar só com ativos");
 });
 
 test("Pipeline: um só filtro de órgão (o do contexto global)", () => {

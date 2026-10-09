@@ -11,6 +11,7 @@ import {
   alterarTema,
   associarReuniao,
   desassociarReuniao,
+  marcarReuniaoPreparada,
   editarConteudoPelaAgenda,
   excluirPauta,
   excluirTema,
@@ -238,6 +239,20 @@ annualAgendasRouter.post("/:id/meetings", requirePgcpAssessoria, mutacao("associ
     if (chave !== "meetingId") throw new HttpError(400, `O campo '${chave}' não pode ser informado aqui.`);
   }
   return associarReuniao(req.params.id as string, corpo.meetingId, ator);
+}));
+
+/**
+ * PUT /:id/meetings/:meetingId/prepared  { prepared: boolean }
+ *
+ * Marca "Preparada" (043): só sinalização para a equipe. Sem efeito em
+ * status, versão, convite ou edição.
+ */
+annualAgendasRouter.put("/:id/meetings/:meetingId/prepared", requirePgcpAssessoria, mutacao("marcar reunião preparada", (req, ator) => {
+  const corpo = (req.body ?? {}) as Record<string, unknown>;
+  for (const chave of Object.keys(corpo)) {
+    if (chave !== "prepared") throw new HttpError(400, `O campo '${chave}' não pode ser informado aqui.`);
+  }
+  return marcarReuniaoPreparada(req.params.id as string, req.params.meetingId as string, corpo.prepared, ator);
 }));
 
 annualAgendasRouter.delete("/:id/meetings/:meetingId", requirePgcpAssessoria, mutacao("desassociar reunião", (req, ator) =>

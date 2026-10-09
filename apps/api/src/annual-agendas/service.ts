@@ -155,6 +155,8 @@ export interface AnnualAgendaMeeting {
   calendarSyncStatus: CalendarSyncStatus | null;
   /** Data planejada que gerou a reunião pela reserva; `null` = associada do Calendário. */
   plannedItemId: string | null;
+  /** Marca "Preparada" (043): só sinalização para a equipe; `null` = não marcada. */
+  prepared: { at: string; byName: string | null } | null;
   agendas: Array<{ id: string; title: string; position: number }>;
   /** Temas na ordem GLOBAL da reunião, com o cronograma calculado. */
   items: Array<{
@@ -692,12 +694,15 @@ async function carregarConteudo(db: Executor, id: string) {
     modality: "online" | "in_person";
     sync_status: CalendarSyncStatus | null;
     planned_item_id: string | null;
+    prepared_at: Date | null;
+    prepared_by_name: string | null;
   }>(
     `SELECT m.id, m.title, m.start_at, m.end_at, m.timezone, m.status, m.origin, m.modality,
-            ci.sync_status, i.id AS planned_item_id
+            ci.sync_status, i.id AS planned_item_id, m.prepared_at, pu.name AS prepared_by_name
        FROM meetings m
        LEFT JOIN meeting_calendar_integrations ci ON ci.meeting_id = m.id AND ci.provider = 'outlook'
        LEFT JOIN annual_agenda_items i ON i.meeting_id = m.id
+       LEFT JOIN users pu ON pu.id = m.prepared_by_user_id
       WHERE m.annual_agenda_id = $1
         AND m.cancelled_at IS NULL
       ORDER BY m.start_at, m.id`,
@@ -889,7 +894,9 @@ async function versaoVigente(db: Executor, id: string): Promise<VersaoRow | null
  */
 function reuniaoCongeladaParaDetail(
   r: ReuniaoNoSnapshot,
-  aoVivo: { status: string; origin: "manual" | "annual_agenda" } | undefined,
+  aoVivo:
+    | { status: string; origin: "manual" | "annual_agenda"; prepared_at?: Date | null; prepared_by_name?: string | null }
+    | undefined,
 ): AnnualAgendaMeeting {
   const todosOsTemas = [...r.pautas.flatMap((p) => p.temas), ...r.temasSemPauta];
   // Snapshots antigos só têm os nomes (`participantes`); os novos, nome + e-mail.
@@ -935,6 +942,8 @@ function reuniaoCongeladaParaDetail(
     origin: aoVivo?.origin ?? "manual",
     calendarSyncStatus: null,
     plannedItemId: null,
+    // Sinalização ao vivo: não faz parte da foto aprovada.
+    prepared: aoVivo?.prepared_at ? { at: aoVivo.prepared_at.toISOString(), byName: aoVivo.prepared_by_name ?? null } : null,
     agendas: r.pautas.map((p, i) => ({ id: p.id, title: p.title, position: i })),
     items: [
       ...r.pautas.flatMap((p) => p.temas.map((t, i) => item(t, p.id, i))),
@@ -963,8 +972,16 @@ export async function findAnnualAgenda(id: string): Promise<AnnualAgendaDetail> 
   let reunioesCongeladas: AnnualAgendaMeeting[] | null = null;
   if (aprovado) {
     const ids = aprovado.reunioes.map((r) => r.meetingId).filter((m): m is string => Boolean(m));
-    const { rows: vivas } = await pool.query<{ id: string; status: string; origin: "manual" | "annual_agenda" }>(
-      "SELECT id, status, origin FROM meetings WHERE id = ANY($1::uuid[]) AND cancelled_at IS NULL",
+    const { rows: vivas } = await pool.query<{
+      id: string;
+      status: string;
+      origin: "manual" | "annual_agenda";
+      prepared_at: Date | null;
+      prepared_by_name: string | null;
+    }>(
+      `SELECT m.id, m.status, m.origin, m.prepared_at, pu.name AS prepared_by_name
+         FROM meetings m LEFT JOIN users pu ON pu.id = m.prepared_by_user_id
+        WHERE m.id = ANY($1::uuid[]) AND m.cancelled_at IS NULL`,
       [ids],
     );
     const porId = new Map(vivas.map((v) => [v.id, v]));
@@ -1037,6 +1054,7 @@ export async function findAnnualAgenda(id: string): Promise<AnnualAgendaDetail> 
         origin: m.origin,
         calendarSyncStatus: m.sync_status,
         plannedItemId: m.planned_item_id,
+        prepared: m.prepared_at ? { at: m.prepared_at.toISOString(), byName: m.prepared_by_name } : null,
         agendas: pautas
           .filter((p) => p.meeting_id === m.id)
           .map((p) => ({ id: p.id, title: p.title, position: p.position })),
@@ -1490,6 +1508,50 @@ export async function associarReuniao(
  * (data planejada com `meeting_id`) não sai: a data voltaria a "não
  * reservada" e uma nova reserva criaria reunião duplicada.
  */
+/**
+ * MARCA "PREPARADA" (043) — só sinalização para a equipe. Não muda status,
+ * não gera versão da reunião, não envia nada e vale também com a Agenda
+ * aprovada (não é conteúdo da foto). A reunião precisa estar nesta agenda e
+ * não cancelada. Idempotente: marcar o que já está marcado não troca o autor.
+ */
+export async function marcarReuniaoPreparada(
+  id: string,
+  meetingId: string,
+  preparada: unknown,
+  actor: MeetingActor,
+): Promise<AnnualAgendaDetail> {
+  assertId(id);
+  assertId(meetingId, "Identificador da reunião");
+  if (typeof preparada !== "boolean") throw new HttpError(400, "Informe 'prepared' como verdadeiro ou falso.");
+  await emTransacao(async (client) => {
+    const agenda = await travarAgenda(client, id);
+    const { rows } = await client.query<{ title: string; marcada: boolean }>(
+      `SELECT m.title, (m.prepared_at IS NOT NULL) AS marcada
+         FROM meetings m WHERE m.id = $1 AND m.annual_agenda_id = $2 AND m.cancelled_at IS NULL FOR UPDATE OF m`,
+      [meetingId, id],
+    );
+    if (!rows[0]) throw new HttpError(404, "Reunião não encontrada nesta Agenda Anual.");
+    if (rows[0].marcada === preparada) return;
+
+    await client.query(
+      preparada
+        ? "UPDATE meetings SET prepared_at = now(), prepared_by_user_id = $2 WHERE id = $1"
+        : "UPDATE meetings SET prepared_at = NULL, prepared_by_user_id = NULL WHERE id = $1",
+      preparada ? [meetingId, actor.userId] : [meetingId],
+    );
+    await recordAuditIn(client, {
+      actorUserId: actor.userId,
+      actorName: actor.name,
+      action: preparada ? "Reunião marcada como preparada" : "Marca de reunião preparada removida",
+      entityType: "annual_agenda",
+      entityId: id,
+      entityLabel: `${agenda.title} — ${rows[0].title}`,
+      status: "success",
+    });
+  });
+  return findAnnualAgenda(id);
+}
+
 export async function desassociarReuniao(
   id: string,
   meetingId: string,

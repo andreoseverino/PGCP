@@ -249,6 +249,14 @@ export function reunioesAAssociar(grupo: AnnualOverviewGroup): AnnualOverviewGro
   return grupo.meetings.filter((m) => !m.annualAgendaId);
 }
 
+/**
+ * Prepara sozinho ao abrir? Só quem pode gerir, órgão ativo (inativo não ganha
+ * agenda nova) e com reunião a trazer — sem isso nasceria uma Agenda vazia.
+ */
+export function podePrepararSozinho(grupo: AnnualOverviewGroup, canManage: boolean): boolean {
+  return canManage && grupo.governanceBody.isActive && reunioesAAssociar(grupo).length > 0;
+}
+
 // --- Biblioteca no fluxo "Adicionar da Biblioteca" -----------------------------
 
 /** O que o seletor mostra de cada tema da Biblioteca (só para escolher). */

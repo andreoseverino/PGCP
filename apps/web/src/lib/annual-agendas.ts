@@ -56,6 +56,8 @@ export interface AnnualAgendaMeeting {
   calendarSyncStatus: "pending" | "synced" | "failed" | "stale" | null;
   /** Nasceu da reserva de uma data planejada (não pode ser desassociada). */
   plannedItemId: string | null;
+  /** Marca "Preparada" (043): só sinalização para a equipe; `null` = não marcada. */
+  prepared?: { at: string; byName: string | null } | null;
   agendas: Array<{ id: string; title: string; position: number }>;
   /** Temas na ordem GLOBAL da reunião, com cronograma calculado no servidor. */
   items: Array<{
@@ -190,6 +192,15 @@ export const approveAnnualAgenda = (id: string) =>
 /** Associa reunião existente (só o vínculo; nenhum convite novo). */
 export const associateAnnualMeeting = (id: string, meetingId: string) =>
   apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/meetings`, json("POST", { meetingId }));
+
+/** Marca/desmarca "Preparada" — só sinalização (sem status, versão ou convite). */
+export const setAnnualMeetingPrepared = (id: string, meetingId: string, prepared: boolean) =>
+  apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/meetings/${meetingId}/prepared`, {
+    auth: true,
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prepared })
+  });
 
 export const dissociateAnnualMeeting = (id: string, meetingId: string) =>
   apiRequest<AnnualAgendaDetail>(`/annual-agendas/${id}/meetings/${meetingId}`, { auth: true, method: "DELETE" });

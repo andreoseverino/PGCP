@@ -3,7 +3,9 @@ import {
   AlertTriangle,
   BookOpen,
   Check,
+  CheckCircle2,
   ChevronDown,
+  Circle,
   ChevronRight,
   Clock,
   ExternalLink,
@@ -24,6 +26,7 @@ import {
   removeAnnualMeetingParticipant,
   renameAnnualPauta,
   reorderAnnualTemas,
+  setAnnualMeetingPrepared,
   unlinkAnnualTemaParticipant,
   updateAnnualTema,
   type AnnualAgendaDetail,
@@ -84,6 +87,8 @@ interface Props {
   orgao: { id: string; name: string };
   meeting: AnnualAgendaMeeting;
   editable: boolean;
+  /** Pode marcar "Preparada" (só sinalização; vale também com a Agenda aprovada). */
+  podeMarcarPreparada?: boolean;
   /** Agenda aprovada: mostra o atalho para o Pipeline (única ação no cabeçalho). */
   agendaAprovada: boolean;
   ocupado: boolean;
@@ -97,6 +102,14 @@ interface Props {
 }
 
 type Tema = AnnualAgendaMeeting["items"][number];
+
+/** "Preparada por Ana em 08/10/2026 14:30" — dica do selo/botão. */
+function rotuloPreparada(p: AnnualAgendaMeeting["prepared"], pt: boolean): string {
+  if (!p) return pt ? "Sinalize para a equipe que esta reunião já foi preparada" : "Let the team know this meeting is prepared";
+  const quando = new Date(p.at).toLocaleString(pt ? "pt-BR" : "en-US", { dateStyle: "short", timeStyle: "short" });
+  const quem = p.byName ? (pt ? ` por ${p.byName}` : ` by ${p.byName}`) : "";
+  return pt ? `Preparada${quem} em ${quando}. Clique para desmarcar.` : `Prepared${quem} on ${quando}. Click to unmark.`;
+}
 
 const INPUT =
   "bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-[11px] text-slate-800 focus:outline-none focus:ring-1 focus:ring-[#00658d] min-w-0";
@@ -151,6 +164,7 @@ export default function AnnualAgendaMeetingCard({
   orgao,
   meeting,
   editable,
+  podeMarcarPreparada = false,
   agendaAprovada,
   ocupado,
   libraryTopics,
@@ -596,6 +610,41 @@ export default function AnnualAgendaMeetingCard({
           </p>
         </div>
         <div className="flex items-center gap-1 shrink-0">
+          {/*
+            Marca "Preparada" (043): SÓ sinalização para a equipe — não muda
+            status, versão nem convite. Quem não pode marcar só vê o selo.
+          */}
+          {!meeting.removedFromPipeline && (podeMarcarPreparada ? (
+            <button
+              type="button"
+              disabled={ocupado}
+              aria-pressed={Boolean(meeting.prepared)}
+              onClick={() =>
+                void executar(
+                  () => setAnnualMeetingPrepared(agendaId, meeting.id, !meeting.prepared),
+                  meeting.prepared
+                    ? pt ? "Marca de preparada removida." : "Prepared mark removed."
+                    : pt ? "Reunião marcada como preparada." : "Meeting marked as prepared."
+                )
+              }
+              title={rotuloPreparada(meeting.prepared, pt)}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full border text-[10px] font-bold transition cursor-pointer disabled:opacity-50 ${
+                meeting.prepared
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                  : "bg-white text-slate-500 border-slate-200 hover:border-emerald-300 hover:text-emerald-700"
+              }`}
+            >
+              {meeting.prepared ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Circle className="w-3.5 h-3.5" />}
+              {meeting.prepared ? (pt ? "Preparada" : "Prepared") : pt ? "Marcar como preparada" : "Mark as prepared"}
+            </button>
+          ) : (
+            meeting.prepared && (
+              <span title={rotuloPreparada(meeting.prepared, pt)}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border text-[10px] font-bold bg-emerald-50 text-emerald-700 border-emerald-200">
+                <CheckCircle2 className="w-3.5 h-3.5" />{pt ? "Preparada" : "Prepared"}
+              </span>
+            )
+          ))}
           {/*
             Só com a Agenda APROVADA: a operação das reuniões passa ao Pipeline
             (a Agenda trava). Em elaboração não há atalho nem desassociar.
